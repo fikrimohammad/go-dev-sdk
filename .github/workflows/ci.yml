@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+  GOLANGCI_VERSION: v2.12.2
+
+jobs:
+  modules:
+    name: Discover modules
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.discover.outputs.modules }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: discover
+        run: |
+          modules=$(find . -maxdepth 2 -name go.mod -not -path './vendor/*' -printf '%h\n' \
+            | sed 's|^\./||' | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: ${{ matrix.module }}
+    needs: modules
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.modules.outputs.list) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_VERSION }}
+          working-directory: ${{ matrix.module }}
+
+      - name: Vet
+        run: go vet ./...
+
+      # mockey-based tests require inlining disabled (see repo README).
+      - name: Test
+        run: go test -count=1 -gcflags="all=-N -l" ./...
+
+      - name: Tidy check
+        run: go mod tidy -diff

@@ -1,0 +1,31 @@
+# golangci-lint configuration (v2 schema).
+# Applies to every module in the workspace: lint jobs run `golangci-lint run`
+# from each module directory and pick this up from the repo root.
+
+version: "2"
+
+linters:
+  # The standard, fast set — golangci-lint v2 defaults. Verified clean on every
+  # module; stricter linters (errorlint, gocritic, ...) are deliberately left
+  # out because the SDK's error-handling code uses exact-identity semantics.
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # The SDK tests exercise helpers that intentionally ignore returned
+      # values; errcheck would flag those in _test.go files.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

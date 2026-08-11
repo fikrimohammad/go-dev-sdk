@@ -1,0 +1,95 @@
+name: Release
+
+# Tags each module independently (errs/v1.0.1, redis/v1.1.0, ...) when commits
+# touching that module are merged to main. Bump rule follows Conventional
+# Commits:
+#   - major: BREAKING CHANGE footer, or a "!" marker (feat!:, fix(scope)!:)
+#   - minor: feat:
+#   - patch: anything else
+# A module with no commits since its last tag is skipped.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag changed modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
+
+      - name: Compute and push module tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          modules=$(find . -maxdepth 2 -name go.mod -not -path './vendor/*' -printf '%h\n' \
+            | sed 's|^\./||' | sort)
+          new_tags=()
+
+          for m in $modules; do
+            last=$(git tag -l "$m/v*" | sort -V | tail -1 || true)
+
+            if [ -n "$last" ]; then
+              range="$last..HEAD"
+              base="${last#*/}"          # v1.0.0
+            else
+              range=""                   # module never tagged: full history
+              base="v0.0.0"
+            fi
+
+            commits=$(git log --format='%s%n%b' $range -- "$m" 2>/dev/null || true)
+            if [ -z "$(printf '%s' "$commits" | tr -d '[:space:]')" ]; then
+              echo "skip $m: no commits since ${last:-beginning}"
+              continue
+            fi
+
+            # Determine the bump from the commits touching this module.
+            has_major=false; has_feat=false
+            while IFS= read -r line; do
+              case "$line" in
+                *'BREAKING CHANGE:'*) has_major=true ;;
+              esac
+              if printf '%s' "$line" | grep -qE '^[a-z]+(\([^)]*\))?!:' ; then
+                has_major=true
+              fi
+              if printf '%s' "$line" | grep -qE '^feat' ; then
+                has_feat=true
+              fi
+            done <<< "$commits"
+
+            IFS='.' read -r ma mi pa <<< "${base#v}"
+            if [ "$has_major" = true ]; then
+              ma=$((ma + 1)); mi=0; pa=0
+            elif [ "$has_feat" = true ]; then
+              mi=$((mi + 1)); pa=0
+            else
+              pa=$((pa + 1))
+            fi
+
+            tag="$m/v$ma.$mi.$pa"
+            git tag -a "$tag" -m "Release $m v$ma.$mi.$pa"
+            echo "tagged $m: ${last:-none} -> $tag"
+            new_tags+=("$tag")
+          done
+
+          if [ ${#new_tags[@]} -eq 0 ]; then
+            echo "no modules changed; nothing to release"
+            exit 0
+          fi
+
+          git push origin "${new_tags[@]}"

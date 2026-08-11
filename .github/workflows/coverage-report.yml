@@ -1,0 +1,124 @@
+name: Coverage
+
+on:
+  pull_request:
+
+concurrency:
+  group: coverage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  modules:
+    name: Discover modules
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.discover.outputs.modules }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: discover
+        run: |
+          modules=$(find . -maxdepth 2 -name go.mod -not -path './vendor/*' -printf '%h\n' \
+            | sed 's|^\./||' | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+
+  coverage:
+    name: ${{ matrix.module }}
+    needs: modules
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.modules.outputs.list) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Test with coverage
+        run: go test -count=1 -gcflags="all=-N -l" -coverprofile=coverage.out ./...
+
+      - name: Extract total
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/{gsub("%", "", $3); print $3}')
+          printf '%s' "$total" > module_total.txt
+          echo "coverage=$total%" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.module }}
+          path: ${{ matrix.module }}/module_total.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  coverage-summary:
+    name: Coverage summary
+    needs: coverage
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/coverage
+          pattern: coverage-*
+          merge-multiple: false
+
+      - name: Build table
+        run: |
+          {
+            echo "### Coverage"
+            echo
+            echo "| Module | Coverage |"
+            echo "| --- | --- |"
+            for f in /tmp/coverage/coverage-*/module_total.txt; do
+              module=$(basename "$(dirname "$f")" | sed 's/^coverage-//')
+              pct=$(cat "$f")
+              if [ -z "$pct" ]; then
+                pct="n/a"
+              fi
+              echo "| $module | $pct% |"
+            done
+          } > /tmp/coverage_table.md
+          cat /tmp/coverage_table.md
+
+      - name: Comment on PR
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/coverage_table.md', 'utf8') + '\n<!-- coverage-bot -->';
+
+            const marker = '<!-- coverage-bot -->';
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const existing = await github.rest.issues.listComments({
+              owner, repo, issue_number: prNumber,
+            });
+            const prior = existing.data.find(c => c.body && c.body.includes(marker));
+
+            if (prior) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: prior.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber, body,
+              });
+            }

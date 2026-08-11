@@ -34,6 +34,25 @@ go test -count=1 -gcflags="all=-N -l" ./...
 (cd errs && go test ./...)
 ```
 
+## CI / Releases
+
+GitHub Actions workflows live in `.github/workflows/`:
+
+- **`ci.yml`** — on PR + push to main. Discovers every Go module and runs a
+  matrix job per module: `gofmt`, `golangci-lint` (config at repo root,
+  `.golangci.yml`), `go vet`, `go test -gcflags="all=-N -l"`, and a
+  `go mod tidy -diff` check. Tests must use the inlining-disabled flag because
+  of `mockey`.
+- **`coverage-report.yml`** — on PR. Runs tests with coverage per module and
+  posts a per-module coverage table as a PR comment.
+- **`release.yml`** — on push to main. Tags each module independently when
+  commits touched it, following Conventional Commits: `feat!:` / `BREAKING
+  CHANGE:` → major, `feat:` → minor, otherwise patch. Modules without commits
+  since their last tag are skipped.
+
+CI does not rely on `go.work` (it is gitignored); each module builds standalone
+via its `replace` directives.
+
 ## Versioning
 
 Modules are tagged independently (`errs/v1.0.0`, `observability/v1.0.0`, ...). Cross-module dependencies use `require` + `replace` directives pointing at sibling directories during development.
