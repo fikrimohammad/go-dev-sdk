@@ -9,7 +9,7 @@ const maxStackDepth = 32
 
 // New creates a new Error with the given code and message.
 // Stack trace is eagerly captured at the call site.
-func New(code Code, message string) *Error {
+func New(code int, message string) *Error {
 	return &Error{
 		code:    code,
 		message: message,
@@ -19,7 +19,7 @@ func New(code Code, message string) *Error {
 
 // Wrap creates a new Error wrapping a cause with the given code and message.
 // Stack trace is eagerly captured at the call site.
-func Wrap(code Code, message string, cause error) *Error {
+func Wrap(code int, message string, cause error) *Error {
 	return &Error{
 		code:    code,
 		message: message,
@@ -30,7 +30,7 @@ func Wrap(code Code, message string, cause error) *Error {
 
 // AsError extracts an *Error from an error chain.
 // If err is nil, returns nil. If err wraps an *Error, returns that *Error.
-// If err is a plain error, wraps it with Internal code.
+// If err is a plain error, wraps it with code 0 (unknown).
 func AsError(err error) *Error {
 	if err == nil {
 		return nil
@@ -40,7 +40,7 @@ func AsError(err error) *Error {
 		return e
 	}
 	return &Error{
-		code:    Internal,
+		code:    0,
 		message: err.Error(),
 		cause:   err,
 		stack:   captureStack(1),

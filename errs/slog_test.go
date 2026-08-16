@@ -9,14 +9,14 @@ import (
 )
 
 func TestLogValue_BasicFields(t *testing.T) {
-	err := &Error{code: NotFound, message: "job not found"}
+	err := &Error{code: 4004, message: "job not found"}
 	val := err.LogValue()
 
 	group := val.Group()
 	m := slogGroupToMap(group)
 
-	if m["code"].String() != "NOT_FOUND" {
-		t.Errorf("code = %q, want %q", m["code"].String(), "NOT_FOUND")
+	if m["code"].Int64() != 4004 {
+		t.Errorf("code = %v, want %v", m["code"].Int64(), 4004)
 	}
 	if m["message"].String() != "job not found" {
 		t.Errorf("message = %q, want %q", m["message"].String(), "job not found")
@@ -36,7 +36,7 @@ func TestLogValue_BasicFields(t *testing.T) {
 }
 
 func TestLogValue_AllFields(t *testing.T) {
-	err := New(NotFound, "not found").
+	err := New(4004, "not found").
 		WithMeta("job_id", float64(123)).
 		WithDebug("query returned 0 rows")
 
@@ -44,8 +44,8 @@ func TestLogValue_AllFields(t *testing.T) {
 	group := val.Group()
 	m := slogGroupToMap(group)
 
-	if m["code"].String() != "NOT_FOUND" {
-		t.Errorf("code = %q, want %q", m["code"].String(), "NOT_FOUND")
+	if m["code"].Int64() != 4004 {
+		t.Errorf("code = %v, want %v", m["code"].Int64(), 4004)
 	}
 	if m["message"].String() != "not found" {
 		t.Errorf("message = %q, want %q", m["message"].String(), "not found")
@@ -63,7 +63,7 @@ func TestLogValue_AllFields(t *testing.T) {
 
 func TestLogValue_WithCause(t *testing.T) {
 	cause := errors.New("connection refused")
-	err := Wrap(Internal, "upload failed", cause)
+	err := Wrap(5001, "upload failed", cause)
 
 	val := err.LogValue()
 	group := val.Group()
@@ -75,8 +75,8 @@ func TestLogValue_WithCause(t *testing.T) {
 }
 
 func TestLogValue_WithNestedCause(t *testing.T) {
-	inner := New(NotFound, "inner")
-	outer := Wrap(Internal, "outer", inner)
+	inner := New(4004, "inner")
+	outer := Wrap(5001, "outer", inner)
 
 	val := outer.LogValue()
 	group := val.Group()
@@ -90,8 +90,8 @@ func TestLogValue_WithNestedCause(t *testing.T) {
 	innerGroup := causeVal.Group()
 	innerMap := slogGroupToMap(innerGroup)
 
-	if innerMap["code"].String() != "NOT_FOUND" {
-		t.Errorf("inner code = %q, want %q", innerMap["code"].String(), "NOT_FOUND")
+	if innerMap["code"].Int64() != 4004 {
+		t.Errorf("inner code = %v, want %v", innerMap["code"].Int64(), 4004)
 	}
 	if innerMap["message"].String() != "inner" {
 		t.Errorf("inner message = %q, want %q", innerMap["message"].String(), "inner")
@@ -99,7 +99,7 @@ func TestLogValue_WithNestedCause(t *testing.T) {
 }
 
 func TestLogValue_EmptyOptionalFields(t *testing.T) {
-	err := &Error{code: NotFound, message: "x"}
+	err := &Error{code: 4004, message: "x"}
 	val := err.LogValue()
 
 	group := val.Group()
@@ -111,7 +111,7 @@ func TestLogValue_EmptyOptionalFields(t *testing.T) {
 }
 
 func TestSlogAttr_WithError(t *testing.T) {
-	err := New(NotFound, "job not found").
+	err := New(4004, "job not found").
 		WithMeta("job_id", float64(123)).
 		WithDebug("query returned 0 rows")
 
@@ -128,8 +128,8 @@ func TestSlogAttr_WithError(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected nested group under 'err', got: %v", logEntry["err"])
 	}
-	if errGroup["code"] != "NOT_FOUND" {
-		t.Errorf("err.code = %v, want NOT_FOUND", errGroup["code"])
+	if errGroup["code"] != float64(4004) {
+		t.Errorf("err.code = %v, want %v", errGroup["code"], 4004)
 	}
 	if errGroup["message"] != "job not found" {
 		t.Errorf("err.message = %v, want 'job not found'", errGroup["message"])

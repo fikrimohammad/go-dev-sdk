@@ -7,7 +7,7 @@ import (
 
 // Error is the core error type carrying code, message, metadata, and stack trace.
 type Error struct {
-	code    Code
+	code    int
 	message string
 	cause   error
 	stack   []uintptr
@@ -15,7 +15,7 @@ type Error struct {
 }
 
 // Code returns the error code.
-func (e *Error) Code() Code { return e.code }
+func (e *Error) Code() int { return e.code }
 
 // Message returns the error message.
 func (e *Error) Message() string { return e.message }

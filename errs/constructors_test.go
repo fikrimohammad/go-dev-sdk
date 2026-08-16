@@ -6,10 +6,10 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	err := New(NotFound, "job not found")
+	err := New(4004, "job not found")
 
-	if err.Code() != NotFound {
-		t.Errorf("Code() = %v, want %v", err.Code(), NotFound)
+	if err.Code() != 4004 {
+		t.Errorf("Code() = %v, want %v", err.Code(), 4004)
 	}
 	if err.Message() != "job not found" {
 		t.Errorf("Message() = %q, want %q", err.Message(), "job not found")
@@ -24,10 +24,10 @@ func TestNew(t *testing.T) {
 
 func TestWrap(t *testing.T) {
 	cause := errors.New("connection refused")
-	err := Wrap(Internal, "upload failed", cause)
+	err := Wrap(5001, "upload failed", cause)
 
-	if err.Code() != Internal {
-		t.Errorf("Code() = %v, want %v", err.Code(), Internal)
+	if err.Code() != 5001 {
+		t.Errorf("Code() = %v, want %v", err.Code(), 5001)
 	}
 	if err.Message() != "upload failed" {
 		t.Errorf("Message() = %q, want %q", err.Message(), "upload failed")
@@ -47,7 +47,7 @@ func TestAsError_Nil(t *testing.T) {
 }
 
 func TestAsError_WithError(t *testing.T) {
-	original := New(NotFound, "not found")
+	original := New(4004, "not found")
 
 	got := AsError(original)
 	if got != original {
@@ -59,8 +59,8 @@ func TestAsError_PlainError(t *testing.T) {
 	plain := errors.New("some error")
 	got := AsError(plain)
 
-	if got.Code() != Internal {
-		t.Errorf("Code() = %v, want %v", got.Code(), Internal)
+	if got.Code() != 0 {
+		t.Errorf("Code() = %v, want %v", got.Code(), 0)
 	}
 	if got.Message() != "some error" {
 		t.Errorf("Message() = %q, want %q", got.Message(), "some error")

@@ -9,7 +9,7 @@ import (
 // Fields: code, message, debug (if set), meta (if set), cause (if set), stack (if set).
 func (e *Error) LogValue() slog.Value {
 	attrs := []slog.Attr{
-		slog.String("code", e.code.String()),
+		slog.Int("code", e.code),
 		slog.String("message", e.message),
 	}
 
