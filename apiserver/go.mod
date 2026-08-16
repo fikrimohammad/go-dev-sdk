@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/cloudwego/hertz v0.10.6
 	github.com/fikrimohammad/go-dev-sdk/appinfo v1.0.0
-	github.com/fikrimohammad/go-dev-sdk/errs v1.0.0
+	github.com/fikrimohammad/go-dev-sdk/errs/v2 v2.0.0
 	github.com/fikrimohammad/go-dev-sdk/observability v1.0.0
 	github.com/smartystreets/goconvey v1.8.1
 	go.opentelemetry.io/otel v1.45.0
@@ -54,6 +54,6 @@ require (
 
 replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
 
-replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
+replace github.com/fikrimohammad/go-dev-sdk/errs/v2 => ../errs
 
 replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability

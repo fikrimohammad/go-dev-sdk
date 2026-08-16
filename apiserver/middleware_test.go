@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs"
+	"github.com/fikrimohammad/go-dev-sdk/errs/v2"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -498,7 +498,7 @@ func TestLogger_HandlerErrorLogged(t *testing.T) {
 		[]app.HandlerFunc{Logger()},
 		map[string]app.HandlerFunc{
 			"GET /err": func(ctx context.Context, c *app.RequestContext) {
-				err := errs.New(errs.InvalidArgument, "bad request")
+				err := errs.New(1001, "bad request")
 				_ = c.Error(err)
 				c.JSON(400, map[string]string{"error": "bad"})
 			},
@@ -515,7 +515,7 @@ func TestLogger_HandlerErrorLogged(t *testing.T) {
 	if !strings.Contains(out, "bad request") {
 		t.Errorf("expected error message 'bad request' in log, got: %s", out)
 	}
-	if !strings.Contains(out, "INVALID_ARGUMENT") && !strings.Contains(out, "InvalidArgument") {
+	if !strings.Contains(out, "1001") {
 		t.Errorf("expected error code in log, got: %s", out)
 	}
 }
@@ -528,7 +528,7 @@ func TestLogger_HandlerErrorWithCauseLogged(t *testing.T) {
 		map[string]app.HandlerFunc{
 			"GET /err": func(ctx context.Context, c *app.RequestContext) {
 				rootErr := errors.New("connection refused")
-				err := errs.Wrap(errs.DBInternal, "database query failed", rootErr)
+				err := errs.Wrap(5002, "database query failed", rootErr)
 				_ = c.Error(err)
 				c.JSON(500, map[string]string{"error": "fail"})
 			},
@@ -617,8 +617,8 @@ func TestLogger_MultipleErrorsLogged(t *testing.T) {
 		[]app.HandlerFunc{Logger()},
 		map[string]app.HandlerFunc{
 			"GET /err": func(ctx context.Context, c *app.RequestContext) {
-				_ = c.Error(errs.New(errs.InvalidArgument, "first error"))
-				_ = c.Error(errs.New(errs.NotFound, "second error"))
+				_ = c.Error(errs.New(1001, "first error"))
+				_ = c.Error(errs.New(4004, "second error"))
 				c.JSON(400, map[string]string{"error": "bad"})
 			},
 		},
@@ -748,7 +748,7 @@ func TestTracer_ErrorSetsStatus(t *testing.T) {
 		[]app.HandlerFunc{Tracer(tc)},
 		map[string]app.HandlerFunc{
 			"GET /fail": func(ctx context.Context, c *app.RequestContext) {
-				err := errs.New(errs.Internal, "something broke")
+				err := errs.New(5001, "something broke")
 				_ = c.Error(err)
 				c.JSON(500, map[string]string{"error": "fail"})
 			},
@@ -941,7 +941,7 @@ func TestMiddlewareChain_FullStackError(t *testing.T) {
 		},
 		map[string]app.HandlerFunc{
 			"GET /err": func(ctx context.Context, c *app.RequestContext) {
-				err := errs.New(errs.InvalidArgument, "bad request")
+				err := errs.New(1001, "bad request")
 				_ = c.Error(err)
 				c.JSON(400, map[string]string{"error": "bad"})
 			},

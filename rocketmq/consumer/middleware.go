@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/errs"
+	"github.com/fikrimohammad/go-dev-sdk/errs/v2"
 	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"

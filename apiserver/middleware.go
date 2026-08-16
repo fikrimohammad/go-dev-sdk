@@ -13,7 +13,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/fikrimohammad/go-dev-sdk/errs"
+	"github.com/fikrimohammad/go-dev-sdk/errs/v2"
 	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
@@ -178,8 +178,9 @@ func Tracer(tc tracer.Client) app.HandlerFunc {
 
 		if len(c.Errors) > 0 {
 			err := c.Errors[0].Err
-			errorCode := errs.CodeFromError(err)
-			span.SetAttributes(attribute.String("error.type", errorCode.String()))
+			if e := errs.AsError(err); e != nil {
+				span.SetAttributes(attribute.String("error.type", strconv.Itoa(e.Code())))
+			}
 			span.SetStatus(otelcodes.Error, err.Error())
 		}
 	}
@@ -200,8 +201,10 @@ func Metrics(mc metrics.Client) app.HandlerFunc {
 			attrs[k] = v
 		}
 
-		if len(c.Errors) > 0 && errs.CodeFromError(c.Errors[0].Err) != errs.OK {
-			attrs["error.type"] = errs.CodeFromError(c.Errors[0].Err).String()
+		if len(c.Errors) > 0 {
+			if e := errs.AsError(c.Errors[0].Err); e != nil && e.Code() != 0 {
+				attrs["error.type"] = strconv.Itoa(e.Code())
+			}
 		}
 
 		_ = mc.Count(ctx, "http.server.request.count", 1, attrs)
