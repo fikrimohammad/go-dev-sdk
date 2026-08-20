@@ -35,13 +35,48 @@ go get github.com/fikrimohammad/go-dev-sdk/redis
 
 ### 1. Configure and connect
 
+The package supports **Standalone**, **Sentinel** (High Availability), and **Cluster** (Distributed Sharding) topologies out of the box with the exact same [`Client`](#api-reference) interface.
+
+#### Option A: Standalone Mode (Default)
 ```go
 cli, err := redis.New(redis.Config{
     Host: "localhost",
     Port: 6379,
     DB:   0,
-    // Optional TLS
-    TLSEnabled: false,
+})
+if err != nil { /* handle */ }
+defer cli.Close()
+```
+
+#### Option B: Redis Sentinel Mode (Consul Service Discovery & High Availability)
+```go
+cli, err := redis.New(redis.Config{
+    Mode:       redis.ModeSentinel,
+    MasterName: "mymaster",
+    Addrs: []string{
+        "redis-sentinel.service.consul:26379",
+    },
+    Password:         "redis-password",
+    SentinelPassword: "sentinel-auth-password",
+
+    // Optional: Route reads to 5 slaves and writes to Master
+    ReadOnly:      true,
+    RouteRandomly: true,
+})
+if err != nil { /* handle */ }
+defer cli.Close()
+```
+
+#### Option C: Redis Cluster Mode (Sharding & High Throughput)
+```go
+cli, err := redis.New(redis.Config{
+    Mode: redis.ModeCluster,
+    Addrs: []string{
+        "redis-cluster.service.consul:6379",
+    },
+    Password: "redis-password",
+    // Redis Cluster requires DB 0
+    DB: 0,
 })
 if err != nil { /* handle */ }
 defer cli.Close()
@@ -172,13 +207,21 @@ simple-error prefix like `ERR`/`WRONGTYPE`, empty on success), and
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `Host` | — | Required |
-| `Port` | `6379` | |
-| `Username` / `Password` | — | Optional (ACL / auth) |
-| `DB` | `0` | Must not be negative |
+| `Mode` | `standalone` | Topology: `standalone`, `sentinel`, or `cluster` |
+| `Host` | — | Required for standalone (fallback if `Addrs` empty) |
+| `Port` | `6379` | Standard Redis port |
+| `Addrs` | — | List of endpoints (Sentinel quorum addresses or Cluster seed nodes) |
+| `MasterName` | — | Master group name (required for `sentinel` mode) |
+| `SentinelUsername` / `SentinelPassword` | — | Optional credentials for Sentinel authentication |
+| `MaxRedirects` | `3` | Max cluster `-MOVED`/`-ASK` redirects (cluster mode only) |
+| `ReadOnly` | `false` | Route read commands to replicas (`sentinel` & `cluster`) |
+| `RouteByLatency` | `false` | Route read commands to closest replica |
+| `RouteRandomly` | `false` | Distribute read commands randomly among replicas |
+| `Username` / `Password` | — | Optional (ACL / auth for Redis nodes) |
+| `DB` | `0` | Must be `0` for cluster mode; non-negative for standalone/sentinel |
 | `TLSEnabled` | `false` | Enable TLS encryption |
 | `TLSInsecureSkipVerify` | `false` | Skip TLS certificate verification |
-| `TLSServerName` | `Host` | Server name for TLS SNI |
+| `TLSServerName` | `Host` / `Addrs[0]` | Server name for TLS SNI |
 | `TLSCACert` | — | Optional PEM certificate data or file path |
 | `TLSCert` / `TLSKey` | — | Optional client certificate and key for mTLS |
 | `DialTimeout` / `ReadTimeout` / `WriteTimeout` | go-redis defaults | |
@@ -190,8 +233,9 @@ simple-error prefix like `ERR`/`WRONGTYPE`, empty on success), and
 
 | Symbol | Description |
 | --- | --- |
-| `Config` | Connection, TLS, and pool settings; `SetDefaults()`, `Validate()` |
-| `New(cfg, opts...)` | Build + ping an instrumented `Client` |
+| `Mode` | Connection mode: `ModeStandalone`, `ModeSentinel`, `ModeCluster` |
+| `Config` | Connection, topology, TLS, and pool settings; `SetDefaults()`, `Validate()` |
+| `New(cfg, opts...)` | Build + ping an instrumented `Client` (standalone, sentinel, or cluster) |
 | `NewWithContext(ctx, cfg, opts...)` | Build + ping an instrumented `Client` with parent context |
 | `WithMetrics` / `WithTracer` / `WithPoolMetrics` | Telemetry injection and pool monitoring options |
 | `ReadCommands` | `Ping`, `Exists`, `TTL`, `Type`, `Scan`, `Get`, `MGet`, Hashes (`HGet`, `HGetAll`, `HMGet`, `HKeys`, `HVals`, `HLen`, `HExists`), Lists (`LLen`, `LRange`, `LIndex`), Sets (`SMembers`, `SInter`, `SUnion`, `SDiff`, `SIsMember`, `SMIsMember`, `SCard`, `SRandMember`, `SRandMemberN`), Sorted Sets (`ZScore`, `ZCard`, `ZCount`, `ZRange*`, `ZRevRange*`, `ZRank`, `ZRevRank`) |

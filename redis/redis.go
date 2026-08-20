@@ -100,11 +100,8 @@ func WithPoolMetrics(interval time.Duration) Option {
 }
 
 // New applies cfg.SetDefaults and cfg.Validate, opens a go-redis client from
-// the resulting config, attaches the instrumentation hook, pings it, and
-// returns an instrumented Client. server.address and server.port are derived
-// from the host/port settings; db.namespace is the database index. Metrics and
-// tracing use the package-level defaults unless overridden via
-// WithMetrics/WithTracer.
+// the resulting config (standalone, sentinel, or cluster), attaches the instrumentation
+// hook, pings it, and returns an instrumented Client.
 func New(cfg Config, opts ...Option) (Client, error) {
 	return NewWithContext(context.Background(), cfg, opts...)
 }
@@ -127,25 +124,24 @@ func NewWithContext(ctx context.Context, cfg Config, opts ...Option) (Client, er
 		return nil, fmt.Errorf("redis: tls: %w", err)
 	}
 
-	cli := redis.NewClient(&redis.Options{
-		Addr:            net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
-		Username:        cfg.Username,
-		Password:        cfg.Password,
-		DB:              cfg.DB,
-		TLSConfig:       tlsCfg,
-		DialTimeout:     cfg.DialTimeout,
-		ReadTimeout:     cfg.ReadTimeout,
-		WriteTimeout:    cfg.WriteTimeout,
-		PoolSize:        cfg.PoolSize,
-		MinIdleConns:    cfg.MinIdleConns,
-		MaxIdleConns:    cfg.MaxIdleConns,
-		ConnMaxIdleTime: cfg.ConnMaxIdleTime,
-		ConnMaxLifetime: cfg.ConnMaxLifetime,
-	})
+	cli := createUnderlyingClient(cfg, tlsCfg)
+
+	serverAddr := cfg.Host
+	serverPort := cfg.Port
+	if serverAddr == "" && len(cfg.Addrs) > 0 {
+		serverAddr = cfg.Addrs[0]
+		if host, portStr, err := net.SplitHostPort(cfg.Addrs[0]); err == nil {
+			serverAddr = host
+			if p, err := strconv.Atoi(portStr); err == nil {
+				serverPort = p
+			}
+		}
+	}
+
 	cli.AddHook(&instrumentHook{
 		meta: meta{
-			serverAddr: cfg.Host,
-			serverPort: cfg.Port,
+			serverAddr: serverAddr,
+			serverPort: serverPort,
 			namespace:  strconv.Itoa(cfg.DB),
 			metrics:    o.metrics,
 			tracer:     o.tracer,
@@ -164,12 +160,12 @@ func NewWithContext(ctx context.Context, cfg Config, opts ...Option) (Client, er
 		mClient := o.metrics
 		stopCh = make(chan struct{})
 		baseAttrs := map[string]any{
-			"server.address": cfg.Host,
-			"server.port":    cfg.Port,
+			"server.address": serverAddr,
+			"server.port":    serverPort,
 			"db.system.name": "redis",
 			"db.namespace":   strconv.Itoa(cfg.DB),
 		}
-		go func(c *redis.Client, m metrics.Client, interval time.Duration, stop <-chan struct{}, attrs map[string]any) {
+		go func(c underlyingClient, m metrics.Client, interval time.Duration, stop <-chan struct{}, attrs map[string]any) {
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			var prevHits, prevMisses, prevTimeouts, prevStale uint32
@@ -179,6 +175,9 @@ func NewWithContext(ctx context.Context, cfg Config, opts ...Option) (Client, er
 					return
 				case <-ticker.C:
 					stats := c.PoolStats()
+					if stats == nil {
+						continue
+					}
 					mCtx := context.Background()
 
 					hitsDelta := int64(stats.Hits - prevHits)
@@ -230,9 +229,84 @@ func NewWithContext(ctx context.Context, cfg Config, opts ...Option) (Client, er
 	}
 
 	return &client{
-		Client:          cli,
-		stopPoolMetrics: stopCh,
+		underlyingClient: cli,
+		stopPoolMetrics:  stopCh,
 	}, nil
+}
+
+// createUnderlyingClient instantiates the concrete go-redis client for the configured topology.
+func createUnderlyingClient(cfg Config, tlsCfg *tls.Config) underlyingClient {
+	switch cfg.Mode {
+	case ModeSentinel:
+		opts := &redis.FailoverOptions{
+			MasterName:       cfg.MasterName,
+			SentinelAddrs:    cfg.Addrs,
+			SentinelUsername: cfg.SentinelUsername,
+			SentinelPassword: cfg.SentinelPassword,
+			Username:         cfg.Username,
+			Password:         cfg.Password,
+			DB:               cfg.DB,
+			TLSConfig:        tlsCfg,
+			DialTimeout:      cfg.DialTimeout,
+			ReadTimeout:      cfg.ReadTimeout,
+			WriteTimeout:     cfg.WriteTimeout,
+			PoolSize:         cfg.PoolSize,
+			MinIdleConns:     cfg.MinIdleConns,
+			MaxIdleConns:     cfg.MaxIdleConns,
+			ConnMaxIdleTime:  cfg.ConnMaxIdleTime,
+			ConnMaxLifetime:  cfg.ConnMaxLifetime,
+			ReplicaOnly:      cfg.ReadOnly,
+			RouteByLatency:   cfg.RouteByLatency,
+			RouteRandomly:    cfg.RouteRandomly,
+		}
+		if cfg.ReadOnly || cfg.RouteByLatency || cfg.RouteRandomly {
+			return redis.NewFailoverClusterClient(opts)
+		}
+		return redis.NewFailoverClient(opts)
+
+	case ModeCluster:
+		return redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs:           cfg.Addrs,
+			MaxRedirects:    cfg.MaxRedirects,
+			ReadOnly:        cfg.ReadOnly,
+			RouteByLatency:  cfg.RouteByLatency,
+			RouteRandomly:   cfg.RouteRandomly,
+			Username:        cfg.Username,
+			Password:        cfg.Password,
+			TLSConfig:       tlsCfg,
+			DialTimeout:     cfg.DialTimeout,
+			ReadTimeout:     cfg.ReadTimeout,
+			WriteTimeout:    cfg.WriteTimeout,
+			PoolSize:        cfg.PoolSize,
+			MinIdleConns:    cfg.MinIdleConns,
+			MaxIdleConns:    cfg.MaxIdleConns,
+			ConnMaxIdleTime: cfg.ConnMaxIdleTime,
+			ConnMaxLifetime: cfg.ConnMaxLifetime,
+		})
+
+	default: // ModeStandalone
+		addr := ""
+		if len(cfg.Addrs) > 0 {
+			addr = cfg.Addrs[0]
+		} else if cfg.Host != "" {
+			addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+		}
+		return redis.NewClient(&redis.Options{
+			Addr:            addr,
+			Username:        cfg.Username,
+			Password:        cfg.Password,
+			DB:              cfg.DB,
+			TLSConfig:       tlsCfg,
+			DialTimeout:     cfg.DialTimeout,
+			ReadTimeout:     cfg.ReadTimeout,
+			WriteTimeout:    cfg.WriteTimeout,
+			PoolSize:        cfg.PoolSize,
+			MinIdleConns:    cfg.MinIdleConns,
+			MaxIdleConns:    cfg.MaxIdleConns,
+			ConnMaxIdleTime: cfg.ConnMaxIdleTime,
+			ConnMaxLifetime: cfg.ConnMaxLifetime,
+		})
+	}
 }
 
 // buildTLSConfig converts the TLS settings in Config into a *tls.Config.
@@ -241,13 +315,22 @@ func buildTLSConfig(cfg Config) (*tls.Config, error) {
 		return nil, nil
 	}
 
+	serverName := cfg.TLSServerName
+	if serverName == "" {
+		serverName = cfg.Host
+	}
+	if serverName == "" && len(cfg.Addrs) > 0 {
+		if host, _, err := net.SplitHostPort(cfg.Addrs[0]); err == nil {
+			serverName = host
+		} else {
+			serverName = cfg.Addrs[0]
+		}
+	}
+
 	tlsCfg := &tls.Config{
 		InsecureSkipVerify: cfg.TLSInsecureSkipVerify,
-		ServerName:         cfg.TLSServerName,
+		ServerName:         serverName,
 		MinVersion:         tls.VersionTLS12,
-	}
-	if tlsCfg.ServerName == "" {
-		tlsCfg.ServerName = cfg.Host
 	}
 
 	if cfg.TLSCACert != "" {
@@ -300,23 +383,37 @@ func buildTLSConfig(cfg Config) (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
-// client implements Client by embedding the hooked go-redis client, so the
+// underlyingClient abstracts *redis.Client and *redis.ClusterClient so that
+// standalone, sentinel, and cluster topologies share the same client implementation.
+type underlyingClient interface {
+	redis.Cmdable
+	AddHook(redis.Hook)
+	Pipeline() redis.Pipeliner
+	TxPipeline() redis.Pipeliner
+	PoolStats() *redis.PoolStats
+	Subscribe(ctx context.Context, channels ...string) *redis.PubSub
+	Watch(ctx context.Context, fn func(tx *redis.Tx) error, keys ...string) error
+	Ping(ctx context.Context) *redis.StatusCmd
+	Close() error
+}
+
+// client implements Client by embedding underlyingClient, so the
 // exported methods are promoted and need no re-wrapping.
 type client struct {
-	*redis.Client
+	underlyingClient
 	stopPoolMetrics chan struct{}
 	stopOnce        sync.Once
 }
 
 // Pipeline returns a pipeliner that batches commands for a single round trip.
 func (c *client) Pipeline() Pipeline {
-	return &pipeline{Pipeliner: c.Client.Pipeline()}
+	return &pipeline{Pipeliner: c.underlyingClient.Pipeline()}
 }
 
 // TxPipeline returns a pipeliner that executes commands inside a MULTI...EXEC
 // transaction block in a single round trip.
 func (c *client) TxPipeline() Pipeline {
-	return &pipeline{Pipeliner: c.Client.TxPipeline()}
+	return &pipeline{Pipeliner: c.underlyingClient.TxPipeline()}
 }
 
 // Pipelined executes fn inside a pipeline and flushes it on completion.
@@ -344,7 +441,7 @@ func (c *client) Close() error {
 			close(c.stopPoolMetrics)
 		})
 	}
-	return c.Client.Close()
+	return c.underlyingClient.Close()
 }
 
 var _ Client = (*client)(nil)

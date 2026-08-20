@@ -602,7 +602,7 @@ func TestBuildTLSConfig(t *testing.T) {
 func TestClient_TxPipeline_And_Pipelined(t *testing.T) {
 	raw := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	t.Cleanup(func() { _ = raw.Close() })
-	cli := &client{Client: raw}
+	cli := &client{underlyingClient: raw}
 
 	// TxPipeline
 	txPipe := cli.TxPipeline()
@@ -671,12 +671,10 @@ func TestClient_Close_WithPoolMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = raw.Close() })
 	stopCh := make(chan struct{})
 	c := &client{
-		Client:          raw,
-		stopPoolMetrics: stopCh,
+		underlyingClient: raw,
+		stopPoolMetrics:  stopCh,
 	}
-	if err := c.Close(); err != nil {
-		// Connection close on dummy client is fine
-	}
+	_ = c.Close()
 	// Calling close a second time should not panic
 	_ = c.Close()
 
@@ -691,7 +689,7 @@ func TestClient_Close_WithPoolMetrics(t *testing.T) {
 func TestClient_Watch_And_Subscribe(t *testing.T) {
 	raw := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	t.Cleanup(func() { _ = raw.Close() })
-	cli := &client{Client: raw}
+	cli := &client{underlyingClient: raw}
 
 	// Subscribe returns *PubSub
 	ps := cli.Subscribe(context.Background(), "test-channel")
@@ -706,6 +704,89 @@ func TestClient_Watch_And_Subscribe(t *testing.T) {
 	}, "watch-key")
 	if err == nil {
 		t.Fatal("expected connection error from Watch")
+	}
+}
+
+func TestCreateUnderlyingClient_Topologies(t *testing.T) {
+	// 1. Standalone
+	standaloneCfg := Config{
+		Host: "127.0.0.1",
+		Port: 6379,
+	}.SetDefaults()
+	standaloneCli := createUnderlyingClient(standaloneCfg, nil)
+	if _, ok := standaloneCli.(*redis.Client); !ok {
+		t.Fatalf("expected *redis.Client for standalone, got %T", standaloneCli)
+	}
+	_ = standaloneCli.Close()
+
+	// 2. Sentinel Standard
+	sentinelCfg := Config{
+		Mode:       ModeSentinel,
+		MasterName: "mymaster",
+		Addrs:      []string{"127.0.0.1:26379"},
+	}.SetDefaults()
+	sentinelCli := createUnderlyingClient(sentinelCfg, nil)
+	if _, ok := sentinelCli.(*redis.Client); !ok {
+		t.Fatalf("expected *redis.Client for failover, got %T", sentinelCli)
+	}
+	_ = sentinelCli.Close()
+
+	// 3. Sentinel Read/Write Split (FailoverCluster)
+	sentinelClusterCfg := Config{
+		Mode:          ModeSentinel,
+		MasterName:    "mymaster",
+		Addrs:         []string{"127.0.0.1:26379"},
+		RouteRandomly: true,
+	}.SetDefaults()
+	sentinelClusterCli := createUnderlyingClient(sentinelClusterCfg, nil)
+	if _, ok := sentinelClusterCli.(*redis.ClusterClient); !ok {
+		t.Fatalf("expected *redis.ClusterClient for failover cluster, got %T", sentinelClusterCli)
+	}
+	_ = sentinelClusterCli.Close()
+
+	// 4. Redis Cluster
+	clusterCfg := Config{
+		Mode:  ModeCluster,
+		Addrs: []string{"127.0.0.1:7000", "127.0.0.1:7001"},
+	}.SetDefaults()
+	clusterCli := createUnderlyingClient(clusterCfg, nil)
+	if _, ok := clusterCli.(*redis.ClusterClient); !ok {
+		t.Fatalf("expected *redis.ClusterClient for cluster, got %T", clusterCli)
+	}
+	_ = clusterCli.Close()
+}
+
+func TestClusterClient_TxPipeline_And_Pipelined(t *testing.T) {
+	raw := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{"127.0.0.1:7000"},
+	})
+	t.Cleanup(func() { _ = raw.Close() })
+	cli := &client{underlyingClient: raw}
+
+	// TxPipeline
+	txPipe := cli.TxPipeline()
+	txPipe.Get(context.Background(), "k")
+	if n := txPipe.(*pipeline).Len(); n != 1 {
+		t.Fatalf("txPipe len = %d, want 1", n)
+	}
+
+	// Pipelined with error closure
+	errBoom := errors.New("boom")
+	err := cli.Pipelined(context.Background(), func(p Pipeline) error {
+		p.Get(context.Background(), "k")
+		return errBoom
+	})
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Pipelined err = %v, want %v", err, errBoom)
+	}
+
+	// TxPipelined with error closure
+	err = cli.TxPipelined(context.Background(), func(p Pipeline) error {
+		p.Get(context.Background(), "k")
+		return errBoom
+	})
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("TxPipelined err = %v, want %v", err, errBoom)
 	}
 }
 
