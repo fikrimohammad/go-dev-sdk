@@ -7,10 +7,10 @@
 // WithMetrics / WithTracer and fall back to the package-level defaults.
 //
 // The exported surface is minimal and consistent with the db package: the
-// ReadCommands and WriteCommands interfaces group the read and write commands,
+// ReadCommands, WriteCommands, and ScriptCommands interfaces group the commands,
 // the Client interface describes the connection contract (embedding
-// ReadCommands and WriteCommands plus Close), and the Pipeline interface
-// batches ReadCommands and WriteCommands commands into a single round trip
+// ReadCommands, WriteCommands, ScriptCommands plus Close), and the Pipeline interface
+// batches those commands into a single round trip
 // flushed by Exec. All are backed by unexported implementations over
 // *redis.Client and *redis.Pipeliner.
 //
@@ -34,11 +34,15 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -73,8 +77,9 @@ type meta struct {
 type Option func(*options)
 
 type options struct {
-	metrics metrics.Client
-	tracer  tracer.Client
+	metrics             metrics.Client
+	tracer              tracer.Client
+	poolMetricsInterval time.Duration
 }
 
 // WithMetrics injects a metrics client for the instrumented commands. A nil
@@ -89,6 +94,11 @@ func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
 
+// WithPoolMetrics enables background collection of connection pool metrics (hits, misses, timeouts, conns) at the given interval.
+func WithPoolMetrics(interval time.Duration) Option {
+	return func(o *options) { o.poolMetricsInterval = interval }
+}
+
 // New applies cfg.SetDefaults and cfg.Validate, opens a go-redis client from
 // the resulting config, attaches the instrumentation hook, pings it, and
 // returns an instrumented Client. server.address and server.port are derived
@@ -96,6 +106,12 @@ func WithTracer(t tracer.Client) Option {
 // tracing use the package-level defaults unless overridden via
 // WithMetrics/WithTracer.
 func New(cfg Config, opts ...Option) (Client, error) {
+	return NewWithContext(context.Background(), cfg, opts...)
+}
+
+// NewWithContext is like New, but accepts a context for the initial
+// connection verification ping (bounded by cfg.ConnectTimeout).
+func NewWithContext(ctx context.Context, cfg Config, opts ...Option) (Client, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -106,11 +122,17 @@ func New(cfg Config, opts ...Option) (Client, error) {
 		return nil, err
 	}
 
+	tlsCfg, err := buildTLSConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("redis: tls: %w", err)
+	}
+
 	cli := redis.NewClient(&redis.Options{
 		Addr:            net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
 		Username:        cfg.Username,
 		Password:        cfg.Password,
 		DB:              cfg.DB,
+		TLSConfig:       tlsCfg,
 		DialTimeout:     cfg.DialTimeout,
 		ReadTimeout:     cfg.ReadTimeout,
 		WriteTimeout:    cfg.WriteTimeout,
@@ -130,64 +152,213 @@ func New(cfg Config, opts ...Option) (Client, error) {
 		},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
+	pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
 	defer cancel()
-	if err := cli.Ping(ctx).Err(); err != nil {
+	if err := cli.Ping(pingCtx).Err(); err != nil {
 		_ = cli.Close()
 		return nil, fmt.Errorf("redis: ping: %w", err)
 	}
 
-	return &client{Client: cli}, nil
+	var stopCh chan struct{}
+	if o.poolMetricsInterval > 0 {
+		mClient := o.metrics
+		stopCh = make(chan struct{})
+		baseAttrs := map[string]any{
+			"server.address": cfg.Host,
+			"server.port":    cfg.Port,
+			"db.system.name": "redis",
+			"db.namespace":   strconv.Itoa(cfg.DB),
+		}
+		go func(c *redis.Client, m metrics.Client, interval time.Duration, stop <-chan struct{}, attrs map[string]any) {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			var prevHits, prevMisses, prevTimeouts, prevStale uint32
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					stats := c.PoolStats()
+					mCtx := context.Background()
+
+					hitsDelta := int64(stats.Hits - prevHits)
+					prevHits = stats.Hits
+
+					missesDelta := int64(stats.Misses - prevMisses)
+					prevMisses = stats.Misses
+
+					timeoutsDelta := int64(stats.Timeouts - prevTimeouts)
+					prevTimeouts = stats.Timeouts
+
+					staleDelta := int64(stats.StaleConns - prevStale)
+					prevStale = stats.StaleConns
+
+					if m != nil {
+						if hitsDelta > 0 {
+							_ = m.Count(mCtx, "db.client.connections.hits", hitsDelta, attrs)
+						}
+						if missesDelta > 0 {
+							_ = m.Count(mCtx, "db.client.connections.misses", missesDelta, attrs)
+						}
+						if timeoutsDelta > 0 {
+							_ = m.Count(mCtx, "db.client.connections.timeouts", timeoutsDelta, attrs)
+						}
+						if staleDelta > 0 {
+							_ = m.Count(mCtx, "db.client.connections.stale", staleDelta, attrs)
+						}
+						_ = m.Histogram(mCtx, "db.client.connections.total", float64(stats.TotalConns), attrs)
+						_ = m.Histogram(mCtx, "db.client.connections.idle", float64(stats.IdleConns), attrs)
+					} else {
+						if hitsDelta > 0 {
+							_ = metrics.Count(mCtx, "db.client.connections.hits", hitsDelta, attrs)
+						}
+						if missesDelta > 0 {
+							_ = metrics.Count(mCtx, "db.client.connections.misses", missesDelta, attrs)
+						}
+						if timeoutsDelta > 0 {
+							_ = metrics.Count(mCtx, "db.client.connections.timeouts", timeoutsDelta, attrs)
+						}
+						if staleDelta > 0 {
+							_ = metrics.Count(mCtx, "db.client.connections.stale", staleDelta, attrs)
+						}
+						_ = metrics.Histogram(mCtx, "db.client.connections.total", float64(stats.TotalConns), attrs)
+						_ = metrics.Histogram(mCtx, "db.client.connections.idle", float64(stats.IdleConns), attrs)
+					}
+				}
+			}
+		}(cli, mClient, o.poolMetricsInterval, stopCh, baseAttrs)
+	}
+
+	return &client{
+		Client:          cli,
+		stopPoolMetrics: stopCh,
+	}, nil
+}
+
+// buildTLSConfig converts the TLS settings in Config into a *tls.Config.
+func buildTLSConfig(cfg Config) (*tls.Config, error) {
+	if !cfg.TLSEnabled {
+		return nil, nil
+	}
+
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: cfg.TLSInsecureSkipVerify,
+		ServerName:         cfg.TLSServerName,
+		MinVersion:         tls.VersionTLS12,
+	}
+	if tlsCfg.ServerName == "" {
+		tlsCfg.ServerName = cfg.Host
+	}
+
+	if cfg.TLSCACert != "" {
+		caCertPool := x509.NewCertPool()
+		var caData []byte
+		if strings.Contains(cfg.TLSCACert, "-----BEGIN") {
+			caData = []byte(cfg.TLSCACert)
+		} else {
+			var err error
+			caData, err = os.ReadFile(cfg.TLSCACert)
+			if err != nil {
+				return nil, fmt.Errorf("read ca cert: %w", err)
+			}
+		}
+		if !caCertPool.AppendCertsFromPEM(caData) {
+			return nil, errors.New("failed to parse ca cert pem")
+		}
+		tlsCfg.RootCAs = caCertPool
+	}
+
+	if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		var certData, keyData []byte
+		if strings.Contains(cfg.TLSCert, "-----BEGIN") {
+			certData = []byte(cfg.TLSCert)
+		} else {
+			var err error
+			certData, err = os.ReadFile(cfg.TLSCert)
+			if err != nil {
+				return nil, fmt.Errorf("read client cert: %w", err)
+			}
+		}
+
+		if strings.Contains(cfg.TLSKey, "-----BEGIN") {
+			keyData = []byte(cfg.TLSKey)
+		} else {
+			var err error
+			keyData, err = os.ReadFile(cfg.TLSKey)
+			if err != nil {
+				return nil, fmt.Errorf("read client key: %w", err)
+			}
+		}
+
+		cert, err := tls.X509KeyPair(certData, keyData)
+		if err != nil {
+			return nil, fmt.Errorf("parse client key pair: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsCfg, nil
 }
 
 // client implements Client by embedding the hooked go-redis client, so the
 // exported methods are promoted and need no re-wrapping.
 type client struct {
 	*redis.Client
+	stopPoolMetrics chan struct{}
+	stopOnce        sync.Once
 }
 
 // Pipeline returns a pipeliner that batches commands for a single round trip.
 func (c *client) Pipeline() Pipeline {
-	return &pipeline{pipe: c.Client.Pipeline()}
+	return &pipeline{Pipeliner: c.Client.Pipeline()}
+}
+
+// TxPipeline returns a pipeliner that executes commands inside a MULTI...EXEC
+// transaction block in a single round trip.
+func (c *client) TxPipeline() Pipeline {
+	return &pipeline{Pipeliner: c.Client.TxPipeline()}
+}
+
+// Pipelined executes fn inside a pipeline and flushes it on completion.
+func (c *client) Pipelined(ctx context.Context, fn func(Pipeline) error) error {
+	p := c.Pipeline()
+	if err := fn(p); err != nil {
+		return err
+	}
+	return p.Exec(ctx)
+}
+
+// TxPipelined executes fn inside a transaction pipeline and flushes it on completion.
+func (c *client) TxPipelined(ctx context.Context, fn func(Pipeline) error) error {
+	p := c.TxPipeline()
+	if err := fn(p); err != nil {
+		return err
+	}
+	return p.Exec(ctx)
+}
+
+// Close releases the underlying connection pool and stops background pool workers.
+func (c *client) Close() error {
+	if c.stopPoolMetrics != nil {
+		c.stopOnce.Do(func() {
+			close(c.stopPoolMetrics)
+		})
+	}
+	return c.Client.Close()
 }
 
 var _ Client = (*client)(nil)
 
-// pipeline implements Pipeline over a go-redis Pipeliner. Commands queue on
-// the underlying pipeliner and are flushed on Exec, which the instrumentation
-// hook records as a single "PIPELINE" span.
+// pipeline implements Pipeline by embedding redis.Pipeliner.
+// All command methods (ReadCommands, WriteCommands, ScriptCommands)
+// are automatically promoted from the underlying Pipeliner.
 type pipeline struct {
-	pipe redis.Pipeliner
-}
-
-// Get queues a GET command.
-func (p *pipeline) Get(ctx context.Context, key string) *redis.StringCmd {
-	return p.pipe.Get(ctx, key)
-}
-
-// Ping queues a PING command.
-func (p *pipeline) Ping(ctx context.Context) *redis.StatusCmd {
-	return p.pipe.Ping(ctx)
-}
-
-// Set queues a SET command.
-func (p *pipeline) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
-	return p.pipe.Set(ctx, key, value, expiration)
-}
-
-// SetNX queues a SET NX command.
-func (p *pipeline) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd {
-	return p.pipe.SetNX(ctx, key, value, expiration)
-}
-
-// Del queues a DEL command.
-func (p *pipeline) Del(ctx context.Context, keys ...string) *redis.IntCmd {
-	return p.pipe.Del(ctx, keys...)
+	redis.Pipeliner
 }
 
 // Exec sends all the queued commands to redis in a single round trip.
 func (p *pipeline) Exec(ctx context.Context) error {
-	_, err := p.pipe.Exec(ctx)
+	_, err := p.Pipeliner.Exec(ctx)
 	return err
 }
 
@@ -252,7 +423,11 @@ func (m meta) instrument(ctx context.Context, cmd redis.Cmder, fn func(context.C
 		etype = errorMessage(err)
 	}
 
-	span.SetAttributes(tracer.Attrs(m.attrs(op, cmd, code, etype))...)
+	span.SetAttributes(tracer.Attrs(map[string]any{
+		"db.query.text":           queryText(cmd),
+		"db.response.status_code": code,
+		"error.type":              etype,
+	})...)
 	span.End()
 
 	attrs := m.attrs(op, cmd, code, etype)
@@ -278,14 +453,34 @@ func (m meta) instrumentPipeline(ctx context.Context, cmds []redis.Cmder, fn fun
 	)
 	err := fn(ctx)
 
-	code, etype := "", ""
+	// In go-redis, fn(ctx) returns the first error among cmds.
+	// If the first error is redis.Nil, but subsequent commands had real errors,
+	// we inspect cmds to avoid masking real failures.
+	var errToReport error
 	if err != nil && !errors.Is(err, redis.Nil) {
-		span.SetStatus(codes.Error, err.Error())
-		code = redisErrorCode(err)
-		etype = errorMessage(err)
+		errToReport = err
+	} else {
+		for _, cmd := range cmds {
+			if cErr := cmd.Err(); cErr != nil && !errors.Is(cErr, redis.Nil) {
+				errToReport = cErr
+				break
+			}
+		}
 	}
 
-	span.SetAttributes(tracer.Attrs(m.attrsPipeline(op, cmds, code, etype))...)
+	code, etype := "", ""
+	if errToReport != nil {
+		span.SetStatus(codes.Error, errToReport.Error())
+		code = redisErrorCode(errToReport)
+		etype = errorMessage(errToReport)
+	}
+
+	span.SetAttributes(tracer.Attrs(map[string]any{
+		"db.operation.batch.size": len(cmds),
+		"db.query.text":           pipelineText(cmds),
+		"db.response.status_code": code,
+		"error.type":              etype,
+	})...)
 	span.End()
 
 	attrs := m.attrsPipeline(op, cmds, code, etype)
@@ -318,21 +513,31 @@ func (m meta) samplingAttrs(op string) map[string]any {
 
 // attrs builds the OTel attributes for a single command span / metric event.
 func (m meta) attrs(op string, cmd redis.Cmder, code, etype string) map[string]any {
-	a := m.samplingAttrs(op)
-	a["db.query.text"] = queryText(cmd)
-	a["db.response.status_code"] = code
-	a["error.type"] = etype
-	return a
+	return map[string]any{
+		"server.address":          m.serverAddr,
+		"server.port":             m.serverPort,
+		"db.system.name":          "redis",
+		"db.operation.name":       op,
+		"db.namespace":            m.namespace,
+		"db.query.text":           queryText(cmd),
+		"db.response.status_code": code,
+		"error.type":              etype,
+	}
 }
 
 // attrsPipeline builds the OTel attributes for a pipeline span / metric event.
 func (m meta) attrsPipeline(op string, cmds []redis.Cmder, code, etype string) map[string]any {
-	a := m.samplingAttrs(op)
-	a["db.operation.batch.size"] = len(cmds)
-	a["db.query.text"] = pipelineText(cmds)
-	a["db.response.status_code"] = code
-	a["error.type"] = etype
-	return a
+	return map[string]any{
+		"server.address":          m.serverAddr,
+		"server.port":             m.serverPort,
+		"db.system.name":          "redis",
+		"db.operation.name":       op,
+		"db.namespace":            m.namespace,
+		"db.operation.batch.size": len(cmds),
+		"db.query.text":           pipelineText(cmds),
+		"db.response.status_code": code,
+		"error.type":              etype,
+	}
 }
 
 // commandName returns the upper-cased redis command name, e.g. "GET".
@@ -350,24 +555,51 @@ func queryText(cmd redis.Cmder) string {
 	return op
 }
 
+const maxPipelineCommandsInText = 50
+
 // pipelineText renders the sanitized pipeline text as the joined sanitized
-// command texts of the queued commands.
+// command texts of the queued commands, capped to avoid excessive attribute sizes.
 func pipelineText(cmds []redis.Cmder) string {
-	parts := make([]string, 0, len(cmds))
-	for _, cmd := range cmds {
-		parts = append(parts, queryText(cmd))
+	limit := len(cmds)
+	truncated := false
+	if limit > maxPipelineCommandsInText {
+		limit = maxPipelineCommandsInText
+		truncated = true
+	}
+	parts := make([]string, 0, limit+1)
+	for i := 0; i < limit; i++ {
+		parts = append(parts, queryText(cmds[i]))
+	}
+	if truncated {
+		parts = append(parts, fmt.Sprintf("... (%d more commands)", len(cmds)-limit))
 	}
 	return strings.Join(parts, "; ")
 }
 
 // redisErrorCode returns the Redis simple-error prefix of err (e.g. "ERR",
-// "WRONGTYPE"), or the whole error text when it has no prefix.
+// "WRONGTYPE", "OOM"), or empty string if err is not a Redis protocol error.
 func redisErrorCode(err error) string {
 	msg := err.Error()
+	token := msg
 	if i := strings.IndexByte(msg, ' '); i > 0 {
-		return msg[:i]
+		token = msg[:i]
 	}
-	return msg
+	if isUpperASCII(token) {
+		return token
+	}
+	return ""
+}
+
+func isUpperASCII(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 'A' || s[i] > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // errorMessage returns err's text verbatim.

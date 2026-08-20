@@ -51,6 +51,9 @@ func TestConfig_Validate_Errors(t *testing.T) {
 		{"negative pool size", Config{Host: "h", Port: 6379, PoolSize: -1}, "PoolSize must not be negative"},
 		{"min idle over pool", Config{Host: "h", Port: 6379, PoolSize: 5, MinIdleConns: 6}, "must not exceed PoolSize"},
 		{"max idle over pool", Config{Host: "h", Port: 6379, PoolSize: 5, MaxIdleConns: 6}, "must not exceed PoolSize"},
+		{"min idle over max idle", Config{Host: "h", Port: 6379, PoolSize: 10, MinIdleConns: 6, MaxIdleConns: 5}, "must not exceed MaxIdleConns"},
+		{"tls cert without key", Config{Host: "h", Port: 6379, TLSCert: "cert"}, "TLSCert and TLSKey must both be set"},
+		{"tls certs without tls enabled", Config{Host: "h", Port: 6379, TLSEnabled: false, TLSCACert: "ca.pem"}, "require TLSEnabled to be true"},
 		{"negative conn max lifetime", Config{Host: "h", Port: 6379, ConnMaxLifetime: -1}, "ConnMaxLifetime must not be negative"},
 		{"negative conn max idle time", Config{Host: "h", Port: 6379, ConnMaxIdleTime: -1}, "ConnMaxIdleTime must not be negative"},
 	}

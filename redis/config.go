@@ -6,13 +6,21 @@ import (
 	"time"
 )
 
-// Config holds the connection and pool settings for a redis client.
+// Config holds the connection, TLS, and pool settings for a redis client.
 type Config struct {
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 	DB       int    `yaml:"db"`
+
+	// TLS settings for secure connections.
+	TLSEnabled            bool   `yaml:"tls_enabled"`
+	TLSInsecureSkipVerify bool   `yaml:"tls_insecure_skip_verify"`
+	TLSServerName         string `yaml:"tls_server_name"`
+	TLSCACert             string `yaml:"tls_ca_cert"` // PEM data or file path
+	TLSCert               string `yaml:"tls_cert"`    // Client certificate PEM data or file path
+	TLSKey                string `yaml:"tls_key"`     // Client private key PEM data or file path
 
 	DialTimeout    time.Duration `yaml:"dial_timeout"`
 	ReadTimeout    time.Duration `yaml:"read_timeout"`
@@ -39,7 +47,7 @@ const (
 //
 // Pool settings are left at their zero value, which preserves the go-redis
 // defaults; Dial/Read/Write timeouts likewise keep the go-redis defaults when
-// unset. Connection settings (Host, Username, Password, DB) are never
+// unset. Connection settings (Host, Username, Password, DB, TLS) are never
 // defaulted.
 func (c Config) SetDefaults() Config {
 	if c.Port == 0 {
@@ -90,6 +98,15 @@ func (c Config) Validate() error {
 	}
 	if c.PoolSize > 0 && c.MaxIdleConns > c.PoolSize {
 		errs = append(errs, fmt.Errorf("redis: MaxIdleConns (%d) must not exceed PoolSize (%d)", c.MaxIdleConns, c.PoolSize))
+	}
+	if c.MaxIdleConns > 0 && c.MinIdleConns > c.MaxIdleConns {
+		errs = append(errs, fmt.Errorf("redis: MinIdleConns (%d) must not exceed MaxIdleConns (%d)", c.MinIdleConns, c.MaxIdleConns))
+	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		errs = append(errs, errors.New("redis: TLSCert and TLSKey must both be set or both be empty"))
+	}
+	if !c.TLSEnabled && (c.TLSCACert != "" || c.TLSCert != "" || c.TLSKey != "") {
+		errs = append(errs, errors.New("redis: TLSCACert, TLSCert, and TLSKey require TLSEnabled to be true"))
 	}
 	if c.ConnMaxIdleTime < 0 {
 		errs = append(errs, fmt.Errorf("redis: ConnMaxIdleTime must not be negative, got %v", c.ConnMaxIdleTime))
