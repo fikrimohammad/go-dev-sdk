@@ -34,6 +34,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,6 +113,41 @@ type DownloadObjectResult struct {
 	ETag          string
 	LastModified  *time.Time
 	Metadata      map[string]string
+}
+
+// CopyObjectParams describes a server-side object copy request.
+type CopyObjectParams struct {
+	SourceBucket      string
+	SourceKey         string
+	SourceVersionID   string
+	DestBucket        string
+	DestKey           string
+	ContentType       string
+	StorageClass      string
+	Metadata          map[string]string
+	MetadataDirective string
+}
+
+// CopyObjectResult contains metadata about the copied object.
+type CopyObjectResult struct {
+	ETag         string
+	LastModified *time.Time
+	VersionID    string
+}
+
+// IsNotFound returns true if err represents an S3 404/NotFound or NoSuchKey/NoSuchBucket error.
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var aerr smithy.APIError
+	if errors.As(err, &aerr) {
+		switch aerr.ErrorCode() {
+		case "NoSuchKey", "NotFound", "NoSuchBucket", "404":
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteObjectParams describes an object to delete.
@@ -215,6 +251,8 @@ type Client interface {
 	UploadObject(ctx context.Context, params UploadObjectParams) error
 	GetObject(ctx context.Context, params GetObjectParams) (*GetObjectResult, error)
 	DownloadObject(ctx context.Context, params DownloadObjectParams) (*DownloadObjectResult, error)
+	CopyObject(ctx context.Context, params CopyObjectParams) (*CopyObjectResult, error)
+	ObjectExists(ctx context.Context, bucket, key string) (bool, error)
 	DeleteObject(ctx context.Context, params DeleteObjectParams) error
 	DeleteObjects(ctx context.Context, params DeleteObjectsParams) (*DeleteObjectsResult, error)
 	HeadObject(ctx context.Context, params HeadObjectParams) (*ObjectInfo, error)
@@ -225,6 +263,7 @@ type Client interface {
 
 // s3API abstracts the raw s3.Client operations needed by our Client implementation.
 type s3API interface {
+	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
@@ -547,6 +586,70 @@ func (c *client) DownloadObject(ctx context.Context, params DownloadObjectParams
 		return nil, err
 	}
 	return res, nil
+}
+
+// CopyObject performs a server-side copy of an S3 object with zero network egress traffic.
+func (c *client) CopyObject(ctx context.Context, params CopyObjectParams) (*CopyObjectResult, error) {
+	var res *CopyObjectResult
+	err := c.instrument(ctx, "CopyObject", params.DestBucket, func(ctx context.Context) error {
+		copySource := params.SourceBucket + "/" + escapeCopySourceKey(params.SourceKey)
+		if params.SourceVersionID != "" {
+			copySource += "?versionId=" + url.QueryEscape(params.SourceVersionID)
+		}
+
+		input := &s3.CopyObjectInput{
+			Bucket:     aws.String(params.DestBucket),
+			Key:        aws.String(params.DestKey),
+			CopySource: aws.String(copySource),
+			Metadata:   params.Metadata,
+		}
+		if params.ContentType != "" {
+			input.ContentType = aws.String(params.ContentType)
+		}
+		if params.StorageClass != "" {
+			input.StorageClass = types.StorageClass(params.StorageClass)
+		}
+		if params.MetadataDirective != "" {
+			input.MetadataDirective = types.MetadataDirective(params.MetadataDirective)
+		} else if len(params.Metadata) > 0 {
+			input.MetadataDirective = types.MetadataDirectiveReplace
+		}
+
+		out, err := c.s3API.CopyObject(ctx, input)
+		if err != nil {
+			return err
+		}
+
+		res = &CopyObjectResult{}
+		if out.CopyObjectResult != nil {
+			if out.CopyObjectResult.ETag != nil {
+				res.ETag = *out.CopyObjectResult.ETag
+			}
+			res.LastModified = out.CopyObjectResult.LastModified
+		}
+		if out.VersionId != nil {
+			res.VersionID = *out.VersionId
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// ObjectExists checks whether an object exists in S3 using HeadObject.
+// It returns (true, nil) if the object exists, (false, nil) if it does not exist (404/NoSuchKey),
+// and (false, err) if any other error (such as network or permissions failure) occurs.
+func (c *client) ObjectExists(ctx context.Context, bucket, key string) (bool, error) {
+	_, err := c.HeadObject(ctx, HeadObjectParams{Bucket: bucket, Key: key})
+	if err == nil {
+		return true, nil
+	}
+	if IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // DeleteObject removes a single object from S3.
@@ -939,4 +1042,14 @@ func transportType(err error) string {
 	default:
 		return "network_error"
 	}
+}
+
+// escapeCopySourceKey URL-escapes individual path segments of an S3 object key
+// while preserving '/' path delimiters for S3 CopySource headers.
+func escapeCopySourceKey(key string) string {
+	parts := strings.Split(key, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }

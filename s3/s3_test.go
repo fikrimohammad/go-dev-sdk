@@ -136,6 +136,10 @@ type stubS3API struct {
 	getObjectCalls     int
 	getObjectOut       *s3.GetObjectOutput
 	getObjectErr       error
+	copyObjectCalls    int
+	copyObjectOut      *s3.CopyObjectOutput
+	copyObjectErr      error
+	lastCopyInput      *s3.CopyObjectInput
 	deleteObjectCalls  int
 	deleteObjectErr    error
 	deleteObjectsCalls int
@@ -147,6 +151,25 @@ type stubS3API struct {
 	listObjectsCalls   int
 	listObjectsOut     *s3.ListObjectsV2Output
 	listObjectsErr     error
+}
+
+func (s *stubS3API) CopyObject(_ context.Context, input *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+	s.copyObjectCalls++
+	s.lastCopyInput = input
+	if s.copyObjectErr != nil {
+		return nil, s.copyObjectErr
+	}
+	if s.copyObjectOut != nil {
+		return s.copyObjectOut, nil
+	}
+	etag := `"copy-etag"`
+	now := time.Now()
+	return &s3.CopyObjectOutput{
+		CopyObjectResult: &types.CopyObjectResult{
+			ETag:         &etag,
+			LastModified: &now,
+		},
+	}, nil
 }
 
 func (s *stubS3API) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
@@ -547,6 +570,122 @@ func TestDownloadObject_Error(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestCopyObject_Success(t *testing.T) {
+	api := &stubS3API{}
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	res, err := c.CopyObject(context.Background(), CopyObjectParams{
+		SourceBucket:      "src-bucket",
+		SourceKey:         "path/to/source.png",
+		SourceVersionID:   "v1",
+		DestBucket:        "dest-bucket",
+		DestKey:           "copied.png",
+		ContentType:       "image/png",
+		StorageClass:      "STANDARD_IA",
+		Metadata:          map[string]string{"env": "prod"},
+		MetadataDirective: "REPLACE",
+	})
+	if err != nil {
+		t.Fatalf("CopyObject: %v", err)
+	}
+	if res.ETag != `"copy-etag"` {
+		t.Fatalf("res.ETag = %q, want \"copy-etag\"", res.ETag)
+	}
+	if api.copyObjectCalls != 1 {
+		t.Fatalf("copyObjectCalls = %d, want 1", api.copyObjectCalls)
+	}
+	if api.lastCopyInput == nil {
+		t.Fatal("expected non-nil lastCopyInput")
+	}
+	if *api.lastCopyInput.CopySource != "src-bucket/path/to/source.png?versionId=v1" {
+		t.Fatalf("CopySource = %q", *api.lastCopyInput.CopySource)
+	}
+	if *api.lastCopyInput.ContentType != "image/png" || api.lastCopyInput.StorageClass != "STANDARD_IA" {
+		t.Fatalf("unexpected copy input: %+v", api.lastCopyInput)
+	}
+
+	span, ok := ex.last()
+	if !ok || span.Name() != "CopyObject" {
+		t.Fatalf("unexpected span: %+v", span)
+	}
+}
+
+func TestCopyObject_Error(t *testing.T) {
+	api := &stubS3API{copyObjectErr: errors.New("copy failed")}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	_, err := c.CopyObject(context.Background(), CopyObjectParams{
+		SourceBucket: "b1",
+		SourceKey:    "k1",
+		DestBucket:   "b2",
+		DestKey:      "k2",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestObjectExists_True(t *testing.T) {
+	api := &stubS3API{}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	exists, err := c.ObjectExists(context.Background(), "reports", "test.csv")
+	if err != nil {
+		t.Fatalf("ObjectExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected object to exist")
+	}
+}
+
+func TestObjectExists_False(t *testing.T) {
+	api := &stubS3API{
+		headObjectErr: &smithy.GenericAPIError{Code: "NotFound", Message: "Not Found"},
+	}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	exists, err := c.ObjectExists(context.Background(), "reports", "missing.csv")
+	if err != nil {
+		t.Fatalf("ObjectExists: %v", err)
+	}
+	if exists {
+		t.Fatal("expected object not to exist")
+	}
+}
+
+func TestObjectExists_Error(t *testing.T) {
+	api := &stubS3API{
+		headObjectErr: &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"},
+	}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	_, err := c.ObjectExists(context.Background(), "reports", "forbidden.csv")
+	if err == nil {
+		t.Fatal("expected error for AccessDenied")
+	}
+}
+
+func TestIsNotFound(t *testing.T) {
+	if IsNotFound(nil) {
+		t.Fatal("IsNotFound(nil) must be false")
+	}
+	if IsNotFound(errors.New("generic error")) {
+		t.Fatal("IsNotFound(generic) must be false")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchKey"}) {
+		t.Fatal("IsNotFound(NoSuchKey) must be true")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "NotFound"}) {
+		t.Fatal("IsNotFound(NotFound) must be true")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchBucket"}) {
+		t.Fatal("IsNotFound(NoSuchBucket) must be true")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "404"}) {
+		t.Fatal("IsNotFound(404) must be true")
 	}
 }
 
