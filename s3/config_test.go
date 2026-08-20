@@ -34,6 +34,7 @@ func TestConfig_Validate_ValidWithAllSettings(t *testing.T) {
 		Endpoint:                 "http://localhost:9000",
 		AccessKeyID:              "key",
 		SecretAccessKey:          "secret",
+		SessionToken:             "token-123",
 		UsePathStyle:             &pathStyle,
 		UploadPartSizeBytes:      5 * 1024 * 1024,
 		UploadMultipartThreshold: 16 * 1024 * 1024,

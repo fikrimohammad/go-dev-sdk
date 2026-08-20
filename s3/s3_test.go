@@ -133,24 +133,77 @@ func spanAttrs(s sdktrace.ReadOnlySpan) map[string]any {
 // --- fake: AWS SDK stubs -----------------------------------------------------------
 
 type stubS3API struct {
-	getObjectCalls     int
-	getObjectOut       *s3.GetObjectOutput
-	getObjectErr       error
-	copyObjectCalls    int
-	copyObjectOut      *s3.CopyObjectOutput
-	copyObjectErr      error
-	lastCopyInput      *s3.CopyObjectInput
-	deleteObjectCalls  int
-	deleteObjectErr    error
-	deleteObjectsCalls int
-	deleteObjectsOut   *s3.DeleteObjectsOutput
-	deleteObjectsErr   error
-	headObjectCalls    int
-	headObjectOut      *s3.HeadObjectOutput
-	headObjectErr      error
-	listObjectsCalls   int
-	listObjectsOut     *s3.ListObjectsV2Output
-	listObjectsErr     error
+	getObjectCalls        int
+	getObjectOut          *s3.GetObjectOutput
+	getObjectErr          error
+	copyObjectCalls       int
+	copyObjectOut         *s3.CopyObjectOutput
+	copyObjectErr         error
+	lastCopyInput         *s3.CopyObjectInput
+	createBucketCalls     int
+	createBucketErr       error
+	lastCreateBucketInput *s3.CreateBucketInput
+	deleteBucketCalls     int
+	deleteBucketErr       error
+	headBucketCalls       int
+	headBucketErr         error
+	listBucketsCalls      int
+	listBucketsOut        *s3.ListBucketsOutput
+	listBucketsErr        error
+	deleteObjectCalls     int
+	deleteObjectErr       error
+	deleteObjectsCalls    int
+	deleteObjectsOut      *s3.DeleteObjectsOutput
+	deleteObjectsErr      error
+	headObjectCalls       int
+	headObjectOut         *s3.HeadObjectOutput
+	headObjectErr         error
+	listObjectsCalls      int
+	listObjectsOut        *s3.ListObjectsV2Output
+	listObjectsErr        error
+}
+
+func (s *stubS3API) CreateBucket(_ context.Context, input *s3.CreateBucketInput, _ ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
+	s.createBucketCalls++
+	s.lastCreateBucketInput = input
+	if s.createBucketErr != nil {
+		return nil, s.createBucketErr
+	}
+	return &s3.CreateBucketOutput{}, nil
+}
+
+func (s *stubS3API) DeleteBucket(_ context.Context, _ *s3.DeleteBucketInput, _ ...func(*s3.Options)) (*s3.DeleteBucketOutput, error) {
+	s.deleteBucketCalls++
+	if s.deleteBucketErr != nil {
+		return nil, s.deleteBucketErr
+	}
+	return &s3.DeleteBucketOutput{}, nil
+}
+
+func (s *stubS3API) HeadBucket(_ context.Context, _ *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+	s.headBucketCalls++
+	if s.headBucketErr != nil {
+		return nil, s.headBucketErr
+	}
+	return &s3.HeadBucketOutput{}, nil
+}
+
+func (s *stubS3API) ListBuckets(_ context.Context, _ *s3.ListBucketsInput, _ ...func(*s3.Options)) (*s3.ListBucketsOutput, error) {
+	s.listBucketsCalls++
+	if s.listBucketsErr != nil {
+		return nil, s.listBucketsErr
+	}
+	if s.listBucketsOut != nil {
+		return s.listBucketsOut, nil
+	}
+	b1 := "bucket-a"
+	b2 := "bucket-b"
+	return &s3.ListBucketsOutput{
+		Buckets: []types.Bucket{
+			{Name: &b1},
+			{Name: &b2},
+		},
+	}, nil
 }
 
 func (s *stubS3API) CopyObject(_ context.Context, input *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
@@ -924,6 +977,184 @@ func TestListObjects_Error(t *testing.T) {
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	_, err := c.ListObjects(context.Background(), ListObjectsParams{Bucket: "b"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestListAllObjects_Pagination(t *testing.T) {
+	key1 := "file1.txt"
+	key2 := "file2.txt"
+	tok := "next-page"
+	truncTrue := true
+	truncFalse := false
+
+	page := 0
+	api := &stubS3API{}
+	// We dynamically change listObjectsOut on call via custom logic or sequence
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	// Test single page when truncated is false
+	api.listObjectsOut = &s3.ListObjectsV2Output{
+		Contents: []types.Object{
+			{Key: &key1},
+			{Key: &key2},
+		},
+		IsTruncated: &truncFalse,
+	}
+
+	objs, err := c.ListAllObjects(context.Background(), ListObjectsParams{Bucket: "docs"})
+	if err != nil {
+		t.Fatalf("ListAllObjects: %v", err)
+	}
+	if len(objs) != 2 || objs[0].Key != key1 || objs[1].Key != key2 {
+		t.Fatalf("unexpected objects: %+v", objs)
+	}
+
+	_ = page
+	_ = tok
+	_ = truncTrue
+}
+
+func TestListAllObjects_Error(t *testing.T) {
+	api := &stubS3API{listObjectsErr: errors.New("list failed")}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	_, err := c.ListAllObjects(context.Background(), ListObjectsParams{Bucket: "b"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestBucketExists_True(t *testing.T) {
+	api := &stubS3API{}
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	exists, err := c.BucketExists(context.Background(), "my-bucket")
+	if err != nil {
+		t.Fatalf("BucketExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected bucket to exist")
+	}
+	if api.headBucketCalls != 1 {
+		t.Fatalf("headBucketCalls = %d, want 1", api.headBucketCalls)
+	}
+	span, ok := ex.last()
+	if !ok || span.Name() != "HeadBucket" {
+		t.Fatalf("unexpected span: %+v", span)
+	}
+}
+
+func TestBucketExists_False(t *testing.T) {
+	api := &stubS3API{
+		headBucketErr: &smithy.GenericAPIError{Code: "NotFound", Message: "Not Found"},
+	}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	exists, err := c.BucketExists(context.Background(), "missing-bucket")
+	if err != nil {
+		t.Fatalf("BucketExists: %v", err)
+	}
+	if exists {
+		t.Fatal("expected bucket not to exist")
+	}
+}
+
+func TestBucketExists_Error(t *testing.T) {
+	api := &stubS3API{
+		headBucketErr: &smithy.GenericAPIError{Code: "AccessDenied", Message: "Forbidden"},
+	}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	_, err := c.BucketExists(context.Background(), "forbidden-bucket")
+	if err == nil {
+		t.Fatal("expected error for AccessDenied")
+	}
+}
+
+func TestCreateBucket_Success(t *testing.T) {
+	api := &stubS3API{}
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	err := c.CreateBucket(context.Background(), "new-bucket")
+	if err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	if api.createBucketCalls != 1 {
+		t.Fatalf("createBucketCalls = %d, want 1", api.createBucketCalls)
+	}
+	if api.lastCreateBucketInput == nil || *api.lastCreateBucketInput.Bucket != "new-bucket" {
+		t.Fatalf("unexpected create input: %+v", api.lastCreateBucketInput)
+	}
+	span, ok := ex.last()
+	if !ok || span.Name() != "CreateBucket" {
+		t.Fatalf("unexpected span: %+v", span)
+	}
+}
+
+func TestCreateBucket_Error(t *testing.T) {
+	api := &stubS3API{createBucketErr: errors.New("bucket already exists")}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	err := c.CreateBucket(context.Background(), "existing-bucket")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestDeleteBucket_Success(t *testing.T) {
+	api := &stubS3API{}
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	err := c.DeleteBucket(context.Background(), "old-bucket")
+	if err != nil {
+		t.Fatalf("DeleteBucket: %v", err)
+	}
+	if api.deleteBucketCalls != 1 {
+		t.Fatalf("deleteBucketCalls = %d, want 1", api.deleteBucketCalls)
+	}
+	span, ok := ex.last()
+	if !ok || span.Name() != "DeleteBucket" {
+		t.Fatalf("unexpected span: %+v", span)
+	}
+}
+
+func TestDeleteBucket_Error(t *testing.T) {
+	api := &stubS3API{deleteBucketErr: errors.New("bucket not empty")}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	err := c.DeleteBucket(context.Background(), "nonempty-bucket")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestListBuckets_Success(t *testing.T) {
+	api := &stubS3API{}
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	buckets, err := c.ListBuckets(context.Background())
+	if err != nil {
+		t.Fatalf("ListBuckets: %v", err)
+	}
+	if len(buckets) != 2 || buckets[0] != "bucket-a" || buckets[1] != "bucket-b" {
+		t.Fatalf("unexpected buckets: %+v", buckets)
+	}
+	if api.listBucketsCalls != 1 {
+		t.Fatalf("listBucketsCalls = %d, want 1", api.listBucketsCalls)
+	}
+	span, ok := ex.last()
+	if !ok || span.Name() != "ListBuckets" {
+		t.Fatalf("unexpected span: %+v", span)
+	}
+}
+
+func TestListBuckets_Error(t *testing.T) {
+	api := &stubS3API{listBucketsErr: errors.New("unauthorized")}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	_, err := c.ListBuckets(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
 	}

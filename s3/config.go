@@ -21,6 +21,7 @@ type Config struct {
 	Endpoint        string `yaml:"endpoint"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	SecretAccessKey string `yaml:"secret_access_key"`
+	SessionToken    string `yaml:"session_token"`
 
 	// UsePathStyle forces path-style addressing (e.g. http://endpoint/bucket/key).
 	// When nil, it defaults to true if Endpoint is set, and false for standard AWS.

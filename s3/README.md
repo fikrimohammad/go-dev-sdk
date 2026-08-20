@@ -16,7 +16,8 @@ client with a standardized API and automatic OpenTelemetry tracing + metrics per
 - **ObjectExists & IsNotFound** — ergonomic helpers for checking existence and 404 errors.
 - **DeleteObject & DeleteObjects** — single-key and automatic batch chunking object deletion.
 - **HeadObject** — fast metadata and existence lookup without downloading content.
-- **ListObjects** — prefix-based object and folder listing with continuation token pagination.
+- **ListObjects & ListAllObjects** — prefix-based object and folder listing with single-page or automatic multi-page pagination.
+- **Bucket Operations** — `BucketExists`, `CreateBucket`, `DeleteBucket`, and `ListBuckets` for managing S3 buckets.
 - **PresignGetObject** — returns a presigned download URL with response header overrides.
 - **PresignPutObject** — returns a presigned upload URL enabling direct browser/mobile to S3 uploads.
 - **Self-hosted S3 & Path-Style** — set an `Endpoint` (MinIO, Ceph, LocalStack, Cloudflare R2) with configurable `UsePathStyle`.
@@ -42,10 +43,11 @@ go get github.com/fikrimohammad/go-dev-sdk/s3
 cfg := s3.Config{
     Region: "ap-southeast-1",
 
-    // Optional: static credentials. When empty, the default AWS credential
-    // chain (env, shared config, EC2/ECS roles) is used.
+    // Optional: static credentials (including STS session tokens).
+    // When empty, the default AWS credential chain (env, shared config, EC2/ECS roles) is used.
     AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
     SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+    SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
 
     // Optional: self-hosted S3 (MinIO, Ceph, Cloudflare R2, ...).
     Endpoint:     "http://localhost:9000",
@@ -183,14 +185,30 @@ if err == nil {
     fmt.Println("Not found!")
 }
 
-// List objects matching prefix
-list, err := cli.ListObjects(ctx, s3.ListObjectsParams{
-    Bucket:  "reports",
-    Prefix:  "2026/",
-    MaxKeys: 100,
+// List all objects across all pages automatically
+allDocs, err := cli.ListAllObjects(ctx, s3.ListObjectsParams{
+    Bucket: "reports",
+    Prefix: "2026/",
 })
-for _, obj := range list.Objects {
+for _, obj := range allDocs {
     fmt.Println(obj.Key, obj.Size)
+}
+```
+
+### 10. Bucket Management
+
+```go
+// Check if a bucket exists
+bucketExists, err := cli.BucketExists(ctx, "reports")
+if err == nil && !bucketExists {
+    // Create bucket if missing
+    err = cli.CreateBucket(ctx, "reports")
+}
+
+// List all buckets
+buckets, err := cli.ListBuckets(ctx)
+for _, b := range buckets {
+    fmt.Println("Bucket:", b)
 }
 ```
 
@@ -201,6 +219,7 @@ for _, obj := range list.Objects {
 | `Region` | — | Required |
 | `Endpoint` | — | Optional; must be `http`/`https` |
 | `AccessKeyID` / `SecretAccessKey` | — | Both set or both empty |
+| `SessionToken` | — | Optional STS session token for temporary credentials |
 | `UsePathStyle` | `true` if `Endpoint` is set | Forces path-style addressing |
 | `UploadPartSizeBytes` | transfer manager default (8MB) | Min 5MB |
 | `UploadMultipartThreshold` | transfer manager default (16MB) | |
@@ -214,7 +233,7 @@ for _, obj := range list.Objects {
 | `Config` | Connection + transfer settings; `SetDefaults()`, `Validate()` |
 | `New(cfg, opts...)` | Build an instrumented `Client` |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
-| `Client` | Full S3 operations interface |
+| `Client` | Full S3 object & bucket operations interface |
 | `IsNotFound(err)` | Helper returns `true` for 404 / `NoSuchKey` / `NoSuchBucket` errors |
 | `UploadObjectParams` | Upload options with `io.Reader`, `Metadata`, `StorageClass`, headers |
 | `GetObjectParams` / `GetObjectResult` | Stream download with content headers and metadata |
@@ -222,6 +241,8 @@ for _, obj := range list.Objects {
 | `CopyObjectParams` / `CopyObjectResult` | Server-side copying of objects |
 | `DeleteObjectParams` / `DeleteObjectsParams` | Single and chunked batch deletion |
 | `HeadObjectParams` / `ObjectInfo` | Metadata inspection |
-| `ListObjectsParams` / `ListObjectsResult` | Prefix-based directory listing |
+| `ListObjectsParams` / `ListObjectsResult` | Prefix-based directory listing with pagination |
+| `ListAllObjects(ctx, params)` | Automatic multi-page object listing |
+| `BucketExists` / `CreateBucket` / `DeleteBucket` / `ListBuckets` | Bucket lifecycle management |
 | `PresignGetObjectParams` / `PresignPutObjectParams` | Presigned download & upload URLs |
 | `DefaultPresignExpiry` | Package default URL validity (15m) |

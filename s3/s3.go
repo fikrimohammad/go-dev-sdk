@@ -248,6 +248,7 @@ type PresignPutObjectParams struct {
 
 // Client describes the S3 client interface.
 type Client interface {
+	// Object operations
 	UploadObject(ctx context.Context, params UploadObjectParams) error
 	GetObject(ctx context.Context, params GetObjectParams) (*GetObjectResult, error)
 	DownloadObject(ctx context.Context, params DownloadObjectParams) (*DownloadObjectResult, error)
@@ -257,16 +258,27 @@ type Client interface {
 	DeleteObjects(ctx context.Context, params DeleteObjectsParams) (*DeleteObjectsResult, error)
 	HeadObject(ctx context.Context, params HeadObjectParams) (*ObjectInfo, error)
 	ListObjects(ctx context.Context, params ListObjectsParams) (*ListObjectsResult, error)
+	ListAllObjects(ctx context.Context, params ListObjectsParams) ([]ObjectSummary, error)
 	PresignGetObject(ctx context.Context, params PresignGetObjectParams) (string, error)
 	PresignPutObject(ctx context.Context, params PresignPutObjectParams) (string, error)
+
+	// Bucket operations
+	BucketExists(ctx context.Context, bucket string) (bool, error)
+	CreateBucket(ctx context.Context, bucket string) error
+	DeleteBucket(ctx context.Context, bucket string) error
+	ListBuckets(ctx context.Context) ([]string, error)
 }
 
 // s3API abstracts the raw s3.Client operations needed by our Client implementation.
 type s3API interface {
 	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
+	CreateBucket(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error)
+	DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
+	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	ListBuckets(ctx context.Context, params *s3.ListBucketsInput, optFns ...func(*s3.Options)) (*s3.ListBucketsOutput, error)
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
@@ -373,7 +385,7 @@ func buildClient(cfg Config) (*s3.Client, string, int, error) {
 	}
 	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken),
 		))
 	}
 
@@ -845,6 +857,26 @@ func (c *client) ListObjects(ctx context.Context, params ListObjectsParams) (*Li
 	return res, nil
 }
 
+// ListAllObjects lists all objects matching the prefix across all pagination pages.
+func (c *client) ListAllObjects(ctx context.Context, params ListObjectsParams) ([]ObjectSummary, error) {
+	var allObjects []ObjectSummary
+	token := params.ContinuationToken
+	for {
+		p := params
+		p.ContinuationToken = token
+		res, err := c.ListObjects(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		allObjects = append(allObjects, res.Objects...)
+		if !res.IsTruncated || res.NextContinuationToken == "" {
+			break
+		}
+		token = res.NextContinuationToken
+	}
+	return allObjects, nil
+}
+
 // PresignGetObject returns a presigned download URL for the object. ExpiresIn
 // defaults to the Config default (PresignDefaultExpiry) when not set.
 func (c *client) PresignGetObject(ctx context.Context, params PresignGetObjectParams) (string, error) {
@@ -917,6 +949,73 @@ func (c *client) PresignPutObject(ctx context.Context, params PresignPutObjectPa
 		return "", err
 	}
 	return presignURL, nil
+}
+
+// BucketExists checks whether a bucket exists and the client has permission to access it.
+// It returns (true, nil) if the bucket exists, (false, nil) if it does not exist (404/NotFound/NoSuchBucket),
+// and (false, err) if another error (e.g. permission or network failure) occurs.
+func (c *client) BucketExists(ctx context.Context, bucket string) (bool, error) {
+	err := c.instrument(ctx, "HeadBucket", bucket, func(ctx context.Context) error {
+		_, err := c.s3API.HeadBucket(ctx, &s3.HeadBucketInput{
+			Bucket: aws.String(bucket),
+		})
+		return err
+	})
+	if err == nil {
+		return true, nil
+	}
+	if IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// CreateBucket creates an S3 bucket in the configured region.
+func (c *client) CreateBucket(ctx context.Context, bucket string) error {
+	return c.instrument(ctx, "CreateBucket", bucket, func(ctx context.Context) error {
+		input := &s3.CreateBucketInput{
+			Bucket: aws.String(bucket),
+		}
+		if c.region != "" && c.region != "us-east-1" {
+			input.CreateBucketConfiguration = &types.CreateBucketConfiguration{
+				LocationConstraint: types.BucketLocationConstraint(c.region),
+			}
+		}
+		_, err := c.s3API.CreateBucket(ctx, input)
+		return err
+	})
+}
+
+// DeleteBucket removes an empty S3 bucket.
+func (c *client) DeleteBucket(ctx context.Context, bucket string) error {
+	return c.instrument(ctx, "DeleteBucket", bucket, func(ctx context.Context) error {
+		_, err := c.s3API.DeleteBucket(ctx, &s3.DeleteBucketInput{
+			Bucket: aws.String(bucket),
+		})
+		return err
+	})
+}
+
+// ListBuckets lists all S3 buckets owned by the authenticated sender.
+func (c *client) ListBuckets(ctx context.Context) ([]string, error) {
+	var buckets []string
+	err := c.instrument(ctx, "ListBuckets", "", func(ctx context.Context) error {
+		out, err := c.s3API.ListBuckets(ctx, &s3.ListBucketsInput{})
+		if err != nil {
+			return err
+		}
+		buckets = make([]string, 0, len(out.Buckets))
+		for _, b := range out.Buckets {
+			if b.Name != nil {
+				buckets = append(buckets, *b.Name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return buckets, nil
 }
 
 // instrument records one span and one count + duration histogram around fn,
