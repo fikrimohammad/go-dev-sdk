@@ -3,6 +3,7 @@ package s3
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -252,10 +253,13 @@ type stubPresigner struct {
 	presignPutCalls int
 	returnErr       error
 	expires         time.Duration
+	lastGetInput    *s3.GetObjectInput
+	lastPutInput    *s3.PutObjectInput
 }
 
-func (s *stubPresigner) PresignGetObject(_ context.Context, _ *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+func (s *stubPresigner) PresignGetObject(_ context.Context, input *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 	s.presignGetCalls++
+	s.lastGetInput = input
 	o := s3.PresignOptions{}
 	for _, fn := range optFns {
 		fn(&o)
@@ -267,8 +271,9 @@ func (s *stubPresigner) PresignGetObject(_ context.Context, _ *s3.GetObjectInput
 	return &v4.PresignedHTTPRequest{URL: "https://s3.example.com/reports/test.csv"}, nil
 }
 
-func (s *stubPresigner) PresignPutObject(_ context.Context, _ *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+func (s *stubPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 	s.presignPutCalls++
+	s.lastPutInput = input
 	o := s3.PresignOptions{}
 	for _, fn := range optFns {
 		fn(&o)
@@ -637,6 +642,46 @@ func TestDeleteObjects_WithErrors(t *testing.T) {
 	}
 }
 
+func TestDeleteObjects_EmptyKeys(t *testing.T) {
+	api := &stubS3API{}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	res, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
+		Bucket: "reports",
+		Keys:   []string{},
+	})
+	if err != nil {
+		t.Fatalf("DeleteObjects: %v", err)
+	}
+	if len(res.Deleted) != 0 || len(res.Errors) != 0 {
+		t.Fatalf("unexpected non-empty result: %+v", res)
+	}
+	if api.deleteObjectsCalls != 0 {
+		t.Fatalf("deleteObjectsCalls = %d, want 0", api.deleteObjectsCalls)
+	}
+}
+
+func TestDeleteObjects_Chunking(t *testing.T) {
+	api := &stubS3API{}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	keys := make([]string, 2050)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("key-%d", i)
+	}
+
+	_, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
+		Bucket: "reports",
+		Keys:   keys,
+	})
+	if err != nil {
+		t.Fatalf("DeleteObjects: %v", err)
+	}
+	if api.deleteObjectsCalls != 3 {
+		t.Fatalf("deleteObjectsCalls = %d, want 3 (for 2050 items in 1000 chunks)", api.deleteObjectsCalls)
+	}
+}
+
 func TestDeleteObjects_Error(t *testing.T) {
 	api := &stubS3API{deleteObjectsErr: errors.New("delete batch failed")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
@@ -751,9 +796,12 @@ func TestPresignGetObject_Success(t *testing.T) {
 	c, _, ex := setup(&stubS3API{}, up, pr)
 
 	url, err := c.PresignGetObject(context.Background(), PresignGetObjectParams{
-		Bucket:    "reports",
-		Key:       "test.csv",
-		ExpiresIn: 5 * time.Minute,
+		Bucket:                     "reports",
+		Key:                        "test.csv",
+		VersionID:                  "v123",
+		ResponseContentType:        "text/csv",
+		ResponseContentDisposition: "inline",
+		ExpiresIn:                  5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("PresignGetObject: %v", err)
@@ -766,6 +814,9 @@ func TestPresignGetObject_Success(t *testing.T) {
 	}
 	if pr.expires != 5*time.Minute {
 		t.Fatalf("expires = %v, want 5m", pr.expires)
+	}
+	if pr.lastGetInput == nil || *pr.lastGetInput.VersionId != "v123" || *pr.lastGetInput.ResponseContentType != "text/csv" {
+		t.Fatalf("unexpected lastGetInput: %+v", pr.lastGetInput)
 	}
 
 	span, ok := ex.last()
@@ -790,6 +841,9 @@ func TestPresignGetObject_AppliesDefaultExpiry(t *testing.T) {
 	}
 	if pr.expires != 15*time.Minute {
 		t.Fatalf("expires = %v, want default 15m", pr.expires)
+	}
+	if pr.lastGetInput != nil && (pr.lastGetInput.ResponseContentType != nil || pr.lastGetInput.ResponseContentDisposition != nil) {
+		t.Fatalf("expected nil response headers for empty params, got %+v", pr.lastGetInput)
 	}
 }
 
@@ -824,10 +878,12 @@ func TestPresignPutObject_Success(t *testing.T) {
 	c, _, ex := setup(&stubS3API{}, up, pr)
 
 	url, err := c.PresignPutObject(context.Background(), PresignPutObjectParams{
-		Bucket:      "uploads",
-		Key:         "avatar.png",
-		ContentType: "image/png",
-		ExpiresIn:   10 * time.Minute,
+		Bucket:       "uploads",
+		Key:          "avatar.png",
+		ContentType:  "image/png",
+		StorageClass: "STANDARD_IA",
+		Metadata:     map[string]string{"user": "alice"},
+		ExpiresIn:    10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("PresignPutObject: %v", err)
@@ -840,6 +896,9 @@ func TestPresignPutObject_Success(t *testing.T) {
 	}
 	if pr.expires != 10*time.Minute {
 		t.Fatalf("expires = %v, want 10m", pr.expires)
+	}
+	if pr.lastPutInput == nil || pr.lastPutInput.Metadata["user"] != "alice" || pr.lastPutInput.StorageClass != "STANDARD_IA" {
+		t.Fatalf("unexpected lastPutInput: %+v", pr.lastPutInput)
 	}
 
 	span, ok := ex.last()
@@ -1046,6 +1105,16 @@ func TestErrorType(t *testing.T) {
 			name: "unknown transport error",
 			err:  &smithy.OperationError{Err: errors.New("boom")},
 			want: "network_error",
+		},
+		{
+			name: "direct context canceled",
+			err:  context.Canceled,
+			want: "canceled",
+		},
+		{
+			name: "direct context deadline exceeded",
+			err:  context.DeadlineExceeded,
+			want: "timeout",
 		},
 		{
 			name: "plain error",

@@ -190,6 +190,7 @@ type ObjectSummary struct {
 type PresignGetObjectParams struct {
 	Bucket                     string
 	Key                        string
+	VersionID                  string
 	ResponseContentType        string
 	ResponseContentDisposition string
 	// ExpiresIn is the URL validity. Zero uses the Config default
@@ -199,9 +200,11 @@ type PresignGetObjectParams struct {
 
 // PresignPutObjectParams describes a presigned upload URL request.
 type PresignPutObjectParams struct {
-	Bucket      string
-	Key         string
-	ContentType string
+	Bucket       string
+	Key          string
+	ContentType  string
+	StorageClass string
+	Metadata     map[string]string
 	// ExpiresIn is the URL validity. Zero uses the Config default
 	// (PresignDefaultExpiry).
 	ExpiresIn time.Duration
@@ -561,65 +564,78 @@ func (c *client) DeleteObject(ctx context.Context, params DeleteObjectParams) er
 	})
 }
 
-// DeleteObjects removes multiple objects from S3 in a single batch request.
+const maxDeleteObjectsBatchSize = 1000
+
+// DeleteObjects removes multiple objects from S3 in batch requests (automatically chunking
+// up to 1,000 keys per batch as mandated by the S3 API).
 func (c *client) DeleteObjects(ctx context.Context, params DeleteObjectsParams) (*DeleteObjectsResult, error) {
-	var res *DeleteObjectsResult
+	if len(params.Keys) == 0 {
+		return &DeleteObjectsResult{}, nil
+	}
+
+	var totalDeleted []string
+	var totalErrors []DeleteError
+
 	err := c.instrument(ctx, "DeleteObjects", params.Bucket, func(ctx context.Context) error {
-		objectIDs := make([]types.ObjectIdentifier, 0, len(params.Keys))
-		for _, k := range params.Keys {
-			objectIDs = append(objectIDs, types.ObjectIdentifier{
-				Key: aws.String(k),
-			})
-		}
-
-		input := &s3.DeleteObjectsInput{
-			Bucket: aws.String(params.Bucket),
-			Delete: &types.Delete{
-				Objects: objectIDs,
-				Quiet:   aws.Bool(params.Quiet),
-			},
-		}
-
-		out, err := c.s3API.DeleteObjects(ctx, input)
-		if err != nil {
-			return err
-		}
-
-		deleted := make([]string, 0, len(out.Deleted))
-		for _, d := range out.Deleted {
-			if d.Key != nil {
-				deleted = append(deleted, *d.Key)
+		for i := 0; i < len(params.Keys); i += maxDeleteObjectsBatchSize {
+			end := i + maxDeleteObjectsBatchSize
+			if end > len(params.Keys) {
+				end = len(params.Keys)
 			}
-		}
+			batchKeys := params.Keys[i:end]
 
-		delErrors := make([]DeleteError, 0, len(out.Errors))
-		for _, e := range out.Errors {
-			de := DeleteError{}
-			if e.Key != nil {
-				de.Key = *e.Key
+			objectIDs := make([]types.ObjectIdentifier, 0, len(batchKeys))
+			for _, k := range batchKeys {
+				objectIDs = append(objectIDs, types.ObjectIdentifier{
+					Key: aws.String(k),
+				})
 			}
-			if e.Code != nil {
-				de.Code = *e.Code
-			}
-			if e.Message != nil {
-				de.Message = *e.Message
-			}
-			if e.VersionId != nil {
-				de.VersionID = *e.VersionId
-			}
-			delErrors = append(delErrors, de)
-		}
 
-		res = &DeleteObjectsResult{
-			Deleted: deleted,
-			Errors:  delErrors,
+			input := &s3.DeleteObjectsInput{
+				Bucket: aws.String(params.Bucket),
+				Delete: &types.Delete{
+					Objects: objectIDs,
+					Quiet:   aws.Bool(params.Quiet),
+				},
+			}
+
+			out, err := c.s3API.DeleteObjects(ctx, input)
+			if err != nil {
+				return err
+			}
+
+			for _, d := range out.Deleted {
+				if d.Key != nil {
+					totalDeleted = append(totalDeleted, *d.Key)
+				}
+			}
+
+			for _, e := range out.Errors {
+				de := DeleteError{}
+				if e.Key != nil {
+					de.Key = *e.Key
+				}
+				if e.Code != nil {
+					de.Code = *e.Code
+				}
+				if e.Message != nil {
+					de.Message = *e.Message
+				}
+				if e.VersionId != nil {
+					de.VersionID = *e.VersionId
+				}
+				totalErrors = append(totalErrors, de)
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return res, nil
+	return &DeleteObjectsResult{
+		Deleted: totalDeleted,
+		Errors:  totalErrors,
+	}, nil
 }
 
 // HeadObject retrieves metadata for an object without downloading its content.
@@ -735,12 +751,21 @@ func (c *client) PresignGetObject(ctx context.Context, params PresignGetObjectPa
 
 	var presignURL string
 	err := c.instrument(ctx, "PresignGetObject", params.Bucket, func(ctx context.Context) error {
-		out, err := c.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
-			Bucket:                     aws.String(params.Bucket),
-			Key:                        aws.String(params.Key),
-			ResponseContentType:        aws.String(params.ResponseContentType),
-			ResponseContentDisposition: aws.String(params.ResponseContentDisposition),
-		}, func(o *s3.PresignOptions) {
+		input := &s3.GetObjectInput{
+			Bucket: aws.String(params.Bucket),
+			Key:    aws.String(params.Key),
+		}
+		if params.VersionID != "" {
+			input.VersionId = aws.String(params.VersionID)
+		}
+		if params.ResponseContentType != "" {
+			input.ResponseContentType = aws.String(params.ResponseContentType)
+		}
+		if params.ResponseContentDisposition != "" {
+			input.ResponseContentDisposition = aws.String(params.ResponseContentDisposition)
+		}
+
+		out, err := c.presigner.PresignGetObject(ctx, input, func(o *s3.PresignOptions) {
 			o.Expires = params.ExpiresIn
 		})
 		if err != nil {
@@ -765,12 +790,17 @@ func (c *client) PresignPutObject(ctx context.Context, params PresignPutObjectPa
 	var presignURL string
 	err := c.instrument(ctx, "PresignPutObject", params.Bucket, func(ctx context.Context) error {
 		input := &s3.PutObjectInput{
-			Bucket: aws.String(params.Bucket),
-			Key:    aws.String(params.Key),
+			Bucket:   aws.String(params.Bucket),
+			Key:      aws.String(params.Key),
+			Metadata: params.Metadata,
 		}
 		if params.ContentType != "" {
 			input.ContentType = aws.String(params.ContentType)
 		}
+		if params.StorageClass != "" {
+			input.StorageClass = types.StorageClass(params.StorageClass)
+		}
+
 		out, err := c.presigner.PresignPutObject(ctx, input, func(o *s3.PresignOptions) {
 			o.Expires = params.ExpiresIn
 		})
@@ -859,6 +889,12 @@ func errorType(err error) string {
 	if err == nil {
 		return ""
 	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
 	var aerr smithy.APIError
 	if errors.As(err, &aerr) {
 		return aerr.ErrorCode()
@@ -868,12 +904,20 @@ func errorType(err error) string {
 	if errors.As(err, &opErr) && opErr.Err != nil {
 		return transportType(opErr.Err)
 	}
+
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return transportType(err)
+	}
 	return err.Error()
 }
 
 // transportType classifies the transport-level failure wrapped by an
 // *smithy.OperationError (timeout, unreachable, reset) into a short label.
 func transportType(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
