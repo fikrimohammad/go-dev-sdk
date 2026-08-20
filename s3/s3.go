@@ -201,16 +201,16 @@ type Client interface {
 
 // s3API abstracts the raw s3.Client operations needed by our Client implementation.
 type s3API interface {
-	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
-// uploader is the transfer-manager contract, letting tests stub the SDK.
-type uploader interface {
+// transferManager is the transfer-manager contract, letting tests stub the SDK.
+type transferManager interface {
 	UploadObject(ctx context.Context, input *transfermanager.UploadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error)
+	GetObject(ctx context.Context, input *transfermanager.GetObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error)
 }
 
 // presigner is the presign-client contract, letting tests stub the SDK.
@@ -272,7 +272,7 @@ func New(cfg Config, opts ...Option) (Client, error) {
 		return nil, err
 	}
 
-	tmUploader := transfermanager.New(s3Client, func(opt *transfermanager.Options) {
+	tm := transfermanager.New(s3Client, func(opt *transfermanager.Options) {
 		if cfg.UploadPartSizeBytes > 0 {
 			opt.PartSizeBytes = cfg.UploadPartSizeBytes
 		}
@@ -286,9 +286,9 @@ func New(cfg Config, opts ...Option) (Client, error) {
 	tmPresigner := s3.NewPresignClient(s3Client)
 
 	return &client{
-		s3API:     s3Client,
-		uploader:  tmUploader,
-		presigner: tmPresigner,
+		s3API:           s3Client,
+		transferManager: tm,
+		presigner:       tmPresigner,
 		meta: meta{
 			region:               cfg.Region,
 			serverAddr:           serverAddr,
@@ -381,9 +381,9 @@ func endpointAddress(endpoint string) (string, int) {
 
 // client implements Client over the s3 client, transfer manager, and presign client.
 type client struct {
-	s3API     s3API
-	uploader  uploader
-	presigner presigner
+	s3API           s3API
+	transferManager transferManager
+	presigner       presigner
 	meta
 }
 
@@ -414,16 +414,18 @@ func (c *client) UploadObject(ctx context.Context, params UploadObjectParams) er
 		if params.StorageClass != "" {
 			input.StorageClass = tmtypes.StorageClass(params.StorageClass)
 		}
-		_, err := c.uploader.UploadObject(ctx, input)
+		_, err := c.transferManager.UploadObject(ctx, input)
 		return err
 	})
 }
 
-// GetObject retrieves an object from S3.
+// GetObject retrieves an object through the transfer manager, providing
+// high-throughput parallelized part downloading for large objects while
+// exposing a standard sequential io.ReadCloser stream.
 func (c *client) GetObject(ctx context.Context, params GetObjectParams) (*GetObjectResult, error) {
 	var res *GetObjectResult
 	err := c.instrument(ctx, "GetObject", params.Bucket, func(ctx context.Context) error {
-		input := &s3.GetObjectInput{
+		input := &transfermanager.GetObjectInput{
 			Bucket: aws.String(params.Bucket),
 			Key:    aws.String(params.Key),
 		}
@@ -437,13 +439,22 @@ func (c *client) GetObject(ctx context.Context, params GetObjectParams) (*GetObj
 			input.Range = aws.String(params.Range)
 		}
 
-		out, err := c.s3API.GetObject(ctx, input)
+		out, err := c.transferManager.GetObject(ctx, input)
 		if err != nil {
 			return err
 		}
 
+		var body io.ReadCloser
+		if out.Body != nil {
+			if rc, ok := out.Body.(io.ReadCloser); ok {
+				body = rc
+			} else {
+				body = io.NopCloser(out.Body)
+			}
+		}
+
 		res = &GetObjectResult{
-			Body:         out.Body,
+			Body:         body,
 			Metadata:     out.Metadata,
 			LastModified: out.LastModified,
 		}

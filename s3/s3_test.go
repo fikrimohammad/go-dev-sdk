@@ -200,19 +200,35 @@ func (s *stubS3API) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input, _
 	return &s3.ListObjectsV2Output{}, nil
 }
 
-type stubUploader struct {
-	uploadCalls int
-	returnErr   error
-	lastInput   *transfermanager.UploadObjectInput
+type stubTransferManager struct {
+	uploadCalls    int
+	uploadErr      error
+	lastInput      *transfermanager.UploadObjectInput
+	getObjectCalls int
+	getObjectOut   *transfermanager.GetObjectOutput
+	getObjectErr   error
+	lastGetInput   *transfermanager.GetObjectInput
 }
 
-func (s *stubUploader) UploadObject(_ context.Context, input *transfermanager.UploadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error) {
+func (s *stubTransferManager) UploadObject(_ context.Context, input *transfermanager.UploadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error) {
 	s.uploadCalls++
 	s.lastInput = input
-	if s.returnErr != nil {
-		return nil, s.returnErr
+	if s.uploadErr != nil {
+		return nil, s.uploadErr
 	}
 	return &transfermanager.UploadObjectOutput{}, nil
+}
+
+func (s *stubTransferManager) GetObject(_ context.Context, input *transfermanager.GetObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
+	s.getObjectCalls++
+	s.lastGetInput = input
+	if s.getObjectErr != nil {
+		return nil, s.getObjectErr
+	}
+	if s.getObjectOut != nil {
+		return s.getObjectOut, nil
+	}
+	return &transfermanager.GetObjectOutput{Body: io.NopCloser(strings.NewReader("content"))}, nil
 }
 
 type stubPresigner struct {
@@ -250,7 +266,7 @@ func (s *stubPresigner) PresignPutObject(_ context.Context, _ *s3.PutObjectInput
 
 // setup installs a capturing tracer and metrics client as package defaults and
 // returns an instrumented client wired to the stubs alongside assertion handles.
-func setup(api s3API, uploader uploader, presigner presigner) (*client, *fakeMetrics, *recordingExporter) {
+func setup(api s3API, tm transferManager, presigner presigner) (*client, *fakeMetrics, *recordingExporter) {
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
 	tracer.SetDefault(tracer.Wrap(tp))
@@ -259,9 +275,9 @@ func setup(api s3API, uploader uploader, presigner presigner) (*client, *fakeMet
 	metrics.SetDefault(fm)
 
 	return &client{
-		s3API:     api,
-		uploader:  uploader,
-		presigner: presigner,
+		s3API:           api,
+		transferManager: tm,
+		presigner:       presigner,
 		meta: meta{
 			region:               "us-east-1",
 			serverAddr:           "localhost",
@@ -281,10 +297,10 @@ func TestNew_RejectsMissingRegion(t *testing.T) {
 }
 
 func TestUploadObject_Success(t *testing.T) {
-	up := &stubUploader{}
+	tm := &stubTransferManager{}
 	pr := &stubPresigner{}
 	api := &stubS3API{}
-	c, fm, ex := setup(api, up, pr)
+	c, fm, ex := setup(api, tm, pr)
 
 	err := c.UploadObject(context.Background(), UploadObjectParams{
 		Bucket:             "reports",
@@ -300,11 +316,11 @@ func TestUploadObject_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UploadObject: %v", err)
 	}
-	if up.uploadCalls != 1 {
-		t.Fatalf("upload calls = %d, want 1", up.uploadCalls)
+	if tm.uploadCalls != 1 {
+		t.Fatalf("upload calls = %d, want 1", tm.uploadCalls)
 	}
-	if up.lastInput == nil || *up.lastInput.ContentType != "text/csv" || *up.lastInput.ContentDisposition != "attachment; filename=test.csv" {
-		t.Fatalf("unexpected upload input: %+v", up.lastInput)
+	if tm.lastInput == nil || *tm.lastInput.ContentType != "text/csv" || *tm.lastInput.ContentDisposition != "attachment; filename=test.csv" {
+		t.Fatalf("unexpected upload input: %+v", tm.lastInput)
 	}
 
 	span, ok := ex.last()
@@ -361,8 +377,8 @@ func TestUploadObject_Success(t *testing.T) {
 }
 
 func TestUploadObject_Error(t *testing.T) {
-	up := &stubUploader{returnErr: errors.New("upload failed")}
-	c, _, ex := setup(&stubS3API{}, up, &stubPresigner{})
+	tm := &stubTransferManager{uploadErr: errors.New("upload failed")}
+	c, _, ex := setup(&stubS3API{}, tm, &stubPresigner{})
 
 	err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"})
 	if err == nil {
@@ -386,8 +402,8 @@ func TestGetObject_Success(t *testing.T) {
 	cl := int64(42)
 	etag := `"abcd"`
 	now := time.Now()
-	api := &stubS3API{
-		getObjectOut: &s3.GetObjectOutput{
+	tm := &stubTransferManager{
+		getObjectOut: &transfermanager.GetObjectOutput{
 			Body:          io.NopCloser(strings.NewReader(`{"key":"value"}`)),
 			ContentType:   &ct,
 			ContentLength: &cl,
@@ -396,7 +412,7 @@ func TestGetObject_Success(t *testing.T) {
 			Metadata:      map[string]string{"env": "test"},
 		},
 	}
-	c, _, ex := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, ex := setup(&stubS3API{}, tm, &stubPresigner{})
 
 	res, err := c.GetObject(context.Background(), GetObjectParams{
 		Bucket:      "reports",
@@ -427,8 +443,8 @@ func TestGetObject_Success(t *testing.T) {
 }
 
 func TestGetObject_Error(t *testing.T) {
-	api := &stubS3API{getObjectErr: errors.New("not found")}
-	c, _, _ := setup(api, &stubUploader{}, &stubPresigner{})
+	tm := &stubTransferManager{getObjectErr: errors.New("not found")}
+	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
 
 	_, err := c.GetObject(context.Background(), GetObjectParams{Bucket: "b", Key: "k"})
 	if err == nil {
@@ -438,7 +454,7 @@ func TestGetObject_Error(t *testing.T) {
 
 func TestDeleteObject_Success(t *testing.T) {
 	api := &stubS3API{}
-	c, _, ex := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	err := c.DeleteObject(context.Background(), DeleteObjectParams{
 		Bucket:    "reports",
@@ -459,7 +475,7 @@ func TestDeleteObject_Success(t *testing.T) {
 
 func TestDeleteObject_Error(t *testing.T) {
 	api := &stubS3API{deleteObjectErr: errors.New("delete failed")}
-	c, _, _ := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	err := c.DeleteObject(context.Background(), DeleteObjectParams{Bucket: "b", Key: "k"})
 	if err == nil {
@@ -478,7 +494,7 @@ func TestDeleteObjects_Success(t *testing.T) {
 			},
 		},
 	}
-	c, _, ex := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	res, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
 		Bucket: "reports",
@@ -514,7 +530,7 @@ func TestDeleteObjects_WithErrors(t *testing.T) {
 			},
 		},
 	}
-	c, _, _ := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	res, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
 		Bucket: "reports",
@@ -530,7 +546,7 @@ func TestDeleteObjects_WithErrors(t *testing.T) {
 
 func TestDeleteObjects_Error(t *testing.T) {
 	api := &stubS3API{deleteObjectsErr: errors.New("delete batch failed")}
-	c, _, _ := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	_, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{Bucket: "b", Keys: []string{"k"}})
 	if err == nil {
@@ -553,7 +569,7 @@ func TestHeadObject_Success(t *testing.T) {
 			StorageClass:  types.StorageClassStandard,
 		},
 	}
-	c, _, ex := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	info, err := c.HeadObject(context.Background(), HeadObjectParams{
 		Bucket: "images",
@@ -573,7 +589,7 @@ func TestHeadObject_Success(t *testing.T) {
 
 func TestHeadObject_Error(t *testing.T) {
 	api := &stubS3API{headObjectErr: errors.New("head failed")}
-	c, _, _ := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	_, err := c.HeadObject(context.Background(), HeadObjectParams{Bucket: "b", Key: "k"})
 	if err == nil {
@@ -605,7 +621,7 @@ func TestListObjects_Success(t *testing.T) {
 			IsTruncated:           &truncated,
 		},
 	}
-	c, _, ex := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	res, err := c.ListObjects(context.Background(), ListObjectsParams{
 		Bucket:            "docs",
@@ -628,7 +644,7 @@ func TestListObjects_Success(t *testing.T) {
 
 func TestListObjects_Error(t *testing.T) {
 	api := &stubS3API{listObjectsErr: errors.New("list failed")}
-	c, _, _ := setup(api, &stubUploader{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	_, err := c.ListObjects(context.Background(), ListObjectsParams{Bucket: "b"})
 	if err == nil {
@@ -637,7 +653,7 @@ func TestListObjects_Error(t *testing.T) {
 }
 
 func TestPresignGetObject_Success(t *testing.T) {
-	up := &stubUploader{}
+	up := &stubTransferManager{}
 	pr := &stubPresigner{}
 	c, _, ex := setup(&stubS3API{}, up, pr)
 
@@ -669,7 +685,7 @@ func TestPresignGetObject_Success(t *testing.T) {
 }
 
 func TestPresignGetObject_AppliesDefaultExpiry(t *testing.T) {
-	up := &stubUploader{}
+	up := &stubTransferManager{}
 	pr := &stubPresigner{}
 	c, _, _ := setup(&stubS3API{}, up, pr)
 
@@ -685,7 +701,7 @@ func TestPresignGetObject_AppliesDefaultExpiry(t *testing.T) {
 }
 
 func TestPresignGetObject_Error(t *testing.T) {
-	up := &stubUploader{}
+	up := &stubTransferManager{}
 	pr := &stubPresigner{returnErr: errors.New("signing failed")}
 	c, fm, ex := setup(&stubS3API{}, up, pr)
 
@@ -710,7 +726,7 @@ func TestPresignGetObject_Error(t *testing.T) {
 }
 
 func TestPresignPutObject_Success(t *testing.T) {
-	up := &stubUploader{}
+	up := &stubTransferManager{}
 	pr := &stubPresigner{}
 	c, _, ex := setup(&stubS3API{}, up, pr)
 
@@ -743,7 +759,7 @@ func TestPresignPutObject_Success(t *testing.T) {
 }
 
 func TestPresignPutObject_AppliesDefaultExpiry(t *testing.T) {
-	up := &stubUploader{}
+	up := &stubTransferManager{}
 	pr := &stubPresigner{}
 	c, _, _ := setup(&stubS3API{}, up, pr)
 
@@ -759,7 +775,7 @@ func TestPresignPutObject_AppliesDefaultExpiry(t *testing.T) {
 }
 
 func TestPresignPutObject_Error(t *testing.T) {
-	up := &stubUploader{}
+	up := &stubTransferManager{}
 	pr := &stubPresigner{returnErr: errors.New("put signing failed")}
 	c, fm, ex := setup(&stubS3API{}, up, pr)
 
@@ -784,7 +800,7 @@ func TestPresignPutObject_Error(t *testing.T) {
 }
 
 func TestClient_DefaultTracerMetricsInjected(t *testing.T) {
-	up := &stubUploader{}
+	tm := &stubTransferManager{}
 	pr := &stubPresigner{}
 	api := &stubS3API{}
 
@@ -802,9 +818,9 @@ func TestClient_DefaultTracerMetricsInjected(t *testing.T) {
 	metrics.SetDefault(defFm)
 
 	c := &client{
-		s3API:     api,
-		uploader:  up,
-		presigner: pr,
+		s3API:           api,
+		transferManager: tm,
+		presigner:       pr,
 		meta: meta{
 			region:               "us-east-1",
 			presignDefaultExpiry: 15 * time.Minute,
@@ -857,15 +873,15 @@ func TestEndpointAddress(t *testing.T) {
 }
 
 func TestServerAttrsOmittedForAWS(t *testing.T) {
-	up := &stubUploader{}
+	tm := &stubTransferManager{}
 	pr := &stubPresigner{}
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer.SetDefault(tracer.Wrap(tp))
 	c := &client{
-		uploader:  up,
-		presigner: pr,
+		transferManager: tm,
+		presigner:       pr,
 		meta: meta{
 			region:               "us-east-1",
 			presignDefaultExpiry: 15 * time.Minute,
