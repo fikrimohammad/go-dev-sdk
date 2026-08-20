@@ -1121,10 +1121,12 @@ func (m meta) instrument(ctx context.Context, op, bucket string, fn func(context
 // are therefore set at span creation time.
 func (m meta) samplingAttrs(op, bucket string) map[string]any {
 	a := map[string]any{
-		"rpc.system":    "aws-api",
-		"rpc.service":   "s3",
-		"rpc.method":    op,
-		"aws.s3.bucket": bucket,
+		"rpc.system":  "aws-api",
+		"rpc.service": "s3",
+		"rpc.method":  op,
+	}
+	if bucket != "" {
+		a["aws.s3.bucket"] = bucket
 	}
 	if m.region != "" {
 		a["cloud.region"] = m.region

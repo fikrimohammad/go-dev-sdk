@@ -66,6 +66,9 @@ func (c Config) Validate() error {
 	if (c.AccessKeyID == "") != (c.SecretAccessKey == "") {
 		errs = append(errs, errors.New("s3: access_key_id and secret_access_key must both be set or both be empty"))
 	}
+	if c.SessionToken != "" && (c.AccessKeyID == "" || c.SecretAccessKey == "") {
+		errs = append(errs, errors.New("s3: session_token requires access_key_id and secret_access_key to be set"))
+	}
 	if c.Endpoint != "" {
 		u, err := url.Parse(c.Endpoint)
 		if err != nil {

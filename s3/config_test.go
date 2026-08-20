@@ -55,6 +55,7 @@ func TestConfig_Validate_Errors(t *testing.T) {
 		{"missing region", Config{}, "region is required"},
 		{"creds only key", Config{Region: "r", AccessKeyID: "k"}, "both be set"},
 		{"creds only secret", Config{Region: "r", SecretAccessKey: "s"}, "both be set"},
+		{"session token without keys", Config{Region: "r", SessionToken: "t"}, "session_token requires"},
 		{"endpoint no scheme", Config{Region: "r", Endpoint: "localhost:9000"}, "must use http or https"},
 		{"negative part size", Config{Region: "r", UploadPartSizeBytes: -1}, "must not be negative"},
 		{"part size below minimum", Config{Region: "r", UploadPartSizeBytes: 1024}, "at least"},
