@@ -868,8 +868,8 @@ func TestDeleteObjects_EmptyKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteObjects: %v", err)
 	}
-	if len(res.Deleted) != 0 || len(res.Errors) != 0 {
-		t.Fatalf("unexpected non-empty result: %+v", res)
+	if res.Deleted == nil || res.Errors == nil || len(res.Deleted) != 0 || len(res.Errors) != 0 {
+		t.Fatalf("unexpected non-empty or nil result: %+v", res)
 	}
 	if api.deleteObjectsCalls != 0 {
 		t.Fatalf("deleteObjectsCalls = %d, want 0", api.deleteObjectsCalls)

@@ -737,11 +737,14 @@ const maxDeleteObjectsBatchSize = 1000
 // up to 1,000 keys per batch as mandated by the S3 API).
 func (c *client) DeleteObjects(ctx context.Context, params DeleteObjectsParams) (*DeleteObjectsResult, error) {
 	if len(params.Keys) == 0 {
-		return &DeleteObjectsResult{}, nil
+		return &DeleteObjectsResult{
+			Deleted: make([]string, 0),
+			Errors:  make([]DeleteError, 0),
+		}, nil
 	}
 
-	var totalDeleted []string
-	var totalErrors []DeleteError
+	totalDeleted := make([]string, 0)
+	totalErrors := make([]DeleteError, 0)
 
 	err := c.instrument(ctx, "DeleteObjects", params.Bucket, func(ctx context.Context) error {
 		for i := 0; i < len(params.Keys); i += maxDeleteObjectsBatchSize {
