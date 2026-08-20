@@ -8,8 +8,10 @@ client with a standardized API and automatic OpenTelemetry tracing + metrics per
 - **UploadObject** — uploads through the transfer manager, which transparently
   performs **multipart uploads** for large bodies (accepts any `io.Reader`, with
   support for custom metadata, storage classes, cache control, and content disposition).
-- **GetObject** — retrieves objects directly as streams (`io.ReadCloser`) alongside
-  metadata, content length, ETag, and content type.
+- **GetObject** — retrieves objects as streams (`io.ReadCloser`) with concurrent
+  chunk fetching and bounded buffer memory.
+- **DownloadObject** — downloads directly into an `io.WriterAt` (e.g. `*os.File`),
+  writing concurrent multipart chunks directly to disk in parallel.
 - **DeleteObject & DeleteObjects** — single-key and batch object deletion.
 - **HeadObject** — fast metadata and existence lookup without downloading content.
 - **ListObjects** — prefix-based object and folder listing with continuation token pagination.
@@ -79,7 +81,7 @@ err = cli.UploadObject(ctx, s3.UploadObjectParams{
 if err != nil { /* handle */ }
 ```
 
-### 4. Download / Get an object
+### 4. Get object as a stream (`GetObject`)
 
 ```go
 res, err := cli.GetObject(ctx, s3.GetObjectParams{
@@ -92,7 +94,24 @@ defer res.Body.Close()
 data, err := io.ReadAll(res.Body)
 ```
 
-### 5. Presign download & upload URLs
+### 5. Download object directly to file (`DownloadObject`)
+
+```go
+outFile, err := os.Create("downloaded-report.pdf")
+if err != nil { /* handle */ }
+defer outFile.Close()
+
+// Concurrent multipart download directly into the file via io.WriterAt
+res, err := cli.DownloadObject(ctx, s3.DownloadObjectParams{
+    Bucket: "reports",
+    Key:    "2026/08/report.pdf",
+    Writer: outFile,
+})
+if err != nil { /* handle */ }
+fmt.Printf("Downloaded %d bytes, ETag: %s\n", res.ContentLength, res.ETag)
+```
+
+### 6. Presign download & upload URLs
 
 ```go
 // Presigned download URL
@@ -111,7 +130,7 @@ uploadURL, err := cli.PresignPutObject(ctx, s3.PresignPutObjectParams{
 })
 ```
 
-### 6. Delete objects
+### 7. Delete objects
 
 ```go
 // Single deletion
@@ -127,7 +146,7 @@ delRes, err := cli.DeleteObjects(ctx, s3.DeleteObjectsParams{
 })
 ```
 
-### 7. Metadata inspection & Prefix listing
+### 8. Metadata inspection & Prefix listing
 
 ```go
 // Check metadata / existence
@@ -170,9 +189,10 @@ for _, obj := range list.Objects {
 | `Config` | Connection + transfer settings; `SetDefaults()`, `Validate()` |
 | `New(cfg, opts...)` | Build an instrumented `Client` |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
-| `Client` | `UploadObject`, `GetObject`, `DeleteObject`, `DeleteObjects`, `HeadObject`, `ListObjects`, `PresignGetObject`, `PresignPutObject` |
+| `Client` | `UploadObject`, `GetObject`, `DownloadObject`, `DeleteObject`, `DeleteObjects`, `HeadObject`, `ListObjects`, `PresignGetObject`, `PresignPutObject` |
 | `UploadObjectParams` | Upload options with `io.Reader`, `Metadata`, `StorageClass`, headers |
 | `GetObjectParams` / `GetObjectResult` | Stream download with content headers and metadata |
+| `DownloadObjectParams` / `DownloadObjectResult` | Parallel multipart download directly into an `io.WriterAt` (e.g. `*os.File`) |
 | `DeleteObjectParams` / `DeleteObjectsParams` | Single and batch deletion |
 | `HeadObjectParams` / `ObjectInfo` | Metadata inspection |
 | `ListObjectsParams` / `ListObjectsResult` | Prefix-based directory listing |

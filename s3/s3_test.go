@@ -201,13 +201,17 @@ func (s *stubS3API) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input, _
 }
 
 type stubTransferManager struct {
-	uploadCalls    int
-	uploadErr      error
-	lastInput      *transfermanager.UploadObjectInput
-	getObjectCalls int
-	getObjectOut   *transfermanager.GetObjectOutput
-	getObjectErr   error
-	lastGetInput   *transfermanager.GetObjectInput
+	uploadCalls       int
+	uploadErr         error
+	lastInput         *transfermanager.UploadObjectInput
+	getObjectCalls    int
+	getObjectOut      *transfermanager.GetObjectOutput
+	getObjectErr      error
+	lastGetInput      *transfermanager.GetObjectInput
+	downloadCalls     int
+	downloadOut       *transfermanager.DownloadObjectOutput
+	downloadErr       error
+	lastDownloadInput *transfermanager.DownloadObjectInput
 }
 
 func (s *stubTransferManager) UploadObject(_ context.Context, input *transfermanager.UploadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error) {
@@ -229,6 +233,18 @@ func (s *stubTransferManager) GetObject(_ context.Context, input *transfermanage
 		return s.getObjectOut, nil
 	}
 	return &transfermanager.GetObjectOutput{Body: io.NopCloser(strings.NewReader("content"))}, nil
+}
+
+func (s *stubTransferManager) DownloadObject(_ context.Context, input *transfermanager.DownloadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error) {
+	s.downloadCalls++
+	s.lastDownloadInput = input
+	if s.downloadErr != nil {
+		return nil, s.downloadErr
+	}
+	if s.downloadOut != nil {
+		return s.downloadOut, nil
+	}
+	return &transfermanager.DownloadObjectOutput{}, nil
 }
 
 type stubPresigner struct {
@@ -447,6 +463,83 @@ func TestGetObject_Error(t *testing.T) {
 	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
 
 	_, err := c.GetObject(context.Background(), GetObjectParams{Bucket: "b", Key: "k"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+type bufferWriterAt struct {
+	buf []byte
+}
+
+func (b *bufferWriterAt) WriteAt(p []byte, off int64) (n int, err error) {
+	if int(off)+len(p) > len(b.buf) {
+		newBuf := make([]byte, int(off)+len(p))
+		copy(newBuf, b.buf)
+		b.buf = newBuf
+	}
+	copy(b.buf[off:], p)
+	return len(p), nil
+}
+
+func TestDownloadObject_Success(t *testing.T) {
+	ct := "application/pdf"
+	cl := int64(1024)
+	etag := `"dl-etag"`
+	now := time.Now()
+	tm := &stubTransferManager{
+		downloadOut: &transfermanager.DownloadObjectOutput{
+			ContentType:   &ct,
+			ContentLength: &cl,
+			ETag:          &etag,
+			LastModified:  &now,
+			Metadata:      map[string]string{"type": "doc"},
+		},
+	}
+	c, _, ex := setup(&stubS3API{}, tm, &stubPresigner{})
+
+	buf := &bufferWriterAt{}
+	res, err := c.DownloadObject(context.Background(), DownloadObjectParams{
+		Bucket:      "reports",
+		Key:         "doc.pdf",
+		Writer:      buf,
+		IfMatch:     `"dl-etag"`,
+		IfNoneMatch: `"other"`,
+		Range:       "bytes=0-1023",
+		VersionID:   "v1",
+	})
+	if err != nil {
+		t.Fatalf("DownloadObject: %v", err)
+	}
+	if res.ContentType != ct || res.ContentLength != cl || res.ETag != etag || res.Metadata["type"] != "doc" {
+		t.Fatalf("unexpected DownloadObjectResult: %+v", res)
+	}
+	if tm.downloadCalls != 1 {
+		t.Fatalf("download calls = %d, want 1", tm.downloadCalls)
+	}
+	if tm.lastDownloadInput == nil || tm.lastDownloadInput.WriterAt != buf || *tm.lastDownloadInput.VersionID != "v1" {
+		t.Fatalf("unexpected download input: %+v", tm.lastDownloadInput)
+	}
+
+	span, ok := ex.last()
+	if !ok {
+		t.Fatal("no span recorded")
+	}
+	if span.Name() != "DownloadObject" {
+		t.Fatalf("span name = %q, want DownloadObject", span.Name())
+	}
+}
+
+func TestDownloadObject_Error(t *testing.T) {
+	tm := &stubTransferManager{downloadErr: errors.New("download failed")}
+	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
+
+	buf := &bufferWriterAt{}
+	_, err := c.DownloadObject(context.Background(), DownloadObjectParams{
+		Bucket: "reports",
+		Key:    "doc.pdf",
+		Writer: buf,
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -84,9 +84,29 @@ type GetObjectParams struct {
 	Range       string
 }
 
-// GetObjectResult contains the downloaded object stream and metadata.
+// GetObjectResult contains the downloaded object stream and its metadata.
 type GetObjectResult struct {
 	Body          io.ReadCloser
+	ContentType   string
+	ContentLength int64
+	ETag          string
+	LastModified  *time.Time
+	Metadata      map[string]string
+}
+
+// DownloadObjectParams describes an object download request writing directly into an io.WriterAt.
+type DownloadObjectParams struct {
+	Bucket      string
+	Key         string
+	Writer      io.WriterAt
+	IfMatch     string
+	IfNoneMatch string
+	Range       string
+	VersionID   string
+}
+
+// DownloadObjectResult contains metadata about the downloaded object.
+type DownloadObjectResult struct {
 	ContentType   string
 	ContentLength int64
 	ETag          string
@@ -191,6 +211,7 @@ type PresignPutObjectParams struct {
 type Client interface {
 	UploadObject(ctx context.Context, params UploadObjectParams) error
 	GetObject(ctx context.Context, params GetObjectParams) (*GetObjectResult, error)
+	DownloadObject(ctx context.Context, params DownloadObjectParams) (*DownloadObjectResult, error)
 	DeleteObject(ctx context.Context, params DeleteObjectParams) error
 	DeleteObjects(ctx context.Context, params DeleteObjectsParams) (*DeleteObjectsResult, error)
 	HeadObject(ctx context.Context, params HeadObjectParams) (*ObjectInfo, error)
@@ -211,6 +232,7 @@ type s3API interface {
 type transferManager interface {
 	UploadObject(ctx context.Context, input *transfermanager.UploadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error)
 	GetObject(ctx context.Context, input *transfermanager.GetObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error)
+	DownloadObject(ctx context.Context, input *transfermanager.DownloadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error)
 }
 
 // presigner is the presign-client contract, letting tests stub the SDK.
@@ -455,6 +477,55 @@ func (c *client) GetObject(ctx context.Context, params GetObjectParams) (*GetObj
 
 		res = &GetObjectResult{
 			Body:         body,
+			Metadata:     out.Metadata,
+			LastModified: out.LastModified,
+		}
+		if out.ContentType != nil {
+			res.ContentType = *out.ContentType
+		}
+		if out.ContentLength != nil {
+			res.ContentLength = *out.ContentLength
+		}
+		if out.ETag != nil {
+			res.ETag = *out.ETag
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// DownloadObject downloads an object from S3 directly into a destination io.WriterAt
+// (such as an *os.File), writing concurrent multipart chunks in parallel.
+func (c *client) DownloadObject(ctx context.Context, params DownloadObjectParams) (*DownloadObjectResult, error) {
+	var res *DownloadObjectResult
+	err := c.instrument(ctx, "DownloadObject", params.Bucket, func(ctx context.Context) error {
+		input := &transfermanager.DownloadObjectInput{
+			Bucket:   aws.String(params.Bucket),
+			Key:      aws.String(params.Key),
+			WriterAt: params.Writer,
+		}
+		if params.IfMatch != "" {
+			input.IfMatch = aws.String(params.IfMatch)
+		}
+		if params.IfNoneMatch != "" {
+			input.IfNoneMatch = aws.String(params.IfNoneMatch)
+		}
+		if params.Range != "" {
+			input.Range = aws.String(params.Range)
+		}
+		if params.VersionID != "" {
+			input.VersionID = aws.String(params.VersionID)
+		}
+
+		out, err := c.transferManager.DownloadObject(ctx, input)
+		if err != nil {
+			return err
+		}
+
+		res = &DownloadObjectResult{
 			Metadata:     out.Metadata,
 			LastModified: out.LastModified,
 		}
