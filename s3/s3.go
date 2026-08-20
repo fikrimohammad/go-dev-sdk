@@ -74,12 +74,22 @@ type UploadObjectParams struct {
 	CacheControl       string
 	Metadata           map[string]string
 	StorageClass       string
+	ChecksumAlgorithm  string
+}
+
+// UploadObjectResult contains metadata about the uploaded object.
+type UploadObjectResult struct {
+	Location  string
+	ETag      string
+	VersionID string
+	UploadID  string
 }
 
 // GetObjectParams describes a request to retrieve an object.
 type GetObjectParams struct {
 	Bucket      string
 	Key         string
+	VersionID   string
 	IfMatch     string
 	IfNoneMatch string
 	Range       string
@@ -91,6 +101,7 @@ type GetObjectResult struct {
 	ContentType   string
 	ContentLength int64
 	ETag          string
+	VersionID     string
 	LastModified  *time.Time
 	Metadata      map[string]string
 }
@@ -111,6 +122,7 @@ type DownloadObjectResult struct {
 	ContentType   string
 	ContentLength int64
 	ETag          string
+	VersionID     string
 	LastModified  *time.Time
 	Metadata      map[string]string
 }
@@ -180,8 +192,9 @@ type DeleteError struct {
 
 // HeadObjectParams describes an object metadata query.
 type HeadObjectParams struct {
-	Bucket string
-	Key    string
+	Bucket    string
+	Key       string
+	VersionID string
 }
 
 // ObjectInfo holds metadata about an S3 object.
@@ -191,6 +204,7 @@ type ObjectInfo struct {
 	ContentType   string
 	ContentLength int64
 	ETag          string
+	VersionID     string
 	LastModified  *time.Time
 	Metadata      map[string]string
 	StorageClass  string
@@ -249,7 +263,7 @@ type PresignPutObjectParams struct {
 // Client describes the S3 client interface.
 type Client interface {
 	// Object operations
-	UploadObject(ctx context.Context, params UploadObjectParams) error
+	UploadObject(ctx context.Context, params UploadObjectParams) (*UploadObjectResult, error)
 	GetObject(ctx context.Context, params GetObjectParams) (*GetObjectResult, error)
 	DownloadObject(ctx context.Context, params DownloadObjectParams) (*DownloadObjectResult, error)
 	CopyObject(ctx context.Context, params CopyObjectParams) (*CopyObjectResult, error)
@@ -467,8 +481,9 @@ var _ Client = (*client)(nil)
 
 // UploadObject uploads an object through the transfer manager, which performs
 // a multipart upload for large bodies.
-func (c *client) UploadObject(ctx context.Context, params UploadObjectParams) error {
-	return c.instrument(ctx, "UploadObject", params.Bucket, func(ctx context.Context) error {
+func (c *client) UploadObject(ctx context.Context, params UploadObjectParams) (*UploadObjectResult, error) {
+	var res *UploadObjectResult
+	err := c.instrument(ctx, "UploadObject", params.Bucket, func(ctx context.Context) error {
 		input := &transfermanager.UploadObjectInput{
 			Bucket:   aws.String(params.Bucket),
 			Key:      aws.String(params.Key),
@@ -490,9 +505,33 @@ func (c *client) UploadObject(ctx context.Context, params UploadObjectParams) er
 		if params.StorageClass != "" {
 			input.StorageClass = tmtypes.StorageClass(params.StorageClass)
 		}
-		_, err := c.transferManager.UploadObject(ctx, input)
-		return err
+		if params.ChecksumAlgorithm != "" {
+			input.ChecksumAlgorithm = tmtypes.ChecksumAlgorithm(params.ChecksumAlgorithm)
+		}
+		out, err := c.transferManager.UploadObject(ctx, input)
+		if err != nil {
+			return err
+		}
+
+		res = &UploadObjectResult{}
+		if out.Location != nil {
+			res.Location = *out.Location
+		}
+		if out.ETag != nil {
+			res.ETag = *out.ETag
+		}
+		if out.VersionID != nil {
+			res.VersionID = *out.VersionID
+		}
+		if out.UploadID != nil {
+			res.UploadID = *out.UploadID
+		}
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 // GetObject retrieves an object through the transfer manager, providing
@@ -504,6 +543,9 @@ func (c *client) GetObject(ctx context.Context, params GetObjectParams) (*GetObj
 		input := &transfermanager.GetObjectInput{
 			Bucket: aws.String(params.Bucket),
 			Key:    aws.String(params.Key),
+		}
+		if params.VersionID != "" {
+			input.VersionID = aws.String(params.VersionID)
 		}
 		if params.IfMatch != "" {
 			input.IfMatch = aws.String(params.IfMatch)
@@ -542,6 +584,9 @@ func (c *client) GetObject(ctx context.Context, params GetObjectParams) (*GetObj
 		}
 		if out.ETag != nil {
 			res.ETag = *out.ETag
+		}
+		if out.VersionID != nil {
+			res.VersionID = *out.VersionID
 		}
 		return nil
 	})
@@ -591,6 +636,9 @@ func (c *client) DownloadObject(ctx context.Context, params DownloadObjectParams
 		}
 		if out.ETag != nil {
 			res.ETag = *out.ETag
+		}
+		if out.VersionID != nil {
+			res.VersionID = *out.VersionID
 		}
 		return nil
 	})
@@ -757,10 +805,14 @@ func (c *client) DeleteObjects(ctx context.Context, params DeleteObjectsParams) 
 func (c *client) HeadObject(ctx context.Context, params HeadObjectParams) (*ObjectInfo, error) {
 	var info *ObjectInfo
 	err := c.instrument(ctx, "HeadObject", params.Bucket, func(ctx context.Context) error {
-		out, err := c.s3API.HeadObject(ctx, &s3.HeadObjectInput{
+		input := &s3.HeadObjectInput{
 			Bucket: aws.String(params.Bucket),
 			Key:    aws.String(params.Key),
-		})
+		}
+		if params.VersionID != "" {
+			input.VersionId = aws.String(params.VersionID)
+		}
+		out, err := c.s3API.HeadObject(ctx, input)
 		if err != nil {
 			return err
 		}
@@ -780,6 +832,9 @@ func (c *client) HeadObject(ctx context.Context, params HeadObjectParams) (*Obje
 		}
 		if out.ETag != nil {
 			info.ETag = *out.ETag
+		}
+		if out.VersionId != nil {
+			info.VersionID = *out.VersionId
 		}
 		return nil
 	})

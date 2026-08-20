@@ -297,7 +297,16 @@ func (s *stubTransferManager) UploadObject(_ context.Context, input *transferman
 	if s.uploadErr != nil {
 		return nil, s.uploadErr
 	}
-	return &transfermanager.UploadObjectOutput{}, nil
+	etag := `"upload-etag"`
+	loc := "https://s3.example.com/reports/test.csv"
+	ver := "v123"
+	upID := "upload-id-456"
+	return &transfermanager.UploadObjectOutput{
+		ETag:      &etag,
+		Location:  &loc,
+		VersionID: &ver,
+		UploadID:  &upID,
+	}, nil
 }
 
 func (s *stubTransferManager) GetObject(_ context.Context, input *transfermanager.GetObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
@@ -399,7 +408,7 @@ func TestUploadObject_Success(t *testing.T) {
 	api := &stubS3API{}
 	c, fm, ex := setup(api, tm, pr)
 
-	err := c.UploadObject(context.Background(), UploadObjectParams{
+	res, err := c.UploadObject(context.Background(), UploadObjectParams{
 		Bucket:             "reports",
 		Key:                "test.csv",
 		Body:               strings.NewReader("x"),
@@ -409,14 +418,18 @@ func TestUploadObject_Success(t *testing.T) {
 		CacheControl:       "max-age=3600",
 		Metadata:           map[string]string{"env": "test"},
 		StorageClass:       "STANDARD",
+		ChecksumAlgorithm:  "CRC32",
 	})
 	if err != nil {
 		t.Fatalf("UploadObject: %v", err)
 	}
+	if res.ETag != `"upload-etag"` || res.Location != "https://s3.example.com/reports/test.csv" || res.VersionID != "v123" || res.UploadID != "upload-id-456" {
+		t.Fatalf("unexpected UploadObjectResult: %+v", res)
+	}
 	if tm.uploadCalls != 1 {
 		t.Fatalf("upload calls = %d, want 1", tm.uploadCalls)
 	}
-	if tm.lastInput == nil || *tm.lastInput.ContentType != "text/csv" || *tm.lastInput.ContentDisposition != "attachment; filename=test.csv" {
+	if tm.lastInput == nil || *tm.lastInput.ContentType != "text/csv" || *tm.lastInput.ContentDisposition != "attachment; filename=test.csv" || string(tm.lastInput.ChecksumAlgorithm) != "CRC32" {
 		t.Fatalf("unexpected upload input: %+v", tm.lastInput)
 	}
 
@@ -477,7 +490,7 @@ func TestUploadObject_Error(t *testing.T) {
 	tm := &stubTransferManager{uploadErr: errors.New("upload failed")}
 	c, _, ex := setup(&stubS3API{}, tm, &stubPresigner{})
 
-	err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"})
+	_, err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -498,6 +511,7 @@ func TestGetObject_Success(t *testing.T) {
 	ct := "application/json"
 	cl := int64(42)
 	etag := `"abcd"`
+	ver := "v123"
 	now := time.Now()
 	tm := &stubTransferManager{
 		getObjectOut: &transfermanager.GetObjectOutput{
@@ -505,6 +519,7 @@ func TestGetObject_Success(t *testing.T) {
 			ContentType:   &ct,
 			ContentLength: &cl,
 			ETag:          &etag,
+			VersionID:     &ver,
 			LastModified:  &now,
 			Metadata:      map[string]string{"env": "test"},
 		},
@@ -514,6 +529,7 @@ func TestGetObject_Success(t *testing.T) {
 	res, err := c.GetObject(context.Background(), GetObjectParams{
 		Bucket:      "reports",
 		Key:         "data.json",
+		VersionID:   "v123",
 		IfMatch:     `"abcd"`,
 		IfNoneMatch: `"efgh"`,
 		Range:       "bytes=0-100",
@@ -521,8 +537,11 @@ func TestGetObject_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetObject: %v", err)
 	}
-	if res.ContentType != ct || res.ContentLength != cl || res.ETag != etag || res.Metadata["env"] != "test" {
+	if res.ContentType != ct || res.ContentLength != cl || res.ETag != etag || res.VersionID != ver || res.Metadata["env"] != "test" {
 		t.Fatalf("unexpected GetObjectResult: %+v", res)
+	}
+	if tm.lastGetInput == nil || *tm.lastGetInput.VersionID != "v123" {
+		t.Fatalf("unexpected get input: %+v", tm.lastGetInput)
 	}
 	data, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
@@ -888,12 +907,14 @@ func TestHeadObject_Success(t *testing.T) {
 	ct := "image/png"
 	cl := int64(1024)
 	etag := `"img123"`
+	ver := "v456"
 	now := time.Now()
 	api := &stubS3API{
 		headObjectOut: &s3.HeadObjectOutput{
 			ContentType:   &ct,
 			ContentLength: &cl,
 			ETag:          &etag,
+			VersionId:     &ver,
 			LastModified:  &now,
 			Metadata:      map[string]string{"author": "alice"},
 			StorageClass:  types.StorageClassStandard,
@@ -902,13 +923,14 @@ func TestHeadObject_Success(t *testing.T) {
 	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	info, err := c.HeadObject(context.Background(), HeadObjectParams{
-		Bucket: "images",
-		Key:    "avatar.png",
+		Bucket:    "images",
+		Key:       "avatar.png",
+		VersionID: "v456",
 	})
 	if err != nil {
 		t.Fatalf("HeadObject: %v", err)
 	}
-	if info.ContentType != ct || info.ContentLength != cl || info.ETag != etag || info.StorageClass != "STANDARD" || info.Metadata["author"] != "alice" {
+	if info.ContentType != ct || info.ContentLength != cl || info.ETag != etag || info.VersionID != ver || info.StorageClass != "STANDARD" || info.Metadata["author"] != "alice" {
 		t.Fatalf("unexpected ObjectInfo: %+v", info)
 	}
 	span, ok := ex.last()
@@ -1351,7 +1373,7 @@ func TestClient_DefaultTracerMetricsInjected(t *testing.T) {
 		},
 	}
 
-	if err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"}); err != nil {
+	if _, err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"}); err != nil {
 		t.Fatalf("UploadObject: %v", err)
 	}
 
@@ -1410,7 +1432,7 @@ func TestServerAttrsOmittedForAWS(t *testing.T) {
 		},
 	}
 
-	if err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"}); err != nil {
+	if _, err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"}); err != nil {
 		t.Fatalf("UploadObject: %v", err)
 	}
 
