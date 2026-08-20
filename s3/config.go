@@ -22,6 +22,10 @@ type Config struct {
 	AccessKeyID     string `yaml:"access_key_id"`
 	SecretAccessKey string `yaml:"secret_access_key"`
 
+	// UsePathStyle forces path-style addressing (e.g. http://endpoint/bucket/key).
+	// When nil, it defaults to true if Endpoint is set, and false for standard AWS.
+	UsePathStyle *bool `yaml:"use_path_style"`
+
 	// UploadPartSizeBytes is the buffer size (in bytes) used when buffering
 	// data into parts for a multipart upload. Zero uses the transfer manager
 	// default (8MB). The minimum allowed part size is 5MB.

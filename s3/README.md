@@ -1,28 +1,28 @@
 # s3
 
-A thin wrapper around the AWS SDK for Go v2 S3 transfer manager and presign
-client with a small, standardized API and automatic OpenTelemetry tracing +
-metrics per operation.
+A thin wrapper around the AWS SDK for Go v2 S3 transfer manager, S3 client, and presign
+client with a standardized API and automatic OpenTelemetry tracing + metrics per operation.
 
 ## Features
 
 - **UploadObject** — uploads through the transfer manager, which transparently
-  performs **multipart uploads** for large bodies (with configurable part size,
-  threshold, and concurrency).
-- **PresignGetObject** — returns a presigned download URL with response
-  content-type / content-disposition overrides and per-call expiry.
-- **Self-hosted S3 support** — set an `Endpoint` (e.g. MinIO); path-style
-  addressing is enabled automatically and the endpoint is surfaced in
-  telemetry.
+  performs **multipart uploads** for large bodies (accepts any `io.Reader`, with
+  support for custom metadata, storage classes, cache control, and content disposition).
+- **GetObject** — retrieves objects directly as streams (`io.ReadCloser`) alongside
+  metadata, content length, ETag, and content type.
+- **DeleteObject & DeleteObjects** — single-key and batch object deletion.
+- **HeadObject** — fast metadata and existence lookup without downloading content.
+- **ListObjects** — prefix-based object and folder listing with continuation token pagination.
+- **PresignGetObject** — returns a presigned download URL with response header overrides.
+- **PresignPutObject** — returns a presigned upload URL enabling direct browser/mobile to S3 uploads.
+- **Self-hosted S3 & Path-Style** — set an `Endpoint` (MinIO, Ceph, LocalStack, Cloudflare R2) with configurable `UsePathStyle`.
 - **Telemetry** — one client span per operation plus
-  `s3.client.operation.{count,duration}` metrics with OTel attributes
+  `s3.client.operation.{count,duration}` metrics with standard OTel attributes
   (`rpc.system`, `rpc.service`, `rpc.method`, `aws.s3.bucket`,
   `cloud.region`, and `server.*` for self-hosted endpoints).
 - **Error classification** — `error.type` maps AWS API error codes, transport
-  failures (`timeout`, `connection_reset`, `dns_error`, ...), or the raw
-  message.
-- **Injectable telemetry** — `WithMetrics` / `WithTracer` override the
-  package-level observability defaults.
+  failures (`timeout`, `connection_reset`, `dns_error`, ...), or the raw message.
+- **Injectable telemetry** — `WithMetrics` / `WithTracer` override package-level defaults.
 
 ## Installation
 
@@ -43,9 +43,9 @@ cfg := s3.Config{
     AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
     SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 
-    // Optional: self-hosted S3 (MinIO, Ceph, ...). Path-style + telemetry
-    // server attrs are derived from it.
-    Endpoint: "http://localhost:9000",
+    // Optional: self-hosted S3 (MinIO, Ceph, Cloudflare R2, ...).
+    Endpoint:     "http://localhost:9000",
+    // UsePathStyle: &[]bool{true}[0], // optional override
 
     // Optional multipart tuning (zero = transfer manager defaults).
     // UploadPartSizeBytes: 8 << 20, // min 5MB
@@ -69,45 +69,86 @@ if err != nil { /* handle */ }
 defer file.Close()
 
 err = cli.UploadObject(ctx, s3.UploadObjectParams{
-    Bucket:      "reports",
-    Key:         "2026/08/report.pdf",
-    Body:        file, // io.ReadCloser
-    ContentType: "application/pdf",
+    Bucket:             "reports",
+    Key:                "2026/08/report.pdf",
+    Body:               file, // any io.Reader
+    ContentType:        "application/pdf",
+    ContentDisposition: "attachment; filename=report.pdf",
+    Metadata:           map[string]string{"uploaded-by": "user-123"},
 })
 if err != nil { /* handle */ }
 ```
 
-Large bodies are uploaded in parts automatically; `UploadPartSizeBytes`,
-`UploadMultipartThreshold`, and `TransferConcurrency` tune the transfer
-manager.
-
-### 4. Presign a download URL
+### 4. Download / Get an object
 
 ```go
-url, err := cli.PresignGetObject(ctx, s3.PresignGetObjectParams{
-    Bucket:              "reports",
-    Key:                 "2026/08/report.pdf",
-    ResponseContentType: "application/pdf", // overrides the stored content type
-    ExpiresIn:           5 * time.Minute,   // zero → cfg.PresignDefaultExpiry (15m)
+res, err := cli.GetObject(ctx, s3.GetObjectParams{
+    Bucket: "reports",
+    Key:    "2026/08/report.pdf",
 })
 if err != nil { /* handle */ }
+defer res.Body.Close()
+
+data, err := io.ReadAll(res.Body)
 ```
 
-Return the URL to the client; it can download the object until it expires.
-
-### 5. (Optional) Inject telemetry clients
+### 5. Presign download & upload URLs
 
 ```go
-cli, err := s3.New(cfg, s3.WithMetrics(mc), s3.WithTracer(tc))
+// Presigned download URL
+downloadURL, err := cli.PresignGetObject(ctx, s3.PresignGetObjectParams{
+    Bucket:    "reports",
+    Key:       "2026/08/report.pdf",
+    ExpiresIn: 15 * time.Minute,
+})
+
+// Presigned upload URL (for direct frontend uploads)
+uploadURL, err := cli.PresignPutObject(ctx, s3.PresignPutObjectParams{
+    Bucket:      "uploads",
+    Key:         "user-avatar.png",
+    ContentType: "image/png",
+    ExpiresIn:   10 * time.Minute,
+})
 ```
 
-## Telemetry attributes
+### 6. Delete objects
 
-Per operation: `rpc.system` (`aws-api`), `rpc.service` (`s3`), `rpc.method`
-(`UploadObject` / `PresignGetObject`), `aws.s3.bucket`, `cloud.region` (when
-known), `server.address` + `server.port` (only for self-hosted endpoints), and
-`error.type` (AWS API error code, a transport label like `timeout` /
-`connection_reset` / `dns_error`, or the raw message; empty on success).
+```go
+// Single deletion
+err = cli.DeleteObject(ctx, s3.DeleteObjectParams{
+    Bucket: "reports",
+    Key:    "old-report.pdf",
+})
+
+// Batch deletion
+delRes, err := cli.DeleteObjects(ctx, s3.DeleteObjectsParams{
+    Bucket: "reports",
+    Keys:   []string{"temp1.csv", "temp2.csv"},
+})
+```
+
+### 7. Metadata inspection & Prefix listing
+
+```go
+// Check metadata / existence
+info, err := cli.HeadObject(ctx, s3.HeadObjectParams{
+    Bucket: "reports",
+    Key:    "2026/08/report.pdf",
+})
+if err == nil {
+    fmt.Printf("Size: %d bytes, ETag: %s\n", info.ContentLength, info.ETag)
+}
+
+// List objects matching prefix
+list, err := cli.ListObjects(ctx, s3.ListObjectsParams{
+    Bucket:  "reports",
+    Prefix:  "2026/",
+    MaxKeys: 100,
+})
+for _, obj := range list.Objects {
+    fmt.Println(obj.Key, obj.Size)
+}
+```
 
 ## Config reference
 
@@ -116,6 +157,7 @@ known), `server.address` + `server.port` (only for self-hosted endpoints), and
 | `Region` | — | Required |
 | `Endpoint` | — | Optional; must be `http`/`https` |
 | `AccessKeyID` / `SecretAccessKey` | — | Both set or both empty |
+| `UsePathStyle` | `true` if `Endpoint` is set | Forces path-style addressing |
 | `UploadPartSizeBytes` | transfer manager default (8MB) | Min 5MB |
 | `UploadMultipartThreshold` | transfer manager default (16MB) | |
 | `TransferConcurrency` | transfer manager default (5) | |
@@ -128,7 +170,11 @@ known), `server.address` + `server.port` (only for self-hosted endpoints), and
 | `Config` | Connection + transfer settings; `SetDefaults()`, `Validate()` |
 | `New(cfg, opts...)` | Build an instrumented `Client` |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
-| `UploadObjectParams` | `Bucket`, `Key`, `Body` (`io.ReadCloser`), `ContentType` |
-| `PresignGetObjectParams` | `Bucket`, `Key`, `ResponseContentType`, `ResponseContentDisposition`, `ExpiresIn` |
-| `Client` | `UploadObject`, `PresignGetObject` |
-| `DefaultPresignExpiry` | Package default URL validity |
+| `Client` | `UploadObject`, `GetObject`, `DeleteObject`, `DeleteObjects`, `HeadObject`, `ListObjects`, `PresignGetObject`, `PresignPutObject` |
+| `UploadObjectParams` | Upload options with `io.Reader`, `Metadata`, `StorageClass`, headers |
+| `GetObjectParams` / `GetObjectResult` | Stream download with content headers and metadata |
+| `DeleteObjectParams` / `DeleteObjectsParams` | Single and batch deletion |
+| `HeadObjectParams` / `ObjectInfo` | Metadata inspection |
+| `ListObjectsParams` / `ListObjectsResult` | Prefix-based directory listing |
+| `PresignGetObjectParams` / `PresignPutObjectParams` | Presigned download & upload URLs |
+| `DefaultPresignExpiry` | Package default URL validity (15m) |

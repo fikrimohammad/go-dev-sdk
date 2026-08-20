@@ -28,11 +28,13 @@ func TestConfig_Validate_Valid(t *testing.T) {
 }
 
 func TestConfig_Validate_ValidWithAllSettings(t *testing.T) {
+	pathStyle := true
 	c := Config{
 		Region:                   "us-east-1",
 		Endpoint:                 "http://localhost:9000",
 		AccessKeyID:              "key",
 		SecretAccessKey:          "secret",
+		UsePathStyle:             &pathStyle,
 		UploadPartSizeBytes:      5 * 1024 * 1024,
 		UploadMultipartThreshold: 16 * 1024 * 1024,
 		TransferConcurrency:      3,

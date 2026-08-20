@@ -1,6 +1,5 @@
-// Package s3 wraps the AWS S3 SDK transfer manager and presign client with a
-// small, standardized API and records OpenTelemetry traces and metrics per
-// operation.
+// Package s3 wraps the AWS S3 SDK transfer manager, S3 client, and presign client
+// with a standardized API and records OpenTelemetry traces and metrics per operation.
 //
 // New builds an AWS S3 client from a Config, derives a transfer manager
 // (multipart uploads) and a presign client from the same underlying client,
@@ -8,11 +7,13 @@
 // injectable via WithMetrics / WithTracer and fall back to the package-level
 // defaults.
 //
-// The exported surface is minimal and consistent with the db and redis
-// packages: the Client interface exposes the two operations the application
-// needs — UploadObject (a transfer-manager upload that transparently performs
-// multipart uploads) and PresignGetObject (a presigned download URL) — backed
-// by an unexported implementation.
+// The Client interface provides comprehensive object operations:
+// - UploadObject: transfer-manager upload with transparent multipart buffering.
+// - GetObject: stream-based object retrieval with headers and metadata.
+// - DeleteObject / DeleteObjects: single and batch object deletion.
+// - HeadObject: object existence and metadata lookup.
+// - ListObjects: prefix-based object listing with pagination.
+// - PresignGetObject / PresignPutObject: presigned download and upload URLs.
 //
 // Per performed operation one span named after the operation (client kind) and
 // the s3.client.operation.{count,duration} metrics are recorded with OTel
@@ -41,7 +42,9 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	tmtypes "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -61,10 +64,106 @@ const (
 
 // UploadObjectParams describes an object to upload.
 type UploadObjectParams struct {
+	Bucket             string
+	Key                string
+	Body               io.Reader
+	ContentType        string
+	ContentDisposition string
+	ContentEncoding    string
+	CacheControl       string
+	Metadata           map[string]string
+	StorageClass       string
+}
+
+// GetObjectParams describes a request to retrieve an object.
+type GetObjectParams struct {
 	Bucket      string
 	Key         string
-	Body        io.ReadCloser
-	ContentType string
+	IfMatch     string
+	IfNoneMatch string
+	Range       string
+}
+
+// GetObjectResult contains the downloaded object stream and metadata.
+type GetObjectResult struct {
+	Body          io.ReadCloser
+	ContentType   string
+	ContentLength int64
+	ETag          string
+	LastModified  *time.Time
+	Metadata      map[string]string
+}
+
+// DeleteObjectParams describes an object to delete.
+type DeleteObjectParams struct {
+	Bucket    string
+	Key       string
+	VersionID string
+}
+
+// DeleteObjectsParams describes batch deletion of multiple objects.
+type DeleteObjectsParams struct {
+	Bucket string
+	Keys   []string
+	Quiet  bool
+}
+
+// DeleteObjectsResult contains the result of a batch delete operation.
+type DeleteObjectsResult struct {
+	Deleted []string
+	Errors  []DeleteError
+}
+
+// DeleteError describes a failed object deletion in a batch delete operation.
+type DeleteError struct {
+	Key       string
+	Code      string
+	Message   string
+	VersionID string
+}
+
+// HeadObjectParams describes an object metadata query.
+type HeadObjectParams struct {
+	Bucket string
+	Key    string
+}
+
+// ObjectInfo holds metadata about an S3 object.
+type ObjectInfo struct {
+	Bucket        string
+	Key           string
+	ContentType   string
+	ContentLength int64
+	ETag          string
+	LastModified  *time.Time
+	Metadata      map[string]string
+	StorageClass  string
+}
+
+// ListObjectsParams describes a query to list objects matching a prefix.
+type ListObjectsParams struct {
+	Bucket            string
+	Prefix            string
+	Delimiter         string
+	ContinuationToken string
+	MaxKeys           int32
+}
+
+// ListObjectsResult contains the objects and folders returned by a list query.
+type ListObjectsResult struct {
+	Objects               []ObjectSummary
+	CommonPrefixes        []string
+	NextContinuationToken string
+	IsTruncated           bool
+}
+
+// ObjectSummary summarizes an object within a list result.
+type ObjectSummary struct {
+	Key          string
+	Size         int64
+	ETag         string
+	LastModified *time.Time
+	StorageClass string
 }
 
 // PresignGetObjectParams describes a presigned download URL request.
@@ -78,10 +177,35 @@ type PresignGetObjectParams struct {
 	ExpiresIn time.Duration
 }
 
-// Client is the minimal S3 surface: upload an object and presign a download URL.
+// PresignPutObjectParams describes a presigned upload URL request.
+type PresignPutObjectParams struct {
+	Bucket      string
+	Key         string
+	ContentType string
+	// ExpiresIn is the URL validity. Zero uses the Config default
+	// (PresignDefaultExpiry).
+	ExpiresIn time.Duration
+}
+
+// Client describes the S3 client interface.
 type Client interface {
 	UploadObject(ctx context.Context, params UploadObjectParams) error
+	GetObject(ctx context.Context, params GetObjectParams) (*GetObjectResult, error)
+	DeleteObject(ctx context.Context, params DeleteObjectParams) error
+	DeleteObjects(ctx context.Context, params DeleteObjectsParams) (*DeleteObjectsResult, error)
+	HeadObject(ctx context.Context, params HeadObjectParams) (*ObjectInfo, error)
+	ListObjects(ctx context.Context, params ListObjectsParams) (*ListObjectsResult, error)
 	PresignGetObject(ctx context.Context, params PresignGetObjectParams) (string, error)
+	PresignPutObject(ctx context.Context, params PresignPutObjectParams) (string, error)
+}
+
+// s3API abstracts the raw s3.Client operations needed by our Client implementation.
+type s3API interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
 // uploader is the transfer-manager contract, letting tests stub the SDK.
@@ -92,6 +216,7 @@ type uploader interface {
 // presigner is the presign-client contract, letting tests stub the SDK.
 type presigner interface {
 	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
+	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
 }
 
 // meta carries the attributes held by every instrumented operation.
@@ -147,7 +272,7 @@ func New(cfg Config, opts ...Option) (Client, error) {
 		return nil, err
 	}
 
-	uploader := transfermanager.New(s3Client, func(opt *transfermanager.Options) {
+	tmUploader := transfermanager.New(s3Client, func(opt *transfermanager.Options) {
 		if cfg.UploadPartSizeBytes > 0 {
 			opt.PartSizeBytes = cfg.UploadPartSizeBytes
 		}
@@ -158,11 +283,12 @@ func New(cfg Config, opts ...Option) (Client, error) {
 			opt.Concurrency = cfg.TransferConcurrency
 		}
 	})
-	presigner := s3.NewPresignClient(s3Client)
+	tmPresigner := s3.NewPresignClient(s3Client)
 
 	return &client{
-		uploader:  uploader,
-		presigner: presigner,
+		s3API:     s3Client,
+		uploader:  tmUploader,
+		presigner: tmPresigner,
 		meta: meta{
 			region:               cfg.Region,
 			serverAddr:           serverAddr,
@@ -195,6 +321,13 @@ func buildClient(cfg Config) (*s3.Client, string, int, error) {
 	serverAddr, serverPort := endpointAddress(cfg.Endpoint)
 
 	var s3Opts []func(*s3.Options)
+	usePathStyle := false
+	if cfg.UsePathStyle != nil {
+		usePathStyle = *cfg.UsePathStyle
+	} else if cfg.Endpoint != "" {
+		usePathStyle = true
+	}
+
 	if cfg.Endpoint != "" {
 		endpointURL, err := url.Parse(cfg.Endpoint)
 		if err != nil {
@@ -202,6 +335,10 @@ func buildClient(cfg Config) (*s3.Client, string, int, error) {
 		}
 		s3Opts = append(s3Opts, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(endpointURL.String())
+			o.UsePathStyle = usePathStyle
+		})
+	} else if usePathStyle {
+		s3Opts = append(s3Opts, func(o *s3.Options) {
 			o.UsePathStyle = true
 		})
 	}
@@ -242,8 +379,9 @@ func endpointAddress(endpoint string) (string, int) {
 	}
 }
 
-// client implements Client over the transfer manager and presign client.
+// client implements Client over the s3 client, transfer manager, and presign client.
 type client struct {
+	s3API     s3API
 	uploader  uploader
 	presigner presigner
 	meta
@@ -255,14 +393,255 @@ var _ Client = (*client)(nil)
 // a multipart upload for large bodies.
 func (c *client) UploadObject(ctx context.Context, params UploadObjectParams) error {
 	return c.instrument(ctx, "UploadObject", params.Bucket, func(ctx context.Context) error {
-		_, err := c.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
-			Bucket:      aws.String(params.Bucket),
-			Key:         aws.String(params.Key),
-			Body:        params.Body,
-			ContentType: aws.String(params.ContentType),
-		})
+		input := &transfermanager.UploadObjectInput{
+			Bucket:   aws.String(params.Bucket),
+			Key:      aws.String(params.Key),
+			Body:     params.Body,
+			Metadata: params.Metadata,
+		}
+		if params.ContentType != "" {
+			input.ContentType = aws.String(params.ContentType)
+		}
+		if params.ContentDisposition != "" {
+			input.ContentDisposition = aws.String(params.ContentDisposition)
+		}
+		if params.ContentEncoding != "" {
+			input.ContentEncoding = aws.String(params.ContentEncoding)
+		}
+		if params.CacheControl != "" {
+			input.CacheControl = aws.String(params.CacheControl)
+		}
+		if params.StorageClass != "" {
+			input.StorageClass = tmtypes.StorageClass(params.StorageClass)
+		}
+		_, err := c.uploader.UploadObject(ctx, input)
 		return err
 	})
+}
+
+// GetObject retrieves an object from S3.
+func (c *client) GetObject(ctx context.Context, params GetObjectParams) (*GetObjectResult, error) {
+	var res *GetObjectResult
+	err := c.instrument(ctx, "GetObject", params.Bucket, func(ctx context.Context) error {
+		input := &s3.GetObjectInput{
+			Bucket: aws.String(params.Bucket),
+			Key:    aws.String(params.Key),
+		}
+		if params.IfMatch != "" {
+			input.IfMatch = aws.String(params.IfMatch)
+		}
+		if params.IfNoneMatch != "" {
+			input.IfNoneMatch = aws.String(params.IfNoneMatch)
+		}
+		if params.Range != "" {
+			input.Range = aws.String(params.Range)
+		}
+
+		out, err := c.s3API.GetObject(ctx, input)
+		if err != nil {
+			return err
+		}
+
+		res = &GetObjectResult{
+			Body:         out.Body,
+			Metadata:     out.Metadata,
+			LastModified: out.LastModified,
+		}
+		if out.ContentType != nil {
+			res.ContentType = *out.ContentType
+		}
+		if out.ContentLength != nil {
+			res.ContentLength = *out.ContentLength
+		}
+		if out.ETag != nil {
+			res.ETag = *out.ETag
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// DeleteObject removes a single object from S3.
+func (c *client) DeleteObject(ctx context.Context, params DeleteObjectParams) error {
+	return c.instrument(ctx, "DeleteObject", params.Bucket, func(ctx context.Context) error {
+		input := &s3.DeleteObjectInput{
+			Bucket: aws.String(params.Bucket),
+			Key:    aws.String(params.Key),
+		}
+		if params.VersionID != "" {
+			input.VersionId = aws.String(params.VersionID)
+		}
+		_, err := c.s3API.DeleteObject(ctx, input)
+		return err
+	})
+}
+
+// DeleteObjects removes multiple objects from S3 in a single batch request.
+func (c *client) DeleteObjects(ctx context.Context, params DeleteObjectsParams) (*DeleteObjectsResult, error) {
+	var res *DeleteObjectsResult
+	err := c.instrument(ctx, "DeleteObjects", params.Bucket, func(ctx context.Context) error {
+		objectIDs := make([]types.ObjectIdentifier, 0, len(params.Keys))
+		for _, k := range params.Keys {
+			objectIDs = append(objectIDs, types.ObjectIdentifier{
+				Key: aws.String(k),
+			})
+		}
+
+		input := &s3.DeleteObjectsInput{
+			Bucket: aws.String(params.Bucket),
+			Delete: &types.Delete{
+				Objects: objectIDs,
+				Quiet:   aws.Bool(params.Quiet),
+			},
+		}
+
+		out, err := c.s3API.DeleteObjects(ctx, input)
+		if err != nil {
+			return err
+		}
+
+		deleted := make([]string, 0, len(out.Deleted))
+		for _, d := range out.Deleted {
+			if d.Key != nil {
+				deleted = append(deleted, *d.Key)
+			}
+		}
+
+		delErrors := make([]DeleteError, 0, len(out.Errors))
+		for _, e := range out.Errors {
+			de := DeleteError{}
+			if e.Key != nil {
+				de.Key = *e.Key
+			}
+			if e.Code != nil {
+				de.Code = *e.Code
+			}
+			if e.Message != nil {
+				de.Message = *e.Message
+			}
+			if e.VersionId != nil {
+				de.VersionID = *e.VersionId
+			}
+			delErrors = append(delErrors, de)
+		}
+
+		res = &DeleteObjectsResult{
+			Deleted: deleted,
+			Errors:  delErrors,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// HeadObject retrieves metadata for an object without downloading its content.
+func (c *client) HeadObject(ctx context.Context, params HeadObjectParams) (*ObjectInfo, error) {
+	var info *ObjectInfo
+	err := c.instrument(ctx, "HeadObject", params.Bucket, func(ctx context.Context) error {
+		out, err := c.s3API.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: aws.String(params.Bucket),
+			Key:    aws.String(params.Key),
+		})
+		if err != nil {
+			return err
+		}
+
+		info = &ObjectInfo{
+			Bucket:       params.Bucket,
+			Key:          params.Key,
+			Metadata:     out.Metadata,
+			LastModified: out.LastModified,
+			StorageClass: string(out.StorageClass),
+		}
+		if out.ContentType != nil {
+			info.ContentType = *out.ContentType
+		}
+		if out.ContentLength != nil {
+			info.ContentLength = *out.ContentLength
+		}
+		if out.ETag != nil {
+			info.ETag = *out.ETag
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// ListObjects lists objects within a bucket matching the given prefix and criteria.
+func (c *client) ListObjects(ctx context.Context, params ListObjectsParams) (*ListObjectsResult, error) {
+	var res *ListObjectsResult
+	err := c.instrument(ctx, "ListObjects", params.Bucket, func(ctx context.Context) error {
+		input := &s3.ListObjectsV2Input{
+			Bucket: aws.String(params.Bucket),
+		}
+		if params.Prefix != "" {
+			input.Prefix = aws.String(params.Prefix)
+		}
+		if params.Delimiter != "" {
+			input.Delimiter = aws.String(params.Delimiter)
+		}
+		if params.ContinuationToken != "" {
+			input.ContinuationToken = aws.String(params.ContinuationToken)
+		}
+		if params.MaxKeys > 0 {
+			input.MaxKeys = aws.Int32(params.MaxKeys)
+		}
+
+		out, err := c.s3API.ListObjectsV2(ctx, input)
+		if err != nil {
+			return err
+		}
+
+		objs := make([]ObjectSummary, 0, len(out.Contents))
+		for _, o := range out.Contents {
+			summary := ObjectSummary{
+				StorageClass: string(o.StorageClass),
+				LastModified: o.LastModified,
+			}
+			if o.Key != nil {
+				summary.Key = *o.Key
+			}
+			if o.Size != nil {
+				summary.Size = *o.Size
+			}
+			if o.ETag != nil {
+				summary.ETag = *o.ETag
+			}
+			objs = append(objs, summary)
+		}
+
+		prefixes := make([]string, 0, len(out.CommonPrefixes))
+		for _, cp := range out.CommonPrefixes {
+			if cp.Prefix != nil {
+				prefixes = append(prefixes, *cp.Prefix)
+			}
+		}
+
+		res = &ListObjectsResult{
+			Objects:        objs,
+			CommonPrefixes: prefixes,
+		}
+		if out.NextContinuationToken != nil {
+			res.NextContinuationToken = *out.NextContinuationToken
+		}
+		if out.IsTruncated != nil {
+			res.IsTruncated = *out.IsTruncated
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 // PresignGetObject returns a presigned download URL for the object. ExpiresIn
@@ -280,6 +659,37 @@ func (c *client) PresignGetObject(ctx context.Context, params PresignGetObjectPa
 			ResponseContentType:        aws.String(params.ResponseContentType),
 			ResponseContentDisposition: aws.String(params.ResponseContentDisposition),
 		}, func(o *s3.PresignOptions) {
+			o.Expires = params.ExpiresIn
+		})
+		if err != nil {
+			return err
+		}
+		presignURL = out.URL
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return presignURL, nil
+}
+
+// PresignPutObject returns a presigned upload URL for the object. ExpiresIn
+// defaults to the Config default (PresignDefaultExpiry) when not set.
+func (c *client) PresignPutObject(ctx context.Context, params PresignPutObjectParams) (string, error) {
+	if params.ExpiresIn <= 0 {
+		params.ExpiresIn = c.presignDefaultExpiry
+	}
+
+	var presignURL string
+	err := c.instrument(ctx, "PresignPutObject", params.Bucket, func(ctx context.Context) error {
+		input := &s3.PutObjectInput{
+			Bucket: aws.String(params.Bucket),
+			Key:    aws.String(params.Key),
+		}
+		if params.ContentType != "" {
+			input.ContentType = aws.String(params.ContentType)
+		}
+		out, err := c.presigner.PresignPutObject(ctx, input, func(o *s3.PresignOptions) {
 			o.Expires = params.ExpiresIn
 		})
 		if err != nil {
