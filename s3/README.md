@@ -132,19 +132,23 @@ fmt.Printf("Copied object ETag: %s\n", res.ETag)
 ### 7. Presign download & upload URLs
 
 ```go
-// Presigned download URL
+// Presigned download URL with response header overrides
 downloadURL, err := cli.PresignGetObject(ctx, s3.PresignGetObjectParams{
-    Bucket:    "reports",
-    Key:       "2026/08/report.pdf",
-    ExpiresIn: 15 * time.Minute,
+    Bucket:                     "reports",
+    Key:                        "2026/08/report.pdf",
+    ResponseContentType:        "application/pdf",
+    ResponseContentDisposition: "attachment; filename=annual-report.pdf",
+    ExpiresIn:                  15 * time.Minute,
 })
 
 // Presigned upload URL (for direct frontend uploads)
 uploadURL, err := cli.PresignPutObject(ctx, s3.PresignPutObjectParams{
-    Bucket:      "uploads",
-    Key:         "user-avatar.png",
-    ContentType: "image/png",
-    ExpiresIn:   10 * time.Minute,
+    Bucket:             "uploads",
+    Key:                "user-avatar.png",
+    ContentType:        "image/png",
+    ContentDisposition: "inline",
+    CacheControl:       "max-age=31536000",
+    ExpiresIn:          10 * time.Minute,
 })
 ```
 

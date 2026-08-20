@@ -247,6 +247,8 @@ type PresignGetObjectParams struct {
 	VersionID                  string
 	ResponseContentType        string
 	ResponseContentDisposition string
+	ResponseCacheControl       string
+	ResponseContentEncoding    string
 	// ExpiresIn is the URL validity. Zero uses the Config default
 	// (PresignDefaultExpiry).
 	ExpiresIn time.Duration
@@ -254,11 +256,14 @@ type PresignGetObjectParams struct {
 
 // PresignPutObjectParams describes a presigned upload URL request.
 type PresignPutObjectParams struct {
-	Bucket       string
-	Key          string
-	ContentType  string
-	StorageClass string
-	Metadata     map[string]string
+	Bucket             string
+	Key                string
+	ContentType        string
+	ContentDisposition string
+	ContentEncoding    string
+	CacheControl       string
+	StorageClass       string
+	Metadata           map[string]string
 	// ExpiresIn is the URL validity. Zero uses the Config default
 	// (PresignDefaultExpiry).
 	ExpiresIn time.Duration
@@ -961,6 +966,12 @@ func (c *client) PresignGetObject(ctx context.Context, params PresignGetObjectPa
 		if params.ResponseContentDisposition != "" {
 			input.ResponseContentDisposition = aws.String(params.ResponseContentDisposition)
 		}
+		if params.ResponseCacheControl != "" {
+			input.ResponseCacheControl = aws.String(params.ResponseCacheControl)
+		}
+		if params.ResponseContentEncoding != "" {
+			input.ResponseContentEncoding = aws.String(params.ResponseContentEncoding)
+		}
 
 		out, err := c.presigner.PresignGetObject(ctx, input, func(o *s3.PresignOptions) {
 			o.Expires = params.ExpiresIn
@@ -993,6 +1004,15 @@ func (c *client) PresignPutObject(ctx context.Context, params PresignPutObjectPa
 		}
 		if params.ContentType != "" {
 			input.ContentType = aws.String(params.ContentType)
+		}
+		if params.ContentDisposition != "" {
+			input.ContentDisposition = aws.String(params.ContentDisposition)
+		}
+		if params.ContentEncoding != "" {
+			input.ContentEncoding = aws.String(params.ContentEncoding)
+		}
+		if params.CacheControl != "" {
+			input.CacheControl = aws.String(params.CacheControl)
 		}
 		if params.StorageClass != "" {
 			input.StorageClass = types.StorageClass(params.StorageClass)

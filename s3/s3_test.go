@@ -1207,6 +1207,8 @@ func TestPresignGetObject_Success(t *testing.T) {
 		VersionID:                  "v123",
 		ResponseContentType:        "text/csv",
 		ResponseContentDisposition: "inline",
+		ResponseCacheControl:       "max-age=3600",
+		ResponseContentEncoding:    "gzip",
 		ExpiresIn:                  5 * time.Minute,
 	})
 	if err != nil {
@@ -1221,7 +1223,7 @@ func TestPresignGetObject_Success(t *testing.T) {
 	if pr.expires != 5*time.Minute {
 		t.Fatalf("expires = %v, want 5m", pr.expires)
 	}
-	if pr.lastGetInput == nil || *pr.lastGetInput.VersionId != "v123" || *pr.lastGetInput.ResponseContentType != "text/csv" {
+	if pr.lastGetInput == nil || *pr.lastGetInput.VersionId != "v123" || *pr.lastGetInput.ResponseContentType != "text/csv" || *pr.lastGetInput.ResponseCacheControl != "max-age=3600" || *pr.lastGetInput.ResponseContentEncoding != "gzip" {
 		t.Fatalf("unexpected lastGetInput: %+v", pr.lastGetInput)
 	}
 
@@ -1255,7 +1257,7 @@ func TestPresignGetObject_AppliesDefaultExpiry(t *testing.T) {
 
 func TestPresignGetObject_Error(t *testing.T) {
 	up := &stubTransferManager{}
-	pr := &stubPresigner{returnErr: errors.New("signing failed")}
+	pr := &stubPresigner{returnErr: errors.New("presign failed")}
 	c, fm, ex := setup(&stubS3API{}, up, pr)
 
 	_, err := c.PresignGetObject(context.Background(), PresignGetObjectParams{
@@ -1284,12 +1286,15 @@ func TestPresignPutObject_Success(t *testing.T) {
 	c, _, ex := setup(&stubS3API{}, up, pr)
 
 	url, err := c.PresignPutObject(context.Background(), PresignPutObjectParams{
-		Bucket:       "uploads",
-		Key:          "avatar.png",
-		ContentType:  "image/png",
-		StorageClass: "STANDARD_IA",
-		Metadata:     map[string]string{"user": "alice"},
-		ExpiresIn:    10 * time.Minute,
+		Bucket:             "uploads",
+		Key:                "avatar.png",
+		ContentType:        "image/png",
+		ContentDisposition: "attachment; filename=avatar.png",
+		ContentEncoding:    "gzip",
+		CacheControl:       "max-age=86400",
+		StorageClass:       "STANDARD_IA",
+		Metadata:           map[string]string{"user": "alice"},
+		ExpiresIn:          10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("PresignPutObject: %v", err)
@@ -1303,7 +1308,7 @@ func TestPresignPutObject_Success(t *testing.T) {
 	if pr.expires != 10*time.Minute {
 		t.Fatalf("expires = %v, want 10m", pr.expires)
 	}
-	if pr.lastPutInput == nil || pr.lastPutInput.Metadata["user"] != "alice" || pr.lastPutInput.StorageClass != "STANDARD_IA" {
+	if pr.lastPutInput == nil || pr.lastPutInput.Metadata["user"] != "alice" || pr.lastPutInput.StorageClass != "STANDARD_IA" || *pr.lastPutInput.ContentDisposition != "attachment; filename=avatar.png" || *pr.lastPutInput.CacheControl != "max-age=86400" {
 		t.Fatalf("unexpected lastPutInput: %+v", pr.lastPutInput)
 	}
 
