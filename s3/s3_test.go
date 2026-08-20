@@ -161,6 +161,7 @@ type stubS3API struct {
 	listObjectsCalls      int
 	listObjectsOut        *s3.ListObjectsV2Output
 	listObjectsErr        error
+	listObjectsFn         func(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error)
 }
 
 func (s *stubS3API) CreateBucket(_ context.Context, input *s3.CreateBucketInput, _ ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
@@ -266,8 +267,11 @@ func (s *stubS3API) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...fu
 	return &s3.HeadObjectOutput{}, nil
 }
 
-func (s *stubS3API) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+func (s *stubS3API) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 	s.listObjectsCalls++
+	if s.listObjectsFn != nil {
+		return s.listObjectsFn(ctx, input)
+	}
 	if s.listObjectsErr != nil {
 		return nil, s.listObjectsErr
 	}
@@ -1007,35 +1011,45 @@ func TestListObjects_Error(t *testing.T) {
 func TestListAllObjects_Pagination(t *testing.T) {
 	key1 := "file1.txt"
 	key2 := "file2.txt"
+	key3 := "file3.txt"
 	tok := "next-page"
 	truncTrue := true
 	truncFalse := false
 
-	page := 0
 	api := &stubS3API{}
-	// We dynamically change listObjectsOut on call via custom logic or sequence
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	// Test single page when truncated is false
-	api.listObjectsOut = &s3.ListObjectsV2Output{
-		Contents: []types.Object{
-			{Key: &key1},
-			{Key: &key2},
-		},
-		IsTruncated: &truncFalse,
+	api.listObjectsFn = func(_ context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+		if input.ContinuationToken == nil {
+			// First page
+			return &s3.ListObjectsV2Output{
+				Contents: []types.Object{
+					{Key: &key1},
+					{Key: &key2},
+				},
+				NextContinuationToken: &tok,
+				IsTruncated:           &truncTrue,
+			}, nil
+		}
+		// Second page
+		return &s3.ListObjectsV2Output{
+			Contents: []types.Object{
+				{Key: &key3},
+			},
+			IsTruncated: &truncFalse,
+		}, nil
 	}
+
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
 	objs, err := c.ListAllObjects(context.Background(), ListObjectsParams{Bucket: "docs"})
 	if err != nil {
 		t.Fatalf("ListAllObjects: %v", err)
 	}
-	if len(objs) != 2 || objs[0].Key != key1 || objs[1].Key != key2 {
+	if len(objs) != 3 || objs[0].Key != key1 || objs[1].Key != key2 || objs[2].Key != key3 {
 		t.Fatalf("unexpected objects: %+v", objs)
 	}
-
-	_ = page
-	_ = tok
-	_ = truncTrue
+	if api.listObjectsCalls != 2 {
+		t.Fatalf("listObjectsCalls = %d, want 2", api.listObjectsCalls)
+	}
 }
 
 func TestListAllObjects_Error(t *testing.T) {

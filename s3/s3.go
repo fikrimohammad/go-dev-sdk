@@ -918,7 +918,7 @@ func (c *client) ListObjects(ctx context.Context, params ListObjectsParams) (*Li
 
 // ListAllObjects lists all objects matching the prefix across all pagination pages.
 func (c *client) ListAllObjects(ctx context.Context, params ListObjectsParams) ([]ObjectSummary, error) {
-	var allObjects []ObjectSummary
+	allObjects := make([]ObjectSummary, 0)
 	token := params.ContinuationToken
 	for {
 		p := params
