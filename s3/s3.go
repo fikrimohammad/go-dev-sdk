@@ -7,12 +7,16 @@
 // injectable via WithMetrics / WithTracer and fall back to the package-level
 // defaults.
 //
-// The Client interface provides comprehensive object operations:
-// - UploadObject: transfer-manager upload with transparent multipart buffering.
-// - GetObject: stream-based object retrieval with headers and metadata.
-// - DeleteObject / DeleteObjects: single and batch object deletion.
-// - HeadObject: object existence and metadata lookup.
-// - ListObjects: prefix-based object listing with pagination.
+// The Client interface provides comprehensive object and bucket operations:
+// - UploadObject: transfer-manager multipart upload from any io.Reader.
+// - GetObject: stream-based object retrieval with headers, versioning, and metadata.
+// - DownloadObject: parallel multipart downloads directly into io.WriterAt (e.g. *os.File).
+// - CopyObject: server-side object copying with zero network egress.
+// - ObjectExists / IsNotFound: fast existence inspection and reliable 404 detection.
+// - DeleteObject / DeleteObjects: single and automatic chunked batch deletion.
+// - HeadObject: object metadata, versioning, and existence lookup.
+// - ListObjects / ListAllObjects: single-page and automatic multi-page prefix listing.
+// - BucketExists / CreateBucket / DeleteBucket / ListBuckets: bucket lifecycle management.
 // - PresignGetObject / PresignPutObject: presigned download and upload URLs.
 //
 // Per performed operation one span named after the operation (client kind) and
