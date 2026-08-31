@@ -28,11 +28,14 @@ func TestConfig_Validate_Valid(t *testing.T) {
 }
 
 func TestConfig_Validate_ValidWithAllSettings(t *testing.T) {
+	pathStyle := true
 	c := Config{
 		Region:                   "us-east-1",
 		Endpoint:                 "http://localhost:9000",
 		AccessKeyID:              "key",
 		SecretAccessKey:          "secret",
+		SessionToken:             "token-123",
+		UsePathStyle:             &pathStyle,
 		UploadPartSizeBytes:      5 * 1024 * 1024,
 		UploadMultipartThreshold: 16 * 1024 * 1024,
 		TransferConcurrency:      3,
@@ -52,6 +55,7 @@ func TestConfig_Validate_Errors(t *testing.T) {
 		{"missing region", Config{}, "region is required"},
 		{"creds only key", Config{Region: "r", AccessKeyID: "k"}, "both be set"},
 		{"creds only secret", Config{Region: "r", SecretAccessKey: "s"}, "both be set"},
+		{"session token without keys", Config{Region: "r", SessionToken: "t"}, "session_token requires"},
 		{"endpoint no scheme", Config{Region: "r", Endpoint: "localhost:9000"}, "must use http or https"},
 		{"negative part size", Config{Region: "r", UploadPartSizeBytes: -1}, "must not be negative"},
 		{"part size below minimum", Config{Region: "r", UploadPartSizeBytes: 1024}, "at least"},

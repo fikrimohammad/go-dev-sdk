@@ -21,6 +21,11 @@ type Config struct {
 	Endpoint        string `yaml:"endpoint"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	SecretAccessKey string `yaml:"secret_access_key"`
+	SessionToken    string `yaml:"session_token"`
+
+	// UsePathStyle forces path-style addressing (e.g. http://endpoint/bucket/key).
+	// When nil, it defaults to true if Endpoint is set, and false for standard AWS.
+	UsePathStyle *bool `yaml:"use_path_style"`
 
 	// UploadPartSizeBytes is the buffer size (in bytes) used when buffering
 	// data into parts for a multipart upload. Zero uses the transfer manager
@@ -60,6 +65,9 @@ func (c Config) Validate() error {
 	}
 	if (c.AccessKeyID == "") != (c.SecretAccessKey == "") {
 		errs = append(errs, errors.New("s3: access_key_id and secret_access_key must both be set or both be empty"))
+	}
+	if c.SessionToken != "" && (c.AccessKeyID == "" || c.SecretAccessKey == "") {
+		errs = append(errs, errors.New("s3: session_token requires access_key_id and secret_access_key to be set"))
 	}
 	if c.Endpoint != "" {
 		u, err := url.Parse(c.Endpoint)
