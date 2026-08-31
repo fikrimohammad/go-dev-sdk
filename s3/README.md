@@ -1,33 +1,15 @@
 # s3
 
-A thin wrapper around the AWS SDK for Go v2 S3 transfer manager, S3 client, and presign
-client with a standardized API and automatic OpenTelemetry tracing + metrics per operation.
+A lightweight wrapper around the AWS SDK for Go v2 S3 transfer manager, S3 client, and presign
+client with standard AWS SDK types and automatic OpenTelemetry tracing + metrics per operation via Smithy middleware.
 
 ## Features
 
-- **UploadObject** — uploads through the transfer manager, which transparently
-  performs **multipart uploads** for large bodies (accepts any `io.Reader`, with
-  support for custom metadata, storage classes, cache control, and content disposition).
-- **GetObject** — retrieves objects as streams (`io.ReadCloser`) with concurrent
-  chunk fetching and bounded buffer memory.
-- **DownloadObject** — downloads directly into an `io.WriterAt` (e.g. `*os.File`),
-  writing concurrent multipart chunks directly to disk in parallel.
-- **CopyObject** — server-side copying of objects with zero egress bandwidth consumption.
-- **ObjectExists & IsNotFound** — ergonomic helpers for checking existence and 404 errors.
-- **DeleteObject & DeleteObjects** — single-key and automatic batch chunking object deletion.
-- **HeadObject** — fast metadata and existence lookup without downloading content.
-- **ListObjects & ListAllObjects** — prefix-based object and folder listing with single-page or automatic multi-page pagination.
-- **Bucket Operations** — `BucketExists`, `CreateBucket`, `DeleteBucket`, and `ListBuckets` for managing S3 buckets.
-- **PresignGetObject** — returns a presigned download URL with response header overrides.
-- **PresignPutObject** — returns a presigned upload URL enabling direct browser/mobile to S3 uploads.
-- **Self-hosted S3 & Path-Style** — set an `Endpoint` (MinIO, Ceph, LocalStack, Cloudflare R2) with configurable `UsePathStyle`.
-- **Telemetry** — one client span per operation plus
-  `s3.client.operation.{count,duration}` metrics with standard OTel attributes
-  (`rpc.system`, `rpc.service`, `rpc.method`, `aws.s3.bucket`,
-  `cloud.region`, and `server.*` for self-hosted endpoints).
-- **Error classification** — `error.type` maps AWS API error codes, transport
-  failures (`timeout`, `connection_reset`, `dns_error`, `canceled`, ...), or the raw message.
-- **Injectable telemetry** — `WithMetrics` / `WithTracer` override package-level defaults.
+- **Standard AWS SDK Types** — operates directly on standard AWS SDK types (`*s3.PutObjectInput`, `*s3.GetObjectInput`, `*transfermanager.UploadObjectInput`, etc.) with zero custom struct wrappers or mapping layers.
+- **Standard AWS SDK Methods** — standard S3 operations (`PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `CopyObject`, `ListObjectsV2`, `CreateBucket`, `DeleteBucket`, `HeadBucket`, `ListBuckets`) are natively available on `Client`.
+- **IsNotFound** — ergonomic helper for checking 404 / NoSuchKey / NoSuchBucket errors reliably.
+- **Smithy Middleware Telemetry** — automatic OpenTelemetry spans and `s3.client.operation.{count,duration}` metrics for all operations without manual method overrides.
+- **Injectable Telemetry** — optionally override package-level metrics/tracer defaults via `WithMetrics` and `WithTracer`.
 
 ## Installation
 
@@ -49,7 +31,7 @@ cfg := s3.Config{
     SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
     SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
 
-    // Optional: self-hosted S3 (MinIO, Ceph, Cloudflare R2, ...).
+    // Optional: self-hosted S3 (MinIO, Ceph, Cloudflare R2, LocalStack).
     Endpoint:     "http://localhost:9000",
     // UsePathStyle: &[]bool{true}[0], // optional override
 
@@ -67,30 +49,31 @@ cli, err := s3.New(cfg)
 if err != nil { /* handle */ }
 ```
 
-### 3. Upload an object
+### 3. Upload an object (Transfer Manager Multipart Upload)
 
 ```go
 file, err := os.Open("report.pdf")
 if err != nil { /* handle */ }
 defer file.Close()
 
-err = cli.UploadObject(ctx, s3.UploadObjectParams{
-    Bucket:             "reports",
-    Key:                "2026/08/report.pdf",
+out, err := cli.UploadObject(ctx, &transfermanager.UploadObjectInput{
+    Bucket:             aws.String("reports"),
+    Key:                aws.String("2026/08/report.pdf"),
     Body:               file, // any io.Reader
-    ContentType:        "application/pdf",
-    ContentDisposition: "attachment; filename=report.pdf",
+    ContentType:        aws.String("application/pdf"),
+    ContentDisposition: aws.String("attachment; filename=report.pdf"),
     Metadata:           map[string]string{"uploaded-by": "user-123"},
 })
 if err != nil { /* handle */ }
+fmt.Printf("Uploaded object ETag: %s\n", *out.ETag)
 ```
 
 ### 4. Get object as a stream (`GetObject`)
 
 ```go
-res, err := cli.GetObject(ctx, s3.GetObjectParams{
-    Bucket: "reports",
-    Key:    "2026/08/report.pdf",
+res, err := cli.GetObject(ctx, &transfermanager.GetObjectInput{
+    Bucket: aws.String("reports"),
+    Key:    aws.String("2026/08/report.pdf"),
 })
 if err != nil { /* handle */ }
 defer res.Body.Close()
@@ -106,113 +89,63 @@ if err != nil { /* handle */ }
 defer outFile.Close()
 
 // Concurrent multipart download directly into the file via io.WriterAt
-res, err := cli.DownloadObject(ctx, s3.DownloadObjectParams{
-    Bucket: "reports",
-    Key:    "2026/08/report.pdf",
-    Writer: outFile,
+_, err = cli.DownloadObject(ctx, &transfermanager.DownloadObjectInput{
+    Bucket:   aws.String("reports"),
+    Key:      aws.String("2026/08/report.pdf"),
+    WriterAt: outFile,
 })
 if err != nil { /* handle */ }
-fmt.Printf("Downloaded %d bytes, ETag: %s\n", res.ContentLength, res.ETag)
 ```
 
 ### 6. Copy object server-side (`CopyObject`)
 
 ```go
-res, err := cli.CopyObject(ctx, s3.CopyObjectParams{
-    SourceBucket: "reports",
-    SourceKey:    "2026/08/report.pdf",
-    DestBucket:   "archive",
-    DestKey:      "2026/08/report.pdf",
-    StorageClass: "STANDARD_IA",
+out, err := cli.CopyObject(ctx, &s3.CopyObjectInput{
+    Bucket:     aws.String("archive"),
+    Key:        aws.String("2026/08/report.pdf"),
+    CopySource: aws.String("reports/2026/08/report.pdf"),
 })
 if err != nil { /* handle */ }
-fmt.Printf("Copied object ETag: %s\n", res.ETag)
+fmt.Printf("Copied object ETag: %s\n", *out.CopyObjectResult.ETag)
 ```
 
 ### 7. Presign download & upload URLs
 
 ```go
-// Presigned download URL with response header overrides
-downloadURL, err := cli.PresignGetObject(ctx, s3.PresignGetObjectParams{
-    Bucket:                     "reports",
-    Key:                        "2026/08/report.pdf",
-    ResponseContentType:        "application/pdf",
-    ResponseContentDisposition: "attachment; filename=annual-report.pdf",
-    ExpiresIn:                  15 * time.Minute,
+// Presigned download URL
+req, err := cli.PresignGetObject(ctx, &s3.GetObjectInput{
+    Bucket: aws.String("reports"),
+    Key:    aws.String("2026/08/report.pdf"),
+}, func(o *s3.PresignOptions) {
+    o.Expires = 15 * time.Minute
 })
+if err != nil { /* handle */ }
+fmt.Println("Download URL:", req.URL)
 
 // Presigned upload URL (for direct frontend uploads)
-uploadURL, err := cli.PresignPutObject(ctx, s3.PresignPutObjectParams{
-    Bucket:             "uploads",
-    Key:                "user-avatar.png",
-    ContentType:        "image/png",
-    ContentDisposition: "inline",
-    CacheControl:       "max-age=31536000",
-    ExpiresIn:          10 * time.Minute,
+req, err = cli.PresignPutObject(ctx, &s3.PutObjectInput{
+    Bucket:      aws.String("uploads"),
+    Key:         aws.String("user-avatar.png"),
+    ContentType: aws.String("image/png"),
+}, func(o *s3.PresignOptions) {
+    o.Expires = 10 * time.Minute
 })
-```
-
-### 8. Delete objects
-
-```go
-// Single deletion
-err = cli.DeleteObject(ctx, s3.DeleteObjectParams{
-    Bucket: "reports",
-    Key:    "old-report.pdf",
-})
-
-// Batch deletion (automatically chunked into 1,000 keys per batch)
-delRes, err := cli.DeleteObjects(ctx, s3.DeleteObjectsParams{
-    Bucket: "reports",
-    Keys:   []string{"temp1.csv", "temp2.csv"},
-})
-```
-
-### 9. Metadata inspection & Existence checking
-
-```go
-// Fast existence check
-exists, err := cli.ObjectExists(ctx, "reports", "2026/08/report.pdf")
 if err != nil { /* handle */ }
-if !exists {
-    fmt.Println("Object does not exist")
-}
+fmt.Println("Upload URL:", req.URL)
+```
 
-// Check metadata
-info, err := cli.HeadObject(ctx, s3.HeadObjectParams{
-    Bucket: "reports",
-    Key:    "2026/08/report.pdf",
+### 8. Metadata inspection & 404 Handling
+
+```go
+// HeadObject inspection
+info, err := cli.HeadObject(ctx, &s3.HeadObjectInput{
+    Bucket: aws.String("reports"),
+    Key:    aws.String("2026/08/report.pdf"),
 })
 if err == nil {
-    fmt.Printf("Size: %d bytes, ETag: %s\n", info.ContentLength, info.ETag)
+    fmt.Printf("Size: %d bytes, ETag: %s\n", *info.ContentLength, *info.ETag)
 } else if s3.IsNotFound(err) {
-    fmt.Println("Not found!")
-}
-
-// List all objects across all pages automatically
-allDocs, err := cli.ListAllObjects(ctx, s3.ListObjectsParams{
-    Bucket: "reports",
-    Prefix: "2026/",
-})
-for _, obj := range allDocs {
-    fmt.Println(obj.Key, obj.Size)
-}
-```
-
-### 10. Bucket Management
-
-```go
-// Check if a bucket exists
-bucketExists, err := cli.BucketExists(ctx, "reports")
-if err == nil && !bucketExists {
-    // Create bucket if missing
-    err = cli.CreateBucket(ctx, "reports")
-}
-
-// List all buckets
-buckets, err := cli.ListBuckets(ctx)
-for _, b := range buckets {
-    fmt.Println("Bucket:", b)
+    fmt.Println("Object not found!")
 }
 ```
 
@@ -237,16 +170,6 @@ for _, b := range buckets {
 | `Config` | Connection + transfer settings; `SetDefaults()`, `Validate()` |
 | `New(cfg, opts...)` | Build an instrumented `Client` |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
-| `Client` | Full S3 object & bucket operations interface |
+| `Client` | Unified S3 client interface providing standard AWS SDK methods, Transfer Manager methods, Presign methods, and helpers |
 | `IsNotFound(err)` | Helper returns `true` for 404 / `NoSuchKey` / `NoSuchBucket` errors |
-| `UploadObjectParams` | Upload options with `io.Reader`, `Metadata`, `StorageClass`, headers |
-| `GetObjectParams` / `GetObjectResult` | Stream download with content headers and metadata |
-| `DownloadObjectParams` / `DownloadObjectResult` | Parallel multipart download directly into an `io.WriterAt` (e.g. `*os.File`) |
-| `CopyObjectParams` / `CopyObjectResult` | Server-side copying of objects |
-| `DeleteObjectParams` / `DeleteObjectsParams` | Single and chunked batch deletion |
-| `HeadObjectParams` / `ObjectInfo` | Metadata inspection |
-| `ListObjectsParams` / `ListObjectsResult` | Prefix-based directory listing with pagination |
-| `ListAllObjects(ctx, params)` | Automatic multi-page object listing |
-| `BucketExists` / `CreateBucket` / `DeleteBucket` / `ListBuckets` | Bucket lifecycle management |
-| `PresignGetObjectParams` / `PresignPutObjectParams` | Presigned download & upload URLs |
 | `DefaultPresignExpiry` | Package default URL validity (15m) |

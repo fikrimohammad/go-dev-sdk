@@ -3,20 +3,24 @@ package s3
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	aws "github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	tmtypes "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/middleware"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -74,15 +78,6 @@ func (f *fakeMetrics) lastHist() (metricRec, bool) {
 	return f.hists[len(f.hists)-1], true
 }
 
-func (f *fakeMetrics) nums() (int, int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.counts), len(f.hists)
-}
-
-// normalizeAttrs mirrors the OTel key normalization applied by the real metrics
-// and tracer clients (attributes.NormalizeKey), so the fake records the keys as
-// they are emitted.
 func normalizeAttrs(attrs map[string]any) map[string]any {
 	out := make(map[string]any, len(attrs))
 	for k, v := range attrs {
@@ -116,12 +111,6 @@ func (e *recordingExporter) last() (sdktrace.ReadOnlySpan, bool) {
 	return e.spans[len(e.spans)-1], true
 }
 
-func (e *recordingExporter) count() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return len(e.spans)
-}
-
 func spanAttrs(s sdktrace.ReadOnlySpan) map[string]any {
 	out := make(map[string]any)
 	for _, kv := range s.Attributes() {
@@ -133,9 +122,9 @@ func spanAttrs(s sdktrace.ReadOnlySpan) map[string]any {
 // --- fake: AWS SDK stubs -----------------------------------------------------------
 
 type stubS3API struct {
-	getObjectCalls        int
-	getObjectOut          *s3.GetObjectOutput
-	getObjectErr          error
+	putObjectCalls        int
+	putObjectOut          *s3.PutObjectOutput
+	putObjectErr          error
 	copyObjectCalls       int
 	copyObjectOut         *s3.CopyObjectOutput
 	copyObjectErr         error
@@ -161,7 +150,17 @@ type stubS3API struct {
 	listObjectsCalls      int
 	listObjectsOut        *s3.ListObjectsV2Output
 	listObjectsErr        error
-	listObjectsFn         func(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error)
+}
+
+func (s *stubS3API) PutObject(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	s.putObjectCalls++
+	if s.putObjectErr != nil {
+		return nil, s.putObjectErr
+	}
+	if s.putObjectOut != nil {
+		return s.putObjectOut, nil
+	}
+	return &s3.PutObjectOutput{}, nil
 }
 
 func (s *stubS3API) CreateBucket(_ context.Context, input *s3.CreateBucketInput, _ ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
@@ -226,17 +225,6 @@ func (s *stubS3API) CopyObject(_ context.Context, input *s3.CopyObjectInput, _ .
 	}, nil
 }
 
-func (s *stubS3API) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	s.getObjectCalls++
-	if s.getObjectErr != nil {
-		return nil, s.getObjectErr
-	}
-	if s.getObjectOut != nil {
-		return s.getObjectOut, nil
-	}
-	return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader("content"))}, nil
-}
-
 func (s *stubS3API) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	s.deleteObjectCalls++
 	if s.deleteObjectErr != nil {
@@ -267,11 +255,8 @@ func (s *stubS3API) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...fu
 	return &s3.HeadObjectOutput{}, nil
 }
 
-func (s *stubS3API) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+func (s *stubS3API) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 	s.listObjectsCalls++
-	if s.listObjectsFn != nil {
-		return s.listObjectsFn(ctx, input)
-	}
 	if s.listObjectsErr != nil {
 		return nil, s.listObjectsErr
 	}
@@ -282,17 +267,29 @@ func (s *stubS3API) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2In
 }
 
 type stubTransferManager struct {
-	uploadCalls       int
-	uploadErr         error
-	lastInput         *transfermanager.UploadObjectInput
 	getObjectCalls    int
 	getObjectOut      *transfermanager.GetObjectOutput
 	getObjectErr      error
 	lastGetInput      *transfermanager.GetObjectInput
+	uploadCalls       int
+	uploadErr         error
+	lastInput         *transfermanager.UploadObjectInput
 	downloadCalls     int
 	downloadOut       *transfermanager.DownloadObjectOutput
 	downloadErr       error
 	lastDownloadInput *transfermanager.DownloadObjectInput
+}
+
+func (s *stubTransferManager) GetObject(_ context.Context, input *transfermanager.GetObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
+	s.getObjectCalls++
+	s.lastGetInput = input
+	if s.getObjectErr != nil {
+		return nil, s.getObjectErr
+	}
+	if s.getObjectOut != nil {
+		return s.getObjectOut, nil
+	}
+	return &transfermanager.GetObjectOutput{Body: io.NopCloser(strings.NewReader("content"))}, nil
 }
 
 func (s *stubTransferManager) UploadObject(_ context.Context, input *transfermanager.UploadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error) {
@@ -311,18 +308,6 @@ func (s *stubTransferManager) UploadObject(_ context.Context, input *transferman
 		VersionID: &ver,
 		UploadID:  &upID,
 	}, nil
-}
-
-func (s *stubTransferManager) GetObject(_ context.Context, input *transfermanager.GetObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
-	s.getObjectCalls++
-	s.lastGetInput = input
-	if s.getObjectErr != nil {
-		return nil, s.getObjectErr
-	}
-	if s.getObjectOut != nil {
-		return s.getObjectOut, nil
-	}
-	return &transfermanager.GetObjectOutput{Body: io.NopCloser(strings.NewReader("content"))}, nil
 }
 
 func (s *stubTransferManager) DownloadObject(_ context.Context, input *transfermanager.DownloadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error) {
@@ -374,8 +359,7 @@ func (s *stubPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectI
 	return &v4.PresignedHTTPRequest{URL: "https://s3.example.com/upload/test.csv"}, nil
 }
 
-// setup installs a capturing tracer and metrics client as package defaults and
-// returns an instrumented client wired to the stubs alongside assertion handles.
+// setup returns an instrumented client wired to the stubs alongside assertion handles.
 func setup(api s3API, tm transferManager, presigner presigner) (*client, *fakeMetrics, *recordingExporter) {
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
@@ -385,9 +369,9 @@ func setup(api s3API, tm transferManager, presigner presigner) (*client, *fakeMe
 	metrics.SetDefault(fm)
 
 	return &client{
-		s3API:           api,
-		transferManager: tm,
-		presigner:       presigner,
+		s3API:     api,
+		tmAPI:     tm,
+		presigner: presigner,
 		meta: meta{
 			region:               "us-east-1",
 			serverAddr:           "localhost",
@@ -410,155 +394,57 @@ func TestUploadObject_Success(t *testing.T) {
 	tm := &stubTransferManager{}
 	pr := &stubPresigner{}
 	api := &stubS3API{}
-	c, fm, ex := setup(api, tm, pr)
+	c, _, _ := setup(api, tm, pr)
 
-	res, err := c.UploadObject(context.Background(), UploadObjectParams{
-		Bucket:             "reports",
-		Key:                "test.csv",
+	res, err := c.UploadObject(context.Background(), &transfermanager.UploadObjectInput{
+		Bucket:             aws.String("reports"),
+		Key:                aws.String("test.csv"),
 		Body:               strings.NewReader("x"),
-		ContentType:        "text/csv",
-		ContentDisposition: "attachment; filename=test.csv",
-		ContentEncoding:    "gzip",
-		CacheControl:       "max-age=3600",
-		Metadata:           map[string]string{"env": "test"},
-		StorageClass:       "STANDARD",
-		ChecksumAlgorithm:  "CRC32",
+		ContentType:        aws.String("text/csv"),
+		ContentDisposition: aws.String("attachment; filename=test.csv"),
+		ChecksumAlgorithm:  tmtypes.ChecksumAlgorithmCrc32,
 	})
 	if err != nil {
 		t.Fatalf("UploadObject: %v", err)
 	}
-	if res.ETag != `"upload-etag"` || res.Location != "https://s3.example.com/reports/test.csv" || res.VersionID != "v123" || res.UploadID != "upload-id-456" {
-		t.Fatalf("unexpected UploadObjectResult: %+v", res)
+	if *res.ETag != `"upload-etag"` || *res.Location != "https://s3.example.com/reports/test.csv" {
+		t.Fatalf("unexpected UploadObject output: %+v", res)
 	}
 	if tm.uploadCalls != 1 {
 		t.Fatalf("upload calls = %d, want 1", tm.uploadCalls)
-	}
-	if tm.lastInput == nil || *tm.lastInput.ContentType != "text/csv" || *tm.lastInput.ContentDisposition != "attachment; filename=test.csv" || string(tm.lastInput.ChecksumAlgorithm) != "CRC32" {
-		t.Fatalf("unexpected upload input: %+v", tm.lastInput)
-	}
-
-	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
-	}
-	if span.Name() != "UploadObject" {
-		t.Fatalf("span name = %q, want UploadObject", span.Name())
-	}
-	if span.SpanKind() != trace.SpanKindClient {
-		t.Fatalf("span kind = %v, want client", span.SpanKind())
-	}
-	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "reports" {
-		t.Fatalf("aws.s3.bucket = %v, want reports", attrs["aws.s3.bucket"])
-	}
-	if attrs["rpc.system"] != "aws-api" {
-		t.Fatalf("rpc.system = %v", attrs["rpc.system"])
-	}
-	if attrs["rpc.service"] != "s3" {
-		t.Fatalf("rpc.service = %v", attrs["rpc.service"])
-	}
-	if attrs["rpc.method"] != "UploadObject" {
-		t.Fatalf("rpc.method = %v", attrs["rpc.method"])
-	}
-	if attrs["cloud.region"] != "us-east-1" {
-		t.Fatalf("cloud.region = %v", attrs["cloud.region"])
-	}
-	if attrs["server.address"] != "localhost" {
-		t.Fatalf("server.address = %v, want localhost", attrs["server.address"])
-	}
-	if attrs["server.port"] != "9000" {
-		t.Fatalf("server.port = %v, want 9000", attrs["server.port"])
-	}
-	if attrs["error.type"] != "" {
-		t.Fatalf("error.type = %v, want empty", attrs["error.type"])
-	}
-	if span.Status().Code == codes.Error {
-		t.Fatalf("span status = %v, want not error", span.Status().Code)
-	}
-
-	if count, ok := fm.lastCount(); !ok || count.name != metricCount || count.value != 1 {
-		t.Fatalf("last count = %+v, want %s=1", count, metricCount)
-	} else if count.attrs["aws.s3.bucket"] != "reports" {
-		t.Fatalf("count attrs = %+v", count.attrs)
-	} else if count.attrs["server.address"] != "localhost" || count.attrs["server.port"] != 9000 {
-		t.Fatalf("count attrs = %+v, want server.address/port", count.attrs)
-	}
-	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration {
-		t.Fatalf("last hist = %+v, want %s", hist, metricDuration)
-	} else if hist.attrs["rpc.method"] != "UploadObject" {
-		t.Fatalf("hist attrs = %+v", hist.attrs)
 	}
 }
 
 func TestUploadObject_Error(t *testing.T) {
 	tm := &stubTransferManager{uploadErr: errors.New("upload failed")}
-	c, _, ex := setup(&stubS3API{}, tm, &stubPresigner{})
+	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
 
-	_, err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"})
+	_, err := c.UploadObject(context.Background(), &transfermanager.UploadObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("k"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
-	}
-
-	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
-	}
-	if span.Status().Code != codes.Error {
-		t.Fatalf("span status = %v, want error", span.Status().Code)
-	}
-	if attrs := spanAttrs(span); attrs["error.type"] != "upload failed" {
-		t.Fatalf("error.type = %v, want upload failed", attrs["error.type"])
 	}
 }
 
 func TestGetObject_Success(t *testing.T) {
-	ct := "application/json"
-	cl := int64(42)
-	etag := `"abcd"`
-	ver := "v123"
-	now := time.Now()
-	tm := &stubTransferManager{
-		getObjectOut: &transfermanager.GetObjectOutput{
-			Body:          io.NopCloser(strings.NewReader(`{"key":"value"}`)),
-			ContentType:   &ct,
-			ContentLength: &cl,
-			ETag:          &etag,
-			VersionID:     &ver,
-			LastModified:  &now,
-			Metadata:      map[string]string{"env": "test"},
-		},
-	}
-	c, _, ex := setup(&stubS3API{}, tm, &stubPresigner{})
+	tm := &stubTransferManager{}
+	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
 
-	res, err := c.GetObject(context.Background(), GetObjectParams{
-		Bucket:      "reports",
-		Key:         "data.json",
-		VersionID:   "v123",
-		IfMatch:     `"abcd"`,
-		IfNoneMatch: `"efgh"`,
-		Range:       "bytes=0-100",
+	res, err := c.GetObject(context.Background(), &transfermanager.GetObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("data.json"),
 	})
 	if err != nil {
 		t.Fatalf("GetObject: %v", err)
 	}
-	if res.ContentType != ct || res.ContentLength != cl || res.ETag != etag || res.VersionID != ver || res.Metadata["env"] != "test" {
-		t.Fatalf("unexpected GetObjectResult: %+v", res)
-	}
-	if tm.lastGetInput == nil || *tm.lastGetInput.VersionID != "v123" {
-		t.Fatalf("unexpected get input: %+v", tm.lastGetInput)
+	if tm.getObjectCalls != 1 {
+		t.Fatalf("getObjectCalls = %d, want 1", tm.getObjectCalls)
 	}
 	data, _ := io.ReadAll(res.Body)
-	_ = res.Body.Close()
-	if string(data) != `{"key":"value"}` {
+	if string(data) != "content" {
 		t.Fatalf("body = %q", string(data))
-	}
-
-	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
-	}
-	if span.Name() != "GetObject" {
-		t.Fatalf("span name = %q, want GetObject", span.Name())
 	}
 }
 
@@ -566,9 +452,29 @@ func TestGetObject_Error(t *testing.T) {
 	tm := &stubTransferManager{getObjectErr: errors.New("not found")}
 	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
 
-	_, err := c.GetObject(context.Background(), GetObjectParams{Bucket: "b", Key: "k"})
+	_, err := c.GetObject(context.Background(), &transfermanager.GetObjectInput{
+		Bucket: aws.String("b"),
+		Key:    aws.String("k"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestPutObject_Success(t *testing.T) {
+	api := &stubS3API{}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	_, err := c.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("data.json"),
+		Body:   strings.NewReader("content"),
+	})
+	if err != nil {
+		t.Fatalf("PutObject: %v", err)
+	}
+	if api.putObjectCalls != 1 {
+		t.Fatalf("putObjectCalls = %d, want 1", api.putObjectCalls)
 	}
 }
 
@@ -587,50 +493,20 @@ func (b *bufferWriterAt) WriteAt(p []byte, off int64) (n int, err error) {
 }
 
 func TestDownloadObject_Success(t *testing.T) {
-	ct := "application/pdf"
-	cl := int64(1024)
-	etag := `"dl-etag"`
-	now := time.Now()
-	tm := &stubTransferManager{
-		downloadOut: &transfermanager.DownloadObjectOutput{
-			ContentType:   &ct,
-			ContentLength: &cl,
-			ETag:          &etag,
-			LastModified:  &now,
-			Metadata:      map[string]string{"type": "doc"},
-		},
-	}
-	c, _, ex := setup(&stubS3API{}, tm, &stubPresigner{})
+	tm := &stubTransferManager{}
+	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
 
 	buf := &bufferWriterAt{}
-	res, err := c.DownloadObject(context.Background(), DownloadObjectParams{
-		Bucket:      "reports",
-		Key:         "doc.pdf",
-		Writer:      buf,
-		IfMatch:     `"dl-etag"`,
-		IfNoneMatch: `"other"`,
-		Range:       "bytes=0-1023",
-		VersionID:   "v1",
+	_, err := c.DownloadObject(context.Background(), &transfermanager.DownloadObjectInput{
+		Bucket:   aws.String("reports"),
+		Key:      aws.String("doc.pdf"),
+		WriterAt: buf,
 	})
 	if err != nil {
 		t.Fatalf("DownloadObject: %v", err)
 	}
-	if res.ContentType != ct || res.ContentLength != cl || res.ETag != etag || res.Metadata["type"] != "doc" {
-		t.Fatalf("unexpected DownloadObjectResult: %+v", res)
-	}
 	if tm.downloadCalls != 1 {
 		t.Fatalf("download calls = %d, want 1", tm.downloadCalls)
-	}
-	if tm.lastDownloadInput == nil || tm.lastDownloadInput.WriterAt != buf || *tm.lastDownloadInput.VersionID != "v1" {
-		t.Fatalf("unexpected download input: %+v", tm.lastDownloadInput)
-	}
-
-	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
-	}
-	if span.Name() != "DownloadObject" {
-		t.Fatalf("span name = %q, want DownloadObject", span.Name())
 	}
 }
 
@@ -639,10 +515,10 @@ func TestDownloadObject_Error(t *testing.T) {
 	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
 
 	buf := &bufferWriterAt{}
-	_, err := c.DownloadObject(context.Background(), DownloadObjectParams{
-		Bucket: "reports",
-		Key:    "doc.pdf",
-		Writer: buf,
+	_, err := c.DownloadObject(context.Background(), &transfermanager.DownloadObjectInput{
+		Bucket:   aws.String("reports"),
+		Key:      aws.String("doc.pdf"),
+		WriterAt: buf,
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -651,41 +527,21 @@ func TestDownloadObject_Error(t *testing.T) {
 
 func TestCopyObject_Success(t *testing.T) {
 	api := &stubS3API{}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	res, err := c.CopyObject(context.Background(), CopyObjectParams{
-		SourceBucket:      "src-bucket",
-		SourceKey:         "path/to/source.png",
-		SourceVersionID:   "v1",
-		DestBucket:        "dest-bucket",
-		DestKey:           "copied.png",
-		ContentType:       "image/png",
-		StorageClass:      "STANDARD_IA",
-		Metadata:          map[string]string{"env": "prod"},
-		MetadataDirective: "REPLACE",
+	res, err := c.CopyObject(context.Background(), &s3.CopyObjectInput{
+		Bucket:     aws.String("dest-bucket"),
+		Key:        aws.String("copied.png"),
+		CopySource: aws.String("src-bucket/source.png"),
 	})
 	if err != nil {
 		t.Fatalf("CopyObject: %v", err)
 	}
-	if res.ETag != `"copy-etag"` {
-		t.Fatalf("res.ETag = %q, want \"copy-etag\"", res.ETag)
+	if *res.CopyObjectResult.ETag != `"copy-etag"` {
+		t.Fatalf("res.ETag = %q, want \"copy-etag\"", *res.CopyObjectResult.ETag)
 	}
 	if api.copyObjectCalls != 1 {
 		t.Fatalf("copyObjectCalls = %d, want 1", api.copyObjectCalls)
-	}
-	if api.lastCopyInput == nil {
-		t.Fatal("expected non-nil lastCopyInput")
-	}
-	if *api.lastCopyInput.CopySource != "src-bucket/path/to/source.png?versionId=v1" {
-		t.Fatalf("CopySource = %q", *api.lastCopyInput.CopySource)
-	}
-	if *api.lastCopyInput.ContentType != "image/png" || api.lastCopyInput.StorageClass != "STANDARD_IA" {
-		t.Fatalf("unexpected copy input: %+v", api.lastCopyInput)
-	}
-
-	span, ok := ex.last()
-	if !ok || span.Name() != "CopyObject" {
-		t.Fatalf("unexpected span: %+v", span)
 	}
 }
 
@@ -693,54 +549,12 @@ func TestCopyObject_Error(t *testing.T) {
 	api := &stubS3API{copyObjectErr: errors.New("copy failed")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	_, err := c.CopyObject(context.Background(), CopyObjectParams{
-		SourceBucket: "b1",
-		SourceKey:    "k1",
-		DestBucket:   "b2",
-		DestKey:      "k2",
+	_, err := c.CopyObject(context.Background(), &s3.CopyObjectInput{
+		Bucket: aws.String("b2"),
+		Key:    aws.String("k2"),
 	})
 	if err == nil {
 		t.Fatal("expected error")
-	}
-}
-
-func TestObjectExists_True(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	exists, err := c.ObjectExists(context.Background(), "reports", "test.csv")
-	if err != nil {
-		t.Fatalf("ObjectExists: %v", err)
-	}
-	if !exists {
-		t.Fatal("expected object to exist")
-	}
-}
-
-func TestObjectExists_False(t *testing.T) {
-	api := &stubS3API{
-		headObjectErr: &smithy.GenericAPIError{Code: "NotFound", Message: "Not Found"},
-	}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	exists, err := c.ObjectExists(context.Background(), "reports", "missing.csv")
-	if err != nil {
-		t.Fatalf("ObjectExists: %v", err)
-	}
-	if exists {
-		t.Fatal("expected object not to exist")
-	}
-}
-
-func TestObjectExists_Error(t *testing.T) {
-	api := &stubS3API{
-		headObjectErr: &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"},
-	}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.ObjectExists(context.Background(), "reports", "forbidden.csv")
-	if err == nil {
-		t.Fatal("expected error for AccessDenied")
 	}
 }
 
@@ -767,12 +581,11 @@ func TestIsNotFound(t *testing.T) {
 
 func TestDeleteObject_Success(t *testing.T) {
 	api := &stubS3API{}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	err := c.DeleteObject(context.Background(), DeleteObjectParams{
-		Bucket:    "reports",
-		Key:       "old.csv",
-		VersionID: "v1",
+	_, err := c.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("old.csv"),
 	})
 	if err != nil {
 		t.Fatalf("DeleteObject: %v", err)
@@ -780,120 +593,39 @@ func TestDeleteObject_Success(t *testing.T) {
 	if api.deleteObjectCalls != 1 {
 		t.Fatalf("delete calls = %d, want 1", api.deleteObjectCalls)
 	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "DeleteObject" {
-		t.Fatalf("unexpected span: %+v", span)
-	}
 }
 
 func TestDeleteObject_Error(t *testing.T) {
 	api := &stubS3API{deleteObjectErr: errors.New("delete failed")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	err := c.DeleteObject(context.Background(), DeleteObjectParams{Bucket: "b", Key: "k"})
+	_, err := c.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+		Bucket: aws.String("b"),
+		Key:    aws.String("k"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestDeleteObjects_Success(t *testing.T) {
-	key1 := "k1"
-	key2 := "k2"
-	api := &stubS3API{
-		deleteObjectsOut: &s3.DeleteObjectsOutput{
-			Deleted: []types.DeletedObject{
-				{Key: &key1},
-				{Key: &key2},
-			},
-		},
-	}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	res, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
-		Bucket: "reports",
-		Keys:   []string{"k1", "k2"},
-		Quiet:  true,
-	})
-	if err != nil {
-		t.Fatalf("DeleteObjects: %v", err)
-	}
-	if len(res.Deleted) != 2 || res.Deleted[0] != "k1" {
-		t.Fatalf("unexpected DeleteObjectsResult: %+v", res)
-	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "DeleteObjects" {
-		t.Fatalf("unexpected span: %+v", span)
-	}
-}
-
-func TestDeleteObjects_WithErrors(t *testing.T) {
-	errKey := "k2"
-	errCode := "AccessDenied"
-	errMsg := "Access Denied"
-	errVer := "v1"
-	api := &stubS3API{
-		deleteObjectsOut: &s3.DeleteObjectsOutput{
-			Errors: []types.Error{
-				{
-					Key:       &errKey,
-					Code:      &errCode,
-					Message:   &errMsg,
-					VersionId: &errVer,
-				},
-			},
-		},
-	}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	res, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
-		Bucket: "reports",
-		Keys:   []string{"k2"},
-	})
-	if err != nil {
-		t.Fatalf("DeleteObjects: %v", err)
-	}
-	if len(res.Errors) != 1 || res.Errors[0].Code != "AccessDenied" || res.Errors[0].VersionID != "v1" {
-		t.Fatalf("unexpected errors: %+v", res.Errors)
-	}
-}
-
-func TestDeleteObjects_EmptyKeys(t *testing.T) {
 	api := &stubS3API{}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	res, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
-		Bucket: "reports",
-		Keys:   []string{},
+	_, err := c.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
+		Bucket: aws.String("reports"),
+		Delete: &types.Delete{
+			Objects: []types.ObjectIdentifier{
+				{Key: aws.String("k1")},
+				{Key: aws.String("k2")},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("DeleteObjects: %v", err)
 	}
-	if res.Deleted == nil || res.Errors == nil || len(res.Deleted) != 0 || len(res.Errors) != 0 {
-		t.Fatalf("unexpected non-empty or nil result: %+v", res)
-	}
-	if api.deleteObjectsCalls != 0 {
-		t.Fatalf("deleteObjectsCalls = %d, want 0", api.deleteObjectsCalls)
-	}
-}
-
-func TestDeleteObjects_Chunking(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	keys := make([]string, 2050)
-	for i := range keys {
-		keys[i] = fmt.Sprintf("key-%d", i)
-	}
-
-	_, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{
-		Bucket: "reports",
-		Keys:   keys,
-	})
-	if err != nil {
-		t.Fatalf("DeleteObjects: %v", err)
-	}
-	if api.deleteObjectsCalls != 3 {
-		t.Fatalf("deleteObjectsCalls = %d, want 3 (for 2050 items in 1000 chunks)", api.deleteObjectsCalls)
+	if api.deleteObjectsCalls != 1 {
+		t.Fatalf("deleteObjectsCalls = %d, want 1", api.deleteObjectsCalls)
 	}
 }
 
@@ -901,7 +633,9 @@ func TestDeleteObjects_Error(t *testing.T) {
 	api := &stubS3API{deleteObjectsErr: errors.New("delete batch failed")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	_, err := c.DeleteObjects(context.Background(), DeleteObjectsParams{Bucket: "b", Keys: []string{"k"}})
+	_, err := c.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
+		Bucket: aws.String("b"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -910,36 +644,23 @@ func TestDeleteObjects_Error(t *testing.T) {
 func TestHeadObject_Success(t *testing.T) {
 	ct := "image/png"
 	cl := int64(1024)
-	etag := `"img123"`
-	ver := "v456"
-	now := time.Now()
 	api := &stubS3API{
 		headObjectOut: &s3.HeadObjectOutput{
 			ContentType:   &ct,
 			ContentLength: &cl,
-			ETag:          &etag,
-			VersionId:     &ver,
-			LastModified:  &now,
-			Metadata:      map[string]string{"author": "alice"},
-			StorageClass:  types.StorageClassStandard,
 		},
 	}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	info, err := c.HeadObject(context.Background(), HeadObjectParams{
-		Bucket:    "images",
-		Key:       "avatar.png",
-		VersionID: "v456",
+	out, err := c.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: aws.String("images"),
+		Key:    aws.String("avatar.png"),
 	})
 	if err != nil {
 		t.Fatalf("HeadObject: %v", err)
 	}
-	if info.ContentType != ct || info.ContentLength != cl || info.ETag != etag || info.VersionID != ver || info.StorageClass != "STANDARD" || info.Metadata["author"] != "alice" {
-		t.Fatalf("unexpected ObjectInfo: %+v", info)
-	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "HeadObject" {
-		t.Fatalf("unexpected span: %+v", span)
+	if *out.ContentType != ct || *out.ContentLength != cl {
+		t.Fatalf("unexpected HeadObjectOutput: %+v", out)
 	}
 }
 
@@ -947,185 +668,61 @@ func TestHeadObject_Error(t *testing.T) {
 	api := &stubS3API{headObjectErr: errors.New("head failed")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	_, err := c.HeadObject(context.Background(), HeadObjectParams{Bucket: "b", Key: "k"})
+	_, err := c.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: aws.String("b"),
+		Key:    aws.String("k"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestListObjects_Success(t *testing.T) {
+func TestListObjectsV2_Success(t *testing.T) {
 	key := "docs/readme.md"
-	size := int64(2048)
-	etag := `"doc1"`
-	prefix := "docs/sub/"
-	token := "tok123"
-	truncated := true
 	api := &stubS3API{
 		listObjectsOut: &s3.ListObjectsV2Output{
 			Contents: []types.Object{
-				{
-					Key:          &key,
-					Size:         &size,
-					ETag:         &etag,
-					StorageClass: types.ObjectStorageClassStandard,
-				},
+				{Key: &key},
 			},
-			CommonPrefixes: []types.CommonPrefix{
-				{Prefix: &prefix},
-			},
-			NextContinuationToken: &token,
-			IsTruncated:           &truncated,
 		},
 	}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	res, err := c.ListObjects(context.Background(), ListObjectsParams{
-		Bucket:            "docs",
-		Prefix:            "docs/",
-		Delimiter:         "/",
-		ContinuationToken: "prev",
-		MaxKeys:           100,
+	res, err := c.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		Bucket: aws.String("docs"),
 	})
 	if err != nil {
-		t.Fatalf("ListObjects: %v", err)
+		t.Fatalf("ListObjectsV2: %v", err)
 	}
-	if len(res.Objects) != 1 || res.Objects[0].Key != key || len(res.CommonPrefixes) != 1 || res.NextContinuationToken != token || !res.IsTruncated {
-		t.Fatalf("unexpected ListObjectsResult: %+v", res)
-	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "ListObjects" {
-		t.Fatalf("unexpected span: %+v", span)
+	if len(res.Contents) != 1 || *res.Contents[0].Key != key {
+		t.Fatalf("unexpected ListObjectsV2 output: %+v", res)
 	}
 }
 
-func TestListObjects_Error(t *testing.T) {
+func TestListObjectsV2_Error(t *testing.T) {
 	api := &stubS3API{listObjectsErr: errors.New("list failed")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	_, err := c.ListObjects(context.Background(), ListObjectsParams{Bucket: "b"})
+	_, err := c.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		Bucket: aws.String("b"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
-	}
-}
-
-func TestListAllObjects_Pagination(t *testing.T) {
-	key1 := "file1.txt"
-	key2 := "file2.txt"
-	key3 := "file3.txt"
-	tok := "next-page"
-	truncTrue := true
-	truncFalse := false
-
-	api := &stubS3API{}
-	api.listObjectsFn = func(_ context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
-		if input.ContinuationToken == nil {
-			// First page
-			return &s3.ListObjectsV2Output{
-				Contents: []types.Object{
-					{Key: &key1},
-					{Key: &key2},
-				},
-				NextContinuationToken: &tok,
-				IsTruncated:           &truncTrue,
-			}, nil
-		}
-		// Second page
-		return &s3.ListObjectsV2Output{
-			Contents: []types.Object{
-				{Key: &key3},
-			},
-			IsTruncated: &truncFalse,
-		}, nil
-	}
-
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	objs, err := c.ListAllObjects(context.Background(), ListObjectsParams{Bucket: "docs"})
-	if err != nil {
-		t.Fatalf("ListAllObjects: %v", err)
-	}
-	if len(objs) != 3 || objs[0].Key != key1 || objs[1].Key != key2 || objs[2].Key != key3 {
-		t.Fatalf("unexpected objects: %+v", objs)
-	}
-	if api.listObjectsCalls != 2 {
-		t.Fatalf("listObjectsCalls = %d, want 2", api.listObjectsCalls)
-	}
-}
-
-func TestListAllObjects_Error(t *testing.T) {
-	api := &stubS3API{listObjectsErr: errors.New("list failed")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.ListAllObjects(context.Background(), ListObjectsParams{Bucket: "b"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestBucketExists_True(t *testing.T) {
-	api := &stubS3API{}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	exists, err := c.BucketExists(context.Background(), "my-bucket")
-	if err != nil {
-		t.Fatalf("BucketExists: %v", err)
-	}
-	if !exists {
-		t.Fatal("expected bucket to exist")
-	}
-	if api.headBucketCalls != 1 {
-		t.Fatalf("headBucketCalls = %d, want 1", api.headBucketCalls)
-	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "HeadBucket" {
-		t.Fatalf("unexpected span: %+v", span)
-	}
-}
-
-func TestBucketExists_False(t *testing.T) {
-	api := &stubS3API{
-		headBucketErr: &smithy.GenericAPIError{Code: "NotFound", Message: "Not Found"},
-	}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	exists, err := c.BucketExists(context.Background(), "missing-bucket")
-	if err != nil {
-		t.Fatalf("BucketExists: %v", err)
-	}
-	if exists {
-		t.Fatal("expected bucket not to exist")
-	}
-}
-
-func TestBucketExists_Error(t *testing.T) {
-	api := &stubS3API{
-		headBucketErr: &smithy.GenericAPIError{Code: "AccessDenied", Message: "Forbidden"},
-	}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.BucketExists(context.Background(), "forbidden-bucket")
-	if err == nil {
-		t.Fatal("expected error for AccessDenied")
 	}
 }
 
 func TestCreateBucket_Success(t *testing.T) {
 	api := &stubS3API{}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	err := c.CreateBucket(context.Background(), "new-bucket")
+	_, err := c.CreateBucket(context.Background(), &s3.CreateBucketInput{
+		Bucket: aws.String("new-bucket"),
+	})
 	if err != nil {
 		t.Fatalf("CreateBucket: %v", err)
 	}
 	if api.createBucketCalls != 1 {
 		t.Fatalf("createBucketCalls = %d, want 1", api.createBucketCalls)
-	}
-	if api.lastCreateBucketInput == nil || *api.lastCreateBucketInput.Bucket != "new-bucket" {
-		t.Fatalf("unexpected create input: %+v", api.lastCreateBucketInput)
-	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "CreateBucket" {
-		t.Fatalf("unexpected span: %+v", span)
 	}
 }
 
@@ -1133,7 +730,9 @@ func TestCreateBucket_Error(t *testing.T) {
 	api := &stubS3API{createBucketErr: errors.New("bucket already exists")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	err := c.CreateBucket(context.Background(), "existing-bucket")
+	_, err := c.CreateBucket(context.Background(), &s3.CreateBucketInput{
+		Bucket: aws.String("existing-bucket"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1141,18 +740,16 @@ func TestCreateBucket_Error(t *testing.T) {
 
 func TestDeleteBucket_Success(t *testing.T) {
 	api := &stubS3API{}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	err := c.DeleteBucket(context.Background(), "old-bucket")
+	_, err := c.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
+		Bucket: aws.String("old-bucket"),
+	})
 	if err != nil {
 		t.Fatalf("DeleteBucket: %v", err)
 	}
 	if api.deleteBucketCalls != 1 {
 		t.Fatalf("deleteBucketCalls = %d, want 1", api.deleteBucketCalls)
-	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "DeleteBucket" {
-		t.Fatalf("unexpected span: %+v", span)
 	}
 }
 
@@ -1160,7 +757,9 @@ func TestDeleteBucket_Error(t *testing.T) {
 	api := &stubS3API{deleteBucketErr: errors.New("bucket not empty")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	err := c.DeleteBucket(context.Background(), "nonempty-bucket")
+	_, err := c.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
+		Bucket: aws.String("nonempty-bucket"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1168,21 +767,17 @@ func TestDeleteBucket_Error(t *testing.T) {
 
 func TestListBuckets_Success(t *testing.T) {
 	api := &stubS3API{}
-	c, _, ex := setup(api, &stubTransferManager{}, &stubPresigner{})
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	buckets, err := c.ListBuckets(context.Background())
+	res, err := c.ListBuckets(context.Background(), &s3.ListBucketsInput{})
 	if err != nil {
 		t.Fatalf("ListBuckets: %v", err)
 	}
-	if len(buckets) != 2 || buckets[0] != "bucket-a" || buckets[1] != "bucket-b" {
-		t.Fatalf("unexpected buckets: %+v", buckets)
+	if len(res.Buckets) != 2 || *res.Buckets[0].Name != "bucket-a" {
+		t.Fatalf("unexpected buckets: %+v", res)
 	}
 	if api.listBucketsCalls != 1 {
 		t.Fatalf("listBucketsCalls = %d, want 1", api.listBucketsCalls)
-	}
-	span, ok := ex.last()
-	if !ok || span.Name() != "ListBuckets" {
-		t.Fatalf("unexpected span: %+v", span)
 	}
 }
 
@@ -1190,7 +785,7 @@ func TestListBuckets_Error(t *testing.T) {
 	api := &stubS3API{listBucketsErr: errors.New("unauthorized")}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
 
-	_, err := c.ListBuckets(context.Background())
+	_, err := c.ListBuckets(context.Background(), &s3.ListBucketsInput{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1199,23 +794,19 @@ func TestListBuckets_Error(t *testing.T) {
 func TestPresignGetObject_Success(t *testing.T) {
 	up := &stubTransferManager{}
 	pr := &stubPresigner{}
-	c, _, ex := setup(&stubS3API{}, up, pr)
+	c, fm, ex := setup(&stubS3API{}, up, pr)
 
-	url, err := c.PresignGetObject(context.Background(), PresignGetObjectParams{
-		Bucket:                     "reports",
-		Key:                        "test.csv",
-		VersionID:                  "v123",
-		ResponseContentType:        "text/csv",
-		ResponseContentDisposition: "inline",
-		ResponseCacheControl:       "max-age=3600",
-		ResponseContentEncoding:    "gzip",
-		ExpiresIn:                  5 * time.Minute,
+	req, err := c.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("test.csv"),
+	}, func(o *s3.PresignOptions) {
+		o.Expires = 5 * time.Minute
 	})
 	if err != nil {
 		t.Fatalf("PresignGetObject: %v", err)
 	}
-	if url != "https://s3.example.com/reports/test.csv" {
-		t.Fatalf("url = %q", url)
+	if req.URL != "https://s3.example.com/reports/test.csv" {
+		t.Fatalf("url = %q", req.URL)
 	}
 	if pr.presignGetCalls != 1 {
 		t.Fatalf("presign calls = %d, want 1", pr.presignGetCalls)
@@ -1223,16 +814,28 @@ func TestPresignGetObject_Success(t *testing.T) {
 	if pr.expires != 5*time.Minute {
 		t.Fatalf("expires = %v, want 5m", pr.expires)
 	}
-	if pr.lastGetInput == nil || *pr.lastGetInput.VersionId != "v123" || *pr.lastGetInput.ResponseContentType != "text/csv" || *pr.lastGetInput.ResponseCacheControl != "max-age=3600" || *pr.lastGetInput.ResponseContentEncoding != "gzip" {
-		t.Fatalf("unexpected lastGetInput: %+v", pr.lastGetInput)
-	}
 
 	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
+	if !ok || span.Name() != "PresignGetObject" {
+		t.Fatalf("span = %+v, want PresignGetObject", span)
 	}
-	if span.Name() != "PresignGetObject" {
-		t.Fatalf("span name = %q, want PresignGetObject", span.Name())
+	if span.SpanKind() != trace.SpanKindInternal {
+		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
+	}
+	attrs := spanAttrs(span)
+	if attrs["aws.s3.bucket"] != "reports" || attrs["rpc.method"] != "PresignGetObject" {
+		t.Fatalf("unexpected span attrs: %+v", attrs)
+	}
+	if _, hasErr := attrs["error.type"]; hasErr {
+		t.Fatalf("error.type should be absent on success, got: %v", attrs["error.type"])
+	}
+
+	count, ok := fm.lastCount()
+	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignGetObject" || count.attrs["aws.s3.bucket"] != "reports" {
+		t.Fatalf("unexpected count metric: %+v", count)
+	}
+	if _, hasErr := count.attrs["error.type"]; hasErr {
+		t.Fatalf("expected metric error.type to be absent on success, got: %v", count.attrs["error.type"])
 	}
 }
 
@@ -1241,17 +844,14 @@ func TestPresignGetObject_AppliesDefaultExpiry(t *testing.T) {
 	pr := &stubPresigner{}
 	c, _, _ := setup(&stubS3API{}, up, pr)
 
-	if _, err := c.PresignGetObject(context.Background(), PresignGetObjectParams{
-		Bucket: "reports",
-		Key:    "test.csv",
+	if _, err := c.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("test.csv"),
 	}); err != nil {
 		t.Fatalf("PresignGetObject: %v", err)
 	}
 	if pr.expires != 15*time.Minute {
 		t.Fatalf("expires = %v, want default 15m", pr.expires)
-	}
-	if pr.lastGetInput != nil && (pr.lastGetInput.ResponseContentType != nil || pr.lastGetInput.ResponseContentDisposition != nil) {
-		t.Fatalf("expected nil response headers for empty params, got %+v", pr.lastGetInput)
 	}
 }
 
@@ -1260,47 +860,48 @@ func TestPresignGetObject_Error(t *testing.T) {
 	pr := &stubPresigner{returnErr: errors.New("presign failed")}
 	c, fm, ex := setup(&stubS3API{}, up, pr)
 
-	_, err := c.PresignGetObject(context.Background(), PresignGetObjectParams{
-		Bucket: "reports",
-		Key:    "test.csv",
+	_, err := c.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("test.csv"),
 	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 
 	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
+	if !ok || span.Name() != "PresignGetObject" {
+		t.Fatalf("span = %+v, want PresignGetObject", span)
 	}
 	if span.Status().Code != codes.Error {
-		t.Fatalf("span status = %v, want error", span.Status().Code)
+		t.Fatalf("span status = %v, want Error", span.Status().Code)
 	}
-	if count, ok := fm.lastCount(); !ok || count.value != 1 {
-		t.Fatalf("expected a count metric on failure, got %+v", count)
+	attrs := spanAttrs(span)
+	if attrs["error.type"] != "unknown_error" {
+		t.Fatalf("error.type = %v, want unknown_error", attrs["error.type"])
+	}
+
+	count, ok := fm.lastCount()
+	if !ok || count.name != metricCount || count.attrs["error.type"] != "unknown_error" {
+		t.Fatalf("unexpected count metric: %+v", count)
 	}
 }
 
 func TestPresignPutObject_Success(t *testing.T) {
 	up := &stubTransferManager{}
 	pr := &stubPresigner{}
-	c, _, ex := setup(&stubS3API{}, up, pr)
+	c, fm, ex := setup(&stubS3API{}, up, pr)
 
-	url, err := c.PresignPutObject(context.Background(), PresignPutObjectParams{
-		Bucket:             "uploads",
-		Key:                "avatar.png",
-		ContentType:        "image/png",
-		ContentDisposition: "attachment; filename=avatar.png",
-		ContentEncoding:    "gzip",
-		CacheControl:       "max-age=86400",
-		StorageClass:       "STANDARD_IA",
-		Metadata:           map[string]string{"user": "alice"},
-		ExpiresIn:          10 * time.Minute,
+	req, err := c.PresignPutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("uploads"),
+		Key:    aws.String("avatar.png"),
+	}, func(o *s3.PresignOptions) {
+		o.Expires = 10 * time.Minute
 	})
 	if err != nil {
 		t.Fatalf("PresignPutObject: %v", err)
 	}
-	if url != "https://s3.example.com/upload/test.csv" {
-		t.Fatalf("url = %q", url)
+	if req.URL != "https://s3.example.com/upload/test.csv" {
+		t.Fatalf("url = %q", req.URL)
 	}
 	if pr.presignPutCalls != 1 {
 		t.Fatalf("presign put calls = %d, want 1", pr.presignPutCalls)
@@ -1308,16 +909,22 @@ func TestPresignPutObject_Success(t *testing.T) {
 	if pr.expires != 10*time.Minute {
 		t.Fatalf("expires = %v, want 10m", pr.expires)
 	}
-	if pr.lastPutInput == nil || pr.lastPutInput.Metadata["user"] != "alice" || pr.lastPutInput.StorageClass != "STANDARD_IA" || *pr.lastPutInput.ContentDisposition != "attachment; filename=avatar.png" || *pr.lastPutInput.CacheControl != "max-age=86400" {
-		t.Fatalf("unexpected lastPutInput: %+v", pr.lastPutInput)
-	}
 
 	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
+	if !ok || span.Name() != "PresignPutObject" {
+		t.Fatalf("span = %+v, want PresignPutObject", span)
 	}
-	if span.Name() != "PresignPutObject" {
-		t.Fatalf("span name = %q, want PresignPutObject", span.Name())
+	if span.SpanKind() != trace.SpanKindInternal {
+		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
+	}
+	attrs := spanAttrs(span)
+	if attrs["aws.s3.bucket"] != "uploads" || attrs["rpc.method"] != "PresignPutObject" {
+		t.Fatalf("unexpected span attrs: %+v", attrs)
+	}
+
+	count, ok := fm.lastCount()
+	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignPutObject" {
+		t.Fatalf("unexpected count metric: %+v", count)
 	}
 }
 
@@ -1326,9 +933,9 @@ func TestPresignPutObject_AppliesDefaultExpiry(t *testing.T) {
 	pr := &stubPresigner{}
 	c, _, _ := setup(&stubS3API{}, up, pr)
 
-	if _, err := c.PresignPutObject(context.Background(), PresignPutObjectParams{
-		Bucket: "uploads",
-		Key:    "avatar.png",
+	if _, err := c.PresignPutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("uploads"),
+		Key:    aws.String("avatar.png"),
 	}); err != nil {
 		t.Fatalf("PresignPutObject: %v", err)
 	}
@@ -1342,73 +949,25 @@ func TestPresignPutObject_Error(t *testing.T) {
 	pr := &stubPresigner{returnErr: errors.New("put signing failed")}
 	c, fm, ex := setup(&stubS3API{}, up, pr)
 
-	_, err := c.PresignPutObject(context.Background(), PresignPutObjectParams{
-		Bucket: "uploads",
-		Key:    "avatar.png",
+	_, err := c.PresignPutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("uploads"),
+		Key:    aws.String("avatar.png"),
 	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 
 	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
+	if !ok || span.Name() != "PresignPutObject" {
+		t.Fatalf("span = %+v, want PresignPutObject", span)
 	}
 	if span.Status().Code != codes.Error {
-		t.Fatalf("span status = %v, want error", span.Status().Code)
-	}
-	if count, ok := fm.lastCount(); !ok || count.value != 1 {
-		t.Fatalf("expected a count metric on failure, got %+v", count)
-	}
-}
-
-func TestClient_DefaultTracerMetricsInjected(t *testing.T) {
-	tm := &stubTransferManager{}
-	pr := &stubPresigner{}
-	api := &stubS3API{}
-
-	injEx := &recordingExporter{}
-	injTp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(injEx)))
-	t.Cleanup(func() { _ = injTp.Shutdown(context.Background()) })
-	injFm := &fakeMetrics{}
-
-	// Package defaults: fresh, must receive nothing.
-	defEx := &recordingExporter{}
-	defTp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(defEx)))
-	t.Cleanup(func() { _ = defTp.Shutdown(context.Background()) })
-	tracer.SetDefault(tracer.Wrap(defTp))
-	defFm := &fakeMetrics{}
-	metrics.SetDefault(defFm)
-
-	c := &client{
-		s3API:           api,
-		transferManager: tm,
-		presigner:       pr,
-		meta: meta{
-			region:               "us-east-1",
-			presignDefaultExpiry: 15 * time.Minute,
-			metrics:              injFm,
-			tracer:               tracer.Wrap(injTp),
-		},
+		t.Fatalf("span status = %v, want Error", span.Status().Code)
 	}
 
-	if _, err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"}); err != nil {
-		t.Fatalf("UploadObject: %v", err)
-	}
-
-	if n := injEx.count(); n != 1 {
-		t.Fatalf("injected tracer spans = %d, want 1", n)
-	}
-	if _, ok := injFm.lastCount(); !ok {
-		t.Fatal("injected metrics client received no count")
-	}
-
-	if n := defEx.count(); n != 0 {
-		t.Fatalf("package default tracer spans = %d, want 0", n)
-	}
-	nc, nh := defFm.nums()
-	if nc != 0 || nh != 0 {
-		t.Fatalf("package default metrics received counts=%d hists=%d, want 0", nc, nh)
+	count, ok := fm.lastCount()
+	if !ok || count.name != metricCount || count.attrs["error.type"] != "unknown_error" {
+		t.Fatalf("unexpected count metric: %+v", count)
 	}
 }
 
@@ -1435,39 +994,6 @@ func TestEndpointAddress(t *testing.T) {
 	}
 }
 
-func TestServerAttrsOmittedForAWS(t *testing.T) {
-	tm := &stubTransferManager{}
-	pr := &stubPresigner{}
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	tracer.SetDefault(tracer.Wrap(tp))
-	c := &client{
-		transferManager: tm,
-		presigner:       pr,
-		meta: meta{
-			region:               "us-east-1",
-			presignDefaultExpiry: 15 * time.Minute,
-		},
-	}
-
-	if _, err := c.UploadObject(context.Background(), UploadObjectParams{Bucket: "reports", Key: "k"}); err != nil {
-		t.Fatalf("UploadObject: %v", err)
-	}
-
-	span, ok := ex.last()
-	if !ok {
-		t.Fatal("no span recorded")
-	}
-	attrs := spanAttrs(span)
-	if _, ok := attrs["server.address"]; ok {
-		t.Fatalf("server.address must be omitted for AWS, got %v", attrs["server.address"])
-	}
-	if _, ok := attrs["server.port"]; ok {
-		t.Fatalf("server.port must be omitted for AWS, got %v", attrs["server.port"])
-	}
-}
-
 func TestErrorType(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1476,15 +1002,12 @@ func TestErrorType(t *testing.T) {
 	}{
 		{
 			name: "server api error",
-			err: &smithy.OperationError{ServiceID: "S3", OperationName: "GetObject",
-				Err: &smithy.GenericAPIError{Code: "NoSuchKey", Message: "The specified key does not exist."}},
-			want: "NoSuchKey",
+			err:  &smithy.GenericAPIError{Code: "NoSuchBucket", Message: "bucket not found"},
+			want: "NoSuchBucket",
 		},
 		{
 			name: "operation error wrapping api error",
-			err: &smithy.OperationError{ServiceID: "S3", OperationName: "PutObject",
-				Err: &smithy.OperationError{ServiceID: "S3", OperationName: "PutObject",
-					Err: &smithy.GenericAPIError{Code: "AccessDenied", Message: "denied"}}},
+			err:  &smithy.OperationError{Err: &smithy.GenericAPIError{Code: "AccessDenied"}},
 			want: "AccessDenied",
 		},
 		{
@@ -1494,7 +1017,7 @@ func TestErrorType(t *testing.T) {
 		},
 		{
 			name: "network timeout",
-			err:  &smithy.OperationError{Err: &net.OpError{Op: "read", Err: syscall.ETIMEDOUT}},
+			err:  &smithy.OperationError{Err: &net.DNSError{IsTimeout: true}},
 			want: "timeout",
 		},
 		{
@@ -1530,7 +1053,7 @@ func TestErrorType(t *testing.T) {
 		{
 			name: "plain error",
 			err:  errors.New("boom"),
-			want: "boom",
+			want: "unknown_error",
 		},
 		{
 			name: "nil",
@@ -1544,5 +1067,374 @@ func TestErrorType(t *testing.T) {
 				t.Fatalf("errorType(%v) = %q, want %q", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestInstrumentationMiddleware_HandleInitialize_Success(t *testing.T) {
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	fm := &fakeMetrics{}
+
+	mw := &instrumentationMiddleware{
+		meta: meta{
+			region:     "us-east-1",
+			serverAddr: "minio.local",
+			serverPort: 9000,
+			metrics:    fm,
+			tracer:     tracer.Wrap(tp),
+		},
+	}
+
+	if mw.ID() != instrumentationMiddlewareID {
+		t.Fatalf("ID = %q, want %q", mw.ID(), instrumentationMiddlewareID)
+	}
+
+	ctx := middleware.WithOperationName(context.Background(), "PutObject")
+	bucketName := "my-bucket"
+	in := middleware.InitializeInput{
+		Parameters: &s3.PutObjectInput{
+			Bucket: &bucketName,
+		},
+	}
+
+	next := middleware.InitializeHandlerFunc(func(_ context.Context, _ middleware.InitializeInput) (middleware.InitializeOutput, middleware.Metadata, error) {
+		return middleware.InitializeOutput{Result: "ok"}, middleware.Metadata{}, nil
+	})
+
+	out, _, err := mw.HandleInitialize(ctx, in, next)
+	if err != nil {
+		t.Fatalf("HandleInitialize: %v", err)
+	}
+	if out.Result != "ok" {
+		t.Fatalf("result = %v, want ok", out.Result)
+	}
+
+	span, ok := ex.last()
+	if !ok || span.Name() != "PutObject" {
+		t.Fatalf("span = %+v, want PutObject", span)
+	}
+	attrs := spanAttrs(span)
+	if attrs["aws.s3.bucket"] != "my-bucket" || attrs["rpc.method"] != "PutObject" || attrs["cloud.region"] != "us-east-1" {
+		t.Fatalf("unexpected attrs: %+v", attrs)
+	}
+	if errType, hasErr := attrs["error.type"]; hasErr && errType != "" {
+		t.Fatalf("error.type should be absent or empty on success, got %v", errType)
+	}
+	count, ok := fm.lastCount()
+	if !ok || count.name != metricCount || count.attrs["aws.s3.bucket"] != "my-bucket" {
+		t.Fatalf("count metric = %+v", count)
+	}
+	if _, hasErr := count.attrs["error.type"]; hasErr {
+		t.Fatalf("expected metric error.type to be absent on success, got: %v", count.attrs["error.type"])
+	}
+	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration || hist.attrs["rpc.method"] != "PutObject" {
+		t.Fatalf("hist metric = %+v", hist)
+	}
+}
+
+func TestInstrumentationMiddleware_HandleInitialize_Error(t *testing.T) {
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	fm := &fakeMetrics{}
+
+	mw := &instrumentationMiddleware{
+		meta: meta{
+			region:  "us-east-1",
+			metrics: fm,
+			tracer:  tracer.Wrap(tp),
+		},
+	}
+
+	ctx := middleware.WithOperationName(context.Background(), "DeleteBucket")
+	bucketName := "old-bucket"
+	in := middleware.InitializeInput{
+		Parameters: &s3.DeleteBucketInput{
+			Bucket: &bucketName,
+		},
+	}
+
+	next := middleware.InitializeHandlerFunc(func(_ context.Context, _ middleware.InitializeInput) (middleware.InitializeOutput, middleware.Metadata, error) {
+		return middleware.InitializeOutput{}, middleware.Metadata{}, &smithy.GenericAPIError{Code: "BucketNotEmpty", Message: "bucket not empty"}
+	})
+
+	_, _, err := mw.HandleInitialize(ctx, in, next)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	span, ok := ex.last()
+	if !ok || span.Name() != "DeleteBucket" {
+		t.Fatalf("span = %+v, want DeleteBucket", span)
+	}
+	if span.Status().Code != codes.Error {
+		t.Fatalf("status = %v, want error", span.Status().Code)
+	}
+	attrs := spanAttrs(span)
+	if attrs["error.type"] != "BucketNotEmpty" {
+		t.Fatalf("error.type = %v, want BucketNotEmpty", attrs["error.type"])
+	}
+}
+
+func TestExtractBucket(t *testing.T) {
+	b := "target-bucket"
+	cases := []struct {
+		name   string
+		input  any
+		expect string
+	}{
+		{"nil input", nil, ""},
+		{"PutObjectInput", &s3.PutObjectInput{Bucket: &b}, "target-bucket"},
+		{"GetObjectInput", &s3.GetObjectInput{Bucket: &b}, "target-bucket"},
+		{"HeadObjectInput", &s3.HeadObjectInput{Bucket: &b}, "target-bucket"},
+		{"DeleteObjectInput", &s3.DeleteObjectInput{Bucket: &b}, "target-bucket"},
+		{"DeleteObjectsInput", &s3.DeleteObjectsInput{Bucket: &b}, "target-bucket"},
+		{"ListObjectsV2Input", &s3.ListObjectsV2Input{Bucket: &b}, "target-bucket"},
+		{"CreateBucketInput", &s3.CreateBucketInput{Bucket: &b}, "target-bucket"},
+		{"DeleteBucketInput", &s3.DeleteBucketInput{Bucket: &b}, "target-bucket"},
+		{"HeadBucketInput", &s3.HeadBucketInput{Bucket: &b}, "target-bucket"},
+		{"CopyObjectInput", &s3.CopyObjectInput{Bucket: &b}, "target-bucket"},
+		{"PutBucketPolicyInput", &s3.PutBucketPolicyInput{Bucket: &b}, "target-bucket"},
+		{"GetBucketPolicyInput", &s3.GetBucketPolicyInput{Bucket: &b}, "target-bucket"},
+		{"CreateMultipartUploadInput", &s3.CreateMultipartUploadInput{Bucket: &b}, "target-bucket"},
+		{"UploadPartInput", &s3.UploadPartInput{Bucket: &b}, "target-bucket"},
+		{"CompleteMultipartUploadInput", &s3.CompleteMultipartUploadInput{Bucket: &b}, "target-bucket"},
+		{"SelectObjectContentInput", &s3.SelectObjectContentInput{Bucket: &b}, "target-bucket"},
+		{"tm.GetObjectInput", &transfermanager.GetObjectInput{Bucket: &b}, "target-bucket"},
+		{"tm.UploadObjectInput", &transfermanager.UploadObjectInput{Bucket: &b}, "target-bucket"},
+		{"tm.DownloadObjectInput", &transfermanager.DownloadObjectInput{Bucket: &b}, "target-bucket"},
+		{"Custom struct pointer with Bucket pointer", &struct{ Bucket *string }{Bucket: &b}, "target-bucket"},
+		{"Custom struct value with Bucket string", struct{ Bucket string }{Bucket: "custom-str"}, "custom-str"},
+		{"Struct without Bucket field", struct{ Other string }{Other: "foo"}, ""},
+		{"Non-struct type", 12345, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractBucket(tc.input); got != tc.expect {
+				t.Fatalf("extractBucket(%+v) = %q, want %q", tc.input, got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestOptions_WithMetrics_WithTracer(t *testing.T) {
+	fm := &fakeMetrics{}
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tr := tracer.Wrap(tp)
+
+	cfg := Config{Region: "us-east-1"}
+	cli, err := New(cfg, WithMetrics(fm), WithTracer(tr))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if cli == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestMiddleware_EndToEnd_LivePutObject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"etag-123"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	fm := &fakeMetrics{}
+
+	cfg := Config{
+		Region:          "us-east-1",
+		Endpoint:        srv.URL,
+		AccessKeyID:     "test-key",
+		SecretAccessKey: "test-secret",
+	}
+
+	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = cli.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("production-data"),
+		Key:    aws.String("report.pdf"),
+		Body:   strings.NewReader("pdf-content"),
+	})
+	if err != nil {
+		t.Fatalf("PutObject: %v", err)
+	}
+
+	span, ok := ex.last()
+	if !ok {
+		t.Fatal("expected a span to be recorded by middleware")
+	}
+	if span.Name() != "PutObject" {
+		t.Fatalf("span name = %q, want PutObject", span.Name())
+	}
+	attrs := spanAttrs(span)
+	if attrs["aws.s3.bucket"] != "production-data" {
+		t.Fatalf("span aws.s3.bucket = %v, want production-data", attrs["aws.s3.bucket"])
+	}
+	if attrs["rpc.method"] != "PutObject" || attrs["rpc.system"] != "aws-api" || attrs["rpc.service"] != "s3" {
+		t.Fatalf("unexpected RPC attributes: %+v", attrs)
+	}
+
+	if count, ok := fm.lastCount(); !ok || count.name != metricCount || count.attrs["aws.s3.bucket"] != "production-data" {
+		t.Fatalf("unexpected count metric: %+v", count)
+	}
+	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration || hist.attrs["rpc.method"] != "PutObject" {
+		t.Fatalf("unexpected duration histogram metric: %+v", hist)
+	}
+}
+
+func TestMiddleware_EndToEnd_LiveErrorHandling(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>NoSuchBucket</Code>
+  <Message>The specified bucket does not exist</Message>
+  <BucketName>missing-bucket</BucketName>
+</Error>`))
+	}))
+	defer srv.Close()
+
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	fm := &fakeMetrics{}
+
+	cfg := Config{
+		Region:          "us-east-1",
+		Endpoint:        srv.URL,
+		AccessKeyID:     "test-key",
+		SecretAccessKey: "test-secret",
+	}
+
+	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = cli.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
+		Bucket: aws.String("missing-bucket"),
+	})
+	if err == nil {
+		t.Fatal("expected DeleteBucket to fail")
+	}
+
+	span, ok := ex.last()
+	if !ok {
+		t.Fatal("expected span to be recorded")
+	}
+	if span.Status().Code != codes.Error {
+		t.Fatalf("span status = %v, want Error", span.Status().Code)
+	}
+	attrs := spanAttrs(span)
+	if attrs["error.type"] != "NoSuchBucket" {
+		t.Fatalf("error.type = %v, want NoSuchBucket", attrs["error.type"])
+	}
+}
+
+func TestMiddleware_EndToEnd_PresignGetObject(t *testing.T) {
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	fm := &fakeMetrics{}
+
+	cfg := Config{
+		Region:          "us-east-1",
+		AccessKeyID:     "test-key",
+		SecretAccessKey: "test-secret",
+	}
+
+	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	req, err := cli.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String("presigned-bucket"),
+		Key:    aws.String("document.pdf"),
+	})
+	if err != nil {
+		t.Fatalf("PresignGetObject: %v", err)
+	}
+	if req.URL == "" {
+		t.Fatal("expected non-empty presigned URL")
+	}
+
+	span, ok := ex.last()
+	if !ok || span.Name() != "PresignGetObject" {
+		t.Fatalf("span = %+v, want PresignGetObject", span)
+	}
+	if span.SpanKind() != trace.SpanKindInternal {
+		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
+	}
+	attrs := spanAttrs(span)
+	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "PresignGetObject" {
+		t.Fatalf("unexpected attrs: %+v", attrs)
+	}
+	if _, hasErr := attrs["error.type"]; hasErr {
+		t.Fatalf("expected error.type to be absent on success, got %v", attrs["error.type"])
+	}
+
+	count, ok := fm.lastCount()
+	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignGetObject" || count.attrs["aws.s3.bucket"] != "presigned-bucket" {
+		t.Fatalf("unexpected count metric: %+v", count)
+	}
+	if _, hasErr := count.attrs["error.type"]; hasErr {
+		t.Fatalf("expected metric error.type to be absent on success, got: %v", count.attrs["error.type"])
+	}
+}
+
+func TestMiddleware_EndToEnd_PresignPutObject(t *testing.T) {
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	fm := &fakeMetrics{}
+
+	cfg := Config{
+		Region:          "us-east-1",
+		AccessKeyID:     "test-key",
+		SecretAccessKey: "test-secret",
+	}
+
+	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	req, err := cli.PresignPutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("presigned-bucket"),
+		Key:    aws.String("upload.pdf"),
+	})
+	if err != nil {
+		t.Fatalf("PresignPutObject: %v", err)
+	}
+	if req.URL == "" {
+		t.Fatal("expected non-empty presigned URL")
+	}
+
+	span, ok := ex.last()
+	if !ok || span.Name() != "PresignPutObject" {
+		t.Fatalf("span = %+v, want PresignPutObject", span)
+	}
+	if span.SpanKind() != trace.SpanKindInternal {
+		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
+	}
+	attrs := spanAttrs(span)
+	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "PresignPutObject" {
+		t.Fatalf("unexpected attrs: %+v", attrs)
+	}
+
+	count, ok := fm.lastCount()
+	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignPutObject" {
+		t.Fatalf("unexpected count metric: %+v", count)
 	}
 }

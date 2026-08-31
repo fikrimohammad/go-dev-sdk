@@ -55,5 +55,3 @@ require (
 replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
 
 replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
-
-replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
