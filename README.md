@@ -15,6 +15,7 @@ Each package is an independent Go module, importable directly:
 | `confloader` | `github.com/fikrimohammad/go-dev-sdk/confloader` | Layered config: file + dynamic (etcd) + secrets (Infisical) |
 | `apiserver` | `github.com/fikrimohammad/go-dev-sdk/apiserver` | Hertz HTTP server wiring and middleware |
 | `db` | `github.com/fikrimohammad/go-dev-sdk/db` | sqlx-based MySQL pool with queryer abstraction |
+| `nats` | `github.com/fikrimohammad/go-dev-sdk/nats` | NATS JetStream producer/consumer with middleware and telemetry |
 | `redis` | `github.com/fikrimohammad/go-dev-sdk/redis` | Redis client with metrics/tracing |
 | `rocketmq` | `github.com/fikrimohammad/go-dev-sdk/rocketmq` | RocketMQ producer/consumer with middleware and telemetry |
 | `s3` | `github.com/fikrimohammad/go-dev-sdk/s3` | AWS S3 client with multipart upload and presigned URLs |
