@@ -127,7 +127,7 @@ func TestRegistrationDotRejection(t *testing.T) {
 	}
 }
 
-// TestByteDanceParity tests the real condition described by ByteDance message pattern:
+// TestMultiConsumerParity tests the multi-consumer message pattern:
 // 1. Topic (stream): oec_order_event
 // 2. Tag: order_created
 // 3. Consumer groups:
@@ -136,7 +136,7 @@ func TestRegistrationDotRejection(t *testing.T) {
 //
 // Each consumer group has its own independent offset and concurrency, receives
 // each message published to the tag, and filters out other tags (e.g. order_cancelled).
-func TestByteDanceParity(t *testing.T) {
+func TestMultiConsumerParity(t *testing.T) {
 	ns := startTestNATSServer(t)
 	serverURL := ns.ClientURL()
 
