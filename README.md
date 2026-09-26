@@ -14,6 +14,7 @@ Each package is an independent Go module, importable directly:
 | `observability` | `github.com/fikrimohammad/go-dev-sdk/observability` | OpenTelemetry logs, metrics, and traces |
 | `confloader` | `github.com/fikrimohammad/go-dev-sdk/confloader` | Layered config: file + dynamic (etcd) + secrets (Infisical) |
 | `apiserver` | `github.com/fikrimohammad/go-dev-sdk/apiserver` | Hertz HTTP server wiring and middleware |
+| `cron` | `github.com/fikrimohammad/go-dev-sdk/cron` | Recurring job scheduler with robfig/cron, middleware pipeline, and dev REST API |
 | `db` | `github.com/fikrimohammad/go-dev-sdk/db` | sqlx-based MySQL pool with queryer abstraction |
 | `nats` | `github.com/fikrimohammad/go-dev-sdk/nats` | NATS JetStream producer/consumer with middleware and telemetry |
 | `redis` | `github.com/fikrimohammad/go-dev-sdk/redis` | Redis client with metrics/tracing |
