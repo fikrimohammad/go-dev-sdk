@@ -15,8 +15,8 @@ type Toggler interface {
 
 // LockToken represents an acquired distributed lock carrying a fencing token.
 type LockToken interface {
-	// FencingToken returns the monotonically increasing sequence number.
-	FencingToken() int64
+	// FencingToken returns the monotonically increasing token or sequence identifier (e.g. integer string, UUID, snowflake).
+	FencingToken() string
 	// Unlock releases the distributed lock.
 	Unlock(ctx context.Context) error
 }

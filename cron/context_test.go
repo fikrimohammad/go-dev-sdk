@@ -16,9 +16,9 @@ func TestFencingTokenContext(t *testing.T) {
 		t.Fatal("expected no fencing token on nil context")
 	}
 
-	ctx = WithFencingToken(ctx, 42)
+	ctx = WithFencingToken(ctx, "token-uuid-12345")
 	token, ok := FencingTokenFromContext(ctx)
-	if !ok || token != 42 {
-		t.Fatalf("got token %d, ok %v; want 42, true", token, ok)
+	if !ok || token != "token-uuid-12345" {
+		t.Fatalf("got token %q, ok %v; want \"token-uuid-12345\", true", token, ok)
 	}
 }

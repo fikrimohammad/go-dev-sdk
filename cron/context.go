@@ -5,15 +5,15 @@ import "context"
 type fencingTokenKey struct{}
 
 // WithFencingToken attaches a fencing token to the context.
-func WithFencingToken(ctx context.Context, token int64) context.Context {
+func WithFencingToken(ctx context.Context, token string) context.Context {
 	return context.WithValue(ctx, fencingTokenKey{}, token)
 }
 
 // FencingTokenFromContext extracts the fencing token from the context.
-func FencingTokenFromContext(ctx context.Context) (int64, bool) {
+func FencingTokenFromContext(ctx context.Context) (string, bool) {
 	if ctx == nil {
-		return 0, false
+		return "", false
 	}
-	token, ok := ctx.Value(fencingTokenKey{}).(int64)
+	token, ok := ctx.Value(fencingTokenKey{}).(string)
 	return token, ok
 }

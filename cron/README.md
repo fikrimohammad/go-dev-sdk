@@ -68,7 +68,7 @@ func main() {
 		Timeout:     5 * time.Minute,
 		Handler: func(ctx context.Context) error {
 			if token, ok := cron.FencingTokenFromContext(ctx); ok {
-				log.Printf("executing with fencing token: %d", token)
+				log.Printf("executing with fencing token: %s", token)
 			}
 			// Run cleanup logic...
 			return nil

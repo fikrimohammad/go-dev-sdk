@@ -22,12 +22,12 @@ func (f *fakeToggler) IsEnabled(context.Context, string) (bool, error) {
 
 // fakeLockToken implements cron.LockToken
 type fakeLockToken struct {
-	token    int64
+	token    string
 	unlocked bool
 	mu       sync.Mutex
 }
 
-func (f *fakeLockToken) FencingToken() int64 {
+func (f *fakeLockToken) FencingToken() string {
 	return f.token
 }
 
@@ -167,9 +167,9 @@ func TestMiddleware_LockerFailClosed(t *testing.T) {
 }
 
 func TestMiddleware_FencingTokenInjected(t *testing.T) {
-	token := &fakeLockToken{token: 999}
+	token := &fakeLockToken{token: "snowflake-999"}
 	locker := &fakeLocker{token: token}
-	var capturedToken int64
+	var capturedToken string
 	var foundToken bool
 
 	m := meta{
@@ -188,8 +188,8 @@ func TestMiddleware_FencingTokenInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !foundToken || capturedToken != 999 {
-		t.Fatalf("expected fencing token 999, got %d, found %v", capturedToken, foundToken)
+	if !foundToken || capturedToken != "snowflake-999" {
+		t.Fatalf("expected fencing token %q, got %q, found %v", "snowflake-999", capturedToken, foundToken)
 	}
 	if !token.unlocked {
 		t.Fatal("expected lock to be unlocked after execution")
