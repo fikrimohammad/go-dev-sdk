@@ -29,7 +29,7 @@
 // db.operation.batch.size set to the number of queued commands.
 //
 // Tracing and metrics use the package-level defaults of the observability
-// packages (tracer.Tracer / metrics.Count & metrics.Histogram).
+// packages (tracer.Tracer / metrics.Add & metrics.Record).
 package redis
 
 import (
@@ -60,6 +60,49 @@ const (
 	// metricCount and metricDuration are the OTel metric names emitted per executed command.
 	metricCount    = "db.client.operation.count"
 	metricDuration = "db.client.operation.duration"
+)
+
+var (
+	metricCountInstrument = metrics.Instrument{
+		Name:        metricCount,
+		Unit:        "{operation}",
+		Description: "Redis client operations",
+	}
+	metricDurationInstrument = metrics.Instrument{
+		Name:        metricDuration,
+		Unit:        "s",
+		Description: "Redis client operation duration",
+	}
+	poolHitsInstrument = metrics.Instrument{
+		Name:        "db.client.connections.hits",
+		Unit:        "{connection}",
+		Description: "Redis connection pool hits",
+	}
+	poolMissesInstrument = metrics.Instrument{
+		Name:        "db.client.connections.misses",
+		Unit:        "{connection}",
+		Description: "Redis connection pool misses",
+	}
+	poolTimeoutsInstrument = metrics.Instrument{
+		Name:        "db.client.connections.timeouts",
+		Unit:        "{connection}",
+		Description: "Redis connection pool timeouts",
+	}
+	poolStaleInstrument = metrics.Instrument{
+		Name:        "db.client.connections.stale",
+		Unit:        "{connection}",
+		Description: "Redis stale connections",
+	}
+	poolTotalInstrument = metrics.Instrument{
+		Name:        "db.client.connections.total",
+		Unit:        "{connection}",
+		Description: "Redis current total connections",
+	}
+	poolIdleInstrument = metrics.Instrument{
+		Name:        "db.client.connections.idle",
+		Unit:        "{connection}",
+		Description: "Redis current idle connections",
+	}
 )
 
 // meta carries the attributes held by every instrumented command.
@@ -194,34 +237,34 @@ func NewWithContext(ctx context.Context, cfg Config, opts ...Option) (Client, er
 
 					if m != nil {
 						if hitsDelta > 0 {
-							_ = m.Count(mCtx, "db.client.connections.hits", hitsDelta, attrs)
+							_ = m.Add(mCtx, poolHitsInstrument, hitsDelta, attrs)
 						}
 						if missesDelta > 0 {
-							_ = m.Count(mCtx, "db.client.connections.misses", missesDelta, attrs)
+							_ = m.Add(mCtx, poolMissesInstrument, missesDelta, attrs)
 						}
 						if timeoutsDelta > 0 {
-							_ = m.Count(mCtx, "db.client.connections.timeouts", timeoutsDelta, attrs)
+							_ = m.Add(mCtx, poolTimeoutsInstrument, timeoutsDelta, attrs)
 						}
 						if staleDelta > 0 {
-							_ = m.Count(mCtx, "db.client.connections.stale", staleDelta, attrs)
+							_ = m.Add(mCtx, poolStaleInstrument, staleDelta, attrs)
 						}
-						_ = m.Histogram(mCtx, "db.client.connections.total", float64(stats.TotalConns), attrs)
-						_ = m.Histogram(mCtx, "db.client.connections.idle", float64(stats.IdleConns), attrs)
+						_ = m.RecordGauge(mCtx, poolTotalInstrument, float64(stats.TotalConns), attrs)
+						_ = m.RecordGauge(mCtx, poolIdleInstrument, float64(stats.IdleConns), attrs)
 					} else {
 						if hitsDelta > 0 {
-							_ = metrics.Count(mCtx, "db.client.connections.hits", hitsDelta, attrs)
+							_ = metrics.Add(mCtx, poolHitsInstrument, hitsDelta, attrs)
 						}
 						if missesDelta > 0 {
-							_ = metrics.Count(mCtx, "db.client.connections.misses", missesDelta, attrs)
+							_ = metrics.Add(mCtx, poolMissesInstrument, missesDelta, attrs)
 						}
 						if timeoutsDelta > 0 {
-							_ = metrics.Count(mCtx, "db.client.connections.timeouts", timeoutsDelta, attrs)
+							_ = metrics.Add(mCtx, poolTimeoutsInstrument, timeoutsDelta, attrs)
 						}
 						if staleDelta > 0 {
-							_ = metrics.Count(mCtx, "db.client.connections.stale", staleDelta, attrs)
+							_ = metrics.Add(mCtx, poolStaleInstrument, staleDelta, attrs)
 						}
-						_ = metrics.Histogram(mCtx, "db.client.connections.total", float64(stats.TotalConns), attrs)
-						_ = metrics.Histogram(mCtx, "db.client.connections.idle", float64(stats.IdleConns), attrs)
+						_ = metrics.RecordGauge(mCtx, poolTotalInstrument, float64(stats.TotalConns), attrs)
+						_ = metrics.RecordGauge(mCtx, poolIdleInstrument, float64(stats.IdleConns), attrs)
 					}
 				}
 			}
@@ -588,11 +631,11 @@ func (m meta) instrumentPipeline(ctx context.Context, cmds []redis.Cmder, fn fun
 // record emits the count and duration metrics for a single event.
 func (m meta) record(ctx context.Context, d time.Duration, attrs map[string]any) {
 	if m.metrics != nil {
-		_ = m.metrics.Count(ctx, metricCount, 1, attrs)
-		_ = m.metrics.Histogram(ctx, metricDuration, d.Seconds(), attrs)
+		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = m.metrics.Record(ctx, metricDurationInstrument, d.Seconds(), attrs)
 	} else {
-		_ = metrics.Count(ctx, metricCount, 1, attrs)
-		_ = metrics.Histogram(ctx, metricDuration, d.Seconds(), attrs)
+		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = metrics.Record(ctx, metricDurationInstrument, d.Seconds(), attrs)
 	}
 }
 

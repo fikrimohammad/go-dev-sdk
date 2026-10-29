@@ -24,17 +24,9 @@ type testServer struct {
 	engine *server.Hertz
 }
 
-// noopMetrics implements metrics.Client and discards all measurements. The
-// middleware tests assert HTTP behavior, not metric output.
-type noopMetrics struct{}
-
-func (noopMetrics) Count(context.Context, string, int64, map[string]any) error       { return nil }
-func (noopMetrics) Histogram(context.Context, string, float64, map[string]any) error { return nil }
-func (noopMetrics) Stop(context.Context) error                                       { return nil }
-
 func newTestMetricsClient(t *testing.T) metrics.Client {
 	t.Helper()
-	return noopMetrics{}
+	return metrics.Noop()
 }
 
 func newTestTracerClient(t *testing.T) tracer.Client {

@@ -28,9 +28,6 @@ var (
 	// ErrInstrumentConflict indicates that a metric name was reused with
 	// different metadata or a different instrument kind.
 	ErrInstrumentConflict = errors.New("metrics: instrument conflict")
-	// ErrUnsupportedInstrument indicates that the installed client does not
-	// implement the instrument-based API.
-	ErrUnsupportedInstrument = errors.New("metrics: instrument not supported by client")
 
 	metricNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,254}$`)
 )
@@ -50,32 +47,15 @@ type Instrument struct {
 	Description string
 }
 
-// Client is the name-based metrics contract. Count and Histogram are retained
-// for compatibility with existing callers and injected fakes; they cannot
-// attach instrument metadata. Clients returned by New, Wrap, and Noop also
-// implement InstrumentClient, which is the preferred API.
+// Client records counters, histograms, up-down counters, and gauges through
+// OTel instruments. Add records counter measurements, Record records histogram
+// measurements, AddUpDown records up-down counter changes, and RecordGauge
+// records instantaneous gauge values. Provider exposes the underlying meter
+// provider for global registration.
 //
-// Count and Histogram return errors so callers can react to registration,
-// invalid-name, or post-Stop failures.
+// All methods return errors so callers can react to registration, invalid-name,
+// metadata-conflict, or post-Stop failures.
 type Client interface {
-	// Count increments a counter named name by value.
-	Count(ctx context.Context, name string, value int64, attrs map[string]any) error
-	// Histogram records value to a histogram named name.
-	Histogram(ctx context.Context, name string, value float64, attrs map[string]any) error
-	// Stop flushes pending measurements and shuts down the exporter. It is
-	// safe to call multiple times; only the first call performs work.
-	Stop(ctx context.Context) error
-}
-
-// InstrumentClient is the full metrics contract. Add records counter
-// measurements, Record records histogram measurements, AddUpDown records
-// up-down counter changes, and RecordGauge records instantaneous gauge values.
-// Provider exposes the underlying meter provider for global registration.
-//
-// New, Wrap, and Noop return an InstrumentClient.
-type InstrumentClient interface {
-	Client
-
 	// Add records a counter measurement identified by instrument.
 	Add(ctx context.Context, instrument Instrument, value int64, attrs map[string]any) error
 	// Record records a histogram measurement identified by instrument.
@@ -86,6 +66,10 @@ type InstrumentClient interface {
 	RecordGauge(ctx context.Context, instrument Instrument, value float64, attrs map[string]any) error
 	// Provider returns the meter provider backing this client.
 	Provider() metric.MeterProvider
+	// Stop flushes pending measurements and shuts down the exporter. It is
+	// safe to call multiple times; only the first call performs work, and the
+	// first shutdown error is returned on subsequent calls.
+	Stop(ctx context.Context) error
 }
 
 type instrumentKind string
@@ -109,7 +93,7 @@ type instrumentEntry struct {
 	gauge     metric.Float64Gauge
 }
 
-// otelMetrics implements InstrumentClient. Instruments are cached by name;
+// otelMetrics implements Client. Instruments are cached by name;
 // reusing a name with different metadata is rejected. Stop is synchronized
 // against measurements and returns the first shutdown error on every call.
 type otelMetrics struct {
@@ -123,9 +107,8 @@ type otelMetrics struct {
 }
 
 var (
-	_ Client           = (*otelMetrics)(nil)
-	_ InstrumentClient = (*otelMetrics)(nil)
-	_ InstrumentClient = noopMetrics{}
+	_ Client = (*otelMetrics)(nil)
+	_ Client = noopMetrics{}
 )
 
 var noopMeterProvider = metricnoop.NewMeterProvider()
@@ -261,18 +244,6 @@ func (c *otelMetrics) RecordGauge(ctx context.Context, instrument Instrument, va
 	return nil
 }
 
-// Count increments a counter named name by value. It is the legacy API;
-// prefer Add, which also carries the instrument unit and description.
-func (c *otelMetrics) Count(ctx context.Context, name string, value int64, attrs map[string]any) error {
-	return c.Add(ctx, Instrument{Name: name}, value, attrs)
-}
-
-// Histogram records value to a histogram named name. It is the legacy API;
-// prefer Record, which also carries the instrument unit and description.
-func (c *otelMetrics) Histogram(ctx context.Context, name string, value float64, attrs map[string]any) error {
-	return c.Record(ctx, Instrument{Name: name}, value, attrs)
-}
-
 func (c *otelMetrics) Provider() metric.MeterProvider {
 	return c.provider
 }
@@ -306,20 +277,20 @@ func newInstrumentClient(provider metric.MeterProvider, scope string, shutdown f
 	}
 }
 
-// Wrap returns an InstrumentClient backed by provider. A nil provider is
+// Wrap returns a Client backed by provider. A nil provider is
 // treated as a noop provider. Stop is a no-op; the caller retains ownership of
 // the provider's lifecycle. Wrap uses DefaultInstrumentationScope.
-func Wrap(provider metric.MeterProvider) InstrumentClient {
+func Wrap(provider metric.MeterProvider) Client {
 	return WrapWithScope(provider, "")
 }
 
 // WrapWithScope is like Wrap but uses scope as the instrumentation scope name.
 // An empty scope uses DefaultInstrumentationScope.
-func WrapWithScope(provider metric.MeterProvider, scope string) InstrumentClient {
+func WrapWithScope(provider metric.MeterProvider, scope string) Client {
 	return newInstrumentClient(provider, scope, nil)
 }
 
-// New builds an InstrumentClient backed by an OTLP gRPC exporter.
+// New builds a Client backed by an OTLP gRPC exporter.
 // The exporter pushes metrics to the collector periodically. Call Stop on the
 // returned client when the application exits to flush pending metrics.
 //
@@ -327,7 +298,7 @@ func WrapWithScope(provider metric.MeterProvider, scope string) InstrumentClient
 // semantic convention resource attributes service.name, service.version, and
 // deployment.environment. New returns an error if info has no service name,
 // cfg is invalid, or the exporter cannot be created.
-func New(ctx context.Context, info appinfo.Info, cfg Config) (InstrumentClient, error) {
+func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
 	ctx = contextOrBackground(ctx)
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
@@ -358,7 +329,7 @@ func New(ctx context.Context, info appinfo.Info, cfg Config) (InstrumentClient, 
 
 // newClientWithExporter builds the provider and client around exporter. It is
 // separate from New so tests can supply a fake exporter.
-func newClientWithExporter(ctx context.Context, info appinfo.Info, cfg Config, exporter sdkmetric.Exporter) (InstrumentClient, error) {
+func newClientWithExporter(ctx context.Context, info appinfo.Info, cfg Config, exporter sdkmetric.Exporter) (Client, error) {
 	provider, err := newMeterProvider(ctx, info, cfg,
 		sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(cfg.ExportInterval)))
 	if err != nil {
@@ -393,12 +364,6 @@ func newMeterProvider(ctx context.Context, info appinfo.Info, cfg Config, reader
 // noopMetrics discards all measurements.
 type noopMetrics struct{}
 
-func (noopMetrics) Count(context.Context, string, int64, map[string]any) error { return nil }
-
-func (noopMetrics) Histogram(context.Context, string, float64, map[string]any) error {
-	return nil
-}
-
 func (noopMetrics) Add(context.Context, Instrument, int64, map[string]any) error { return nil }
 
 func (noopMetrics) Record(context.Context, Instrument, float64, map[string]any) error {
@@ -423,16 +388,14 @@ func init() {
 	SetDefault(Noop())
 }
 
-// Noop returns an InstrumentClient that discards all measurements.
-func Noop() InstrumentClient {
+// Noop returns a Client that discards all measurements.
+func Noop() Client {
 	return noopMetrics{}
 }
 
-// Default returns the Client used by the package-level Count and Histogram
-// funcs. It is never nil: before SetDefault is called, and after
-// SetDefault(nil), it is a noop implementation. The instrument-based funcs
-// require the default to implement InstrumentClient and report
-// ErrUnsupportedInstrument otherwise.
+// Default returns the Client used by the package-level funcs. It is never nil:
+// before SetDefault is called, and after SetDefault(nil), it is a noop
+// implementation.
 func Default() Client {
 	return *defaultMetrics.Load()
 }
@@ -447,63 +410,24 @@ func SetDefault(m Client) {
 	defaultMetrics.Store(&m)
 }
 
-func defaultInstrumentClient() (InstrumentClient, error) {
-	client, ok := Default().(InstrumentClient)
-	if !ok {
-		return nil, ErrUnsupportedInstrument
-	}
-	return client, nil
-}
-
-// Count increments a counter named name by value. It reports the error so
-// callers can react to registration, invalid-name, or post-Stop failures.
-func Count(ctx context.Context, name string, value int64, attrs map[string]any) error {
-	return Default().Count(ctx, name, value, attrs)
-}
-
-// Histogram records value to a histogram named name. It reports the error so
-// callers can react to registration, invalid-name, or post-Stop failures.
-func Histogram(ctx context.Context, name string, value float64, attrs map[string]any) error {
-	return Default().Histogram(ctx, name, value, attrs)
-}
-
-// Add records a counter measurement through the default InstrumentClient.
+// Add records a counter measurement through the default client.
 func Add(ctx context.Context, instrument Instrument, value int64, attrs map[string]any) error {
-	client, err := defaultInstrumentClient()
-	if err != nil {
-		return fmt.Errorf("%w: Add %q", err, instrument.Name)
-	}
-	return client.Add(ctx, instrument, value, attrs)
+	return Default().Add(ctx, instrument, value, attrs)
 }
 
-// Record records a histogram measurement through the default
-// InstrumentClient.
+// Record records a histogram measurement through the default client.
 func Record(ctx context.Context, instrument Instrument, value float64, attrs map[string]any) error {
-	client, err := defaultInstrumentClient()
-	if err != nil {
-		return fmt.Errorf("%w: Record %q", err, instrument.Name)
-	}
-	return client.Record(ctx, instrument, value, attrs)
+	return Default().Record(ctx, instrument, value, attrs)
 }
 
-// AddUpDown records an up-down counter change through the default
-// InstrumentClient.
+// AddUpDown records an up-down counter change through the default client.
 func AddUpDown(ctx context.Context, instrument Instrument, value int64, attrs map[string]any) error {
-	client, err := defaultInstrumentClient()
-	if err != nil {
-		return fmt.Errorf("%w: AddUpDown %q", err, instrument.Name)
-	}
-	return client.AddUpDown(ctx, instrument, value, attrs)
+	return Default().AddUpDown(ctx, instrument, value, attrs)
 }
 
-// RecordGauge records an instantaneous gauge value through the default
-// InstrumentClient.
+// RecordGauge records an instantaneous gauge value through the default client.
 func RecordGauge(ctx context.Context, instrument Instrument, value float64, attrs map[string]any) error {
-	client, err := defaultInstrumentClient()
-	if err != nil {
-		return fmt.Errorf("%w: RecordGauge %q", err, instrument.Name)
-	}
-	return client.RecordGauge(ctx, instrument, value, attrs)
+	return Default().RecordGauge(ctx, instrument, value, attrs)
 }
 
 // Stop flushes pending telemetry and shuts down the default exporter. It is

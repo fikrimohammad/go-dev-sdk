@@ -191,6 +191,16 @@ func Tracer(tc tracer.Client) app.HandlerFunc {
 //
 //go:noinline
 func Metrics(mc metrics.Client) app.HandlerFunc {
+	countInstrument := metrics.Instrument{
+		Name:        "http.server.request.count",
+		Unit:        "{request}",
+		Description: "HTTP server requests",
+	}
+	durationInstrument := metrics.Instrument{
+		Name:        "http.server.request.duration",
+		Unit:        "s",
+		Description: "HTTP server request duration",
+	}
 	return func(ctx context.Context, c *app.RequestContext) {
 		start := time.Now()
 		c.Next(ctx)
@@ -207,8 +217,8 @@ func Metrics(mc metrics.Client) app.HandlerFunc {
 			}
 		}
 
-		_ = mc.Count(ctx, "http.server.request.count", 1, attrs)
-		_ = mc.Histogram(ctx, "http.server.request.duration", time.Since(start).Seconds(), attrs)
+		_ = mc.Add(ctx, countInstrument, 1, attrs)
+		_ = mc.Record(ctx, durationInstrument, time.Since(start).Seconds(), attrs)
 	}
 }
 

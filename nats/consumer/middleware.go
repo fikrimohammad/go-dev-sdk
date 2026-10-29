@@ -31,6 +31,19 @@ const (
 	metricDuration = "messaging.process.duration"
 )
 
+var (
+	metricCountInstrument = metrics.Instrument{
+		Name:        metricCount,
+		Unit:        "{message}",
+		Description: "Messages processed",
+	}
+	metricDurationInstrument = metrics.Instrument{
+		Name:        metricDuration,
+		Unit:        "s",
+		Description: "Message processing duration",
+	}
+)
+
 // consumeHandler processes a single consumed message.
 type consumeHandler func(ctx context.Context, msg jetstream.Msg) error
 
@@ -228,11 +241,11 @@ func (m meta) metricsMW(next consumeHandler) consumeHandler {
 
 		attrs := m.eventAttrs(msg, errorText(err))
 		if m.metrics != nil {
-			_ = m.metrics.Count(ctx, metricCount, 1, attrs)
-			_ = m.metrics.Histogram(ctx, metricDuration, time.Since(start).Seconds(), attrs)
+			_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
+			_ = m.metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 		} else {
-			_ = metrics.Count(ctx, metricCount, 1, attrs)
-			_ = metrics.Histogram(ctx, metricDuration, time.Since(start).Seconds(), attrs)
+			_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
+			_ = metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 		}
 		return err
 	}

@@ -89,7 +89,7 @@ logs.Info(ctx, "request", "method", "GET", "user_id", 42)
 logs.Error(ctx, "job failed", errs.SlogAttr(err))
 
 // Metrics — returns errors; treat them as real. Instrument metadata carries
-// the UCUM unit and description. Count/Histogram remain for legacy callers.
+// the UCUM unit and description.
 if err := metrics.Record(ctx, metrics.Instrument{
     Name: "http.server.request.duration",
     Unit: "s",
@@ -101,9 +101,8 @@ _, span := tracer.Tracer("my.scope").Start(ctx, "operation")
 defer span.End()
 ```
 
-`Count` and `Histogram` remain for legacy callers and carry no metadata. Do not
-mix the legacy and instrument APIs for the same metric name: reuse with a
-different unit, description, or kind returns `ErrInstrumentConflict`.
+Metric names are immutable once registered. Reusing a name with a different
+unit, description, or kind returns `ErrInstrumentConflict`.
 
 ### 6. Shut down on exit
 
@@ -174,6 +173,6 @@ defer tc.Stop(ctx)
 | Package | Key symbols |
 | --- | --- |
 | `logs` | `New`, `SetDefault`, `Default`, `Debug/Info/Warn/Error`, `Logger` |
-| `metrics` | `New`, `Wrap`, `WrapWithScope`, `SetDefault`, `Default`, `Add`, `Record`, `AddUpDown`, `RecordGauge`, `Count`, `Histogram`, `Stop`, `Instrument`, `Client`, `InstrumentClient`, `Noop` |
+| `metrics` | `New`, `Wrap`, `WrapWithScope`, `SetDefault`, `Default`, `Add`, `Record`, `AddUpDown`, `RecordGauge`, `Stop`, `Instrument`, `Client`, `Noop` |
 | `tracer` | `New`, `Wrap`, `Noop`, `SetDefault`, `Tracer`, `Attrs`, `TraceIDFrom`, `Stop`, `Client` |
 | `attributes` | `NormalizeKey`, `ConvertMapsToKVs`, `ConvertAppInfoToMap` |

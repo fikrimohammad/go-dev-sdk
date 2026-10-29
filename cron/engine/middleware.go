@@ -22,6 +22,19 @@ const (
 	metricJobDuration = "cron.job.duration"
 )
 
+var (
+	metricJobRunsInstrument = metrics.Instrument{
+		Name:        metricJobRuns,
+		Unit:        "{run}",
+		Description: "Cron job runs",
+	}
+	metricJobDurationInstrument = metrics.Instrument{
+		Name:        metricJobDuration,
+		Unit:        "s",
+		Description: "Cron job duration",
+	}
+)
+
 // meta holds metadata and injected dependencies for a single job execution.
 type meta struct {
 	job     cron.Job
@@ -153,11 +166,11 @@ func (m meta) metricsMW(next cron.HandlerFunc) cron.HandlerFunc {
 		duration := time.Since(start).Seconds()
 
 		if m.metrics != nil {
-			_ = m.metrics.Count(ctx, metricJobRuns, 1, attrs)
-			_ = m.metrics.Histogram(ctx, metricJobDuration, duration, attrs)
+			_ = m.metrics.Add(ctx, metricJobRunsInstrument, 1, attrs)
+			_ = m.metrics.Record(ctx, metricJobDurationInstrument, duration, attrs)
 		} else {
-			_ = metrics.Count(ctx, metricJobRuns, 1, attrs)
-			_ = metrics.Histogram(ctx, metricJobDuration, duration, attrs)
+			_ = metrics.Add(ctx, metricJobRunsInstrument, 1, attrs)
+			_ = metrics.Record(ctx, metricJobDurationInstrument, duration, attrs)
 		}
 		return err
 	}

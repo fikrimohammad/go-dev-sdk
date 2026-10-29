@@ -23,6 +23,19 @@ const (
 	metricDuration = "messaging.publish.duration"
 )
 
+var (
+	metricCountInstrument = metrics.Instrument{
+		Name:        metricCount,
+		Unit:        "{message}",
+		Description: "Messages published",
+	}
+	metricDurationInstrument = metrics.Instrument{
+		Name:        metricDuration,
+		Unit:        "s",
+		Description: "Message publish duration",
+	}
+)
+
 // producerMeta carries the telemetry attributes of a registered producer.
 type producerMeta struct {
 	serverAddr string // server.address, from the first endpoint
@@ -163,11 +176,11 @@ func (m meta) instrumentPublishAsync(
 func (m meta) record(ctx context.Context, start time.Time, topic, tag, key string, bodyLen int, msgID, etype string) {
 	attrs := m.eventAttrs(topic, tag, key, bodyLen, msgID, etype)
 	if m.metrics != nil {
-		_ = m.metrics.Count(ctx, metricCount, 1, attrs)
-		_ = m.metrics.Histogram(ctx, metricDuration, time.Since(start).Seconds(), attrs)
+		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = m.metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 	} else {
-		_ = metrics.Count(ctx, metricCount, 1, attrs)
-		_ = metrics.Histogram(ctx, metricDuration, time.Since(start).Seconds(), attrs)
+		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 	}
 }
 

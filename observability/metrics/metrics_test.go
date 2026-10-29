@@ -10,6 +10,7 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
+	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -21,13 +22,20 @@ func testInfo() appinfo.Info {
 	return appinfo.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
 }
 
-// fakeMetrics implements the legacy Client contract.
+// fakeMetrics implements Client for facade tests.
 type fakeMetrics struct {
 	onStop func(context.Context) error
 }
 
-func (*fakeMetrics) Count(context.Context, string, int64, map[string]any) error       { return nil }
-func (*fakeMetrics) Histogram(context.Context, string, float64, map[string]any) error { return nil }
+func (*fakeMetrics) Add(context.Context, Instrument, int64, map[string]any) error      { return nil }
+func (*fakeMetrics) Record(context.Context, Instrument, float64, map[string]any) error { return nil }
+func (*fakeMetrics) AddUpDown(context.Context, Instrument, int64, map[string]any) error {
+	return nil
+}
+func (*fakeMetrics) RecordGauge(context.Context, Instrument, float64, map[string]any) error {
+	return nil
+}
+func (*fakeMetrics) Provider() metric.MeterProvider { return nil }
 
 func (f *fakeMetrics) Stop(ctx context.Context) error {
 	if f.onStop != nil {
@@ -36,7 +44,7 @@ func (f *fakeMetrics) Stop(ctx context.Context) error {
 	return nil
 }
 
-// newTestMetrics creates an InstrumentClient backed by a manual reader so
+// newTestMetrics creates a Client backed by a manual reader so
 // recorded metrics can be inspected.
 func newTestMetrics(t *testing.T) (*otelMetrics, *sdkmetric.ManualReader) {
 	t.Helper()
@@ -65,12 +73,12 @@ func collect(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMe
 	return rm
 }
 
-func TestOtelMetrics_Count_Basic(t *testing.T) {
-	Convey("Count records a counter with normalized attributes", t, func() {
+func TestOtelMetrics_Add_Basic(t *testing.T) {
+	Convey("Add records a counter with normalized attributes", t, func() {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Count(ctx, "requests", 1, map[string]any{"order_id": "1"}), ShouldBeNil)
+		So(c.Add(ctx, Instrument{Name: "requests"}, 1, map[string]any{"order_id": "1"}), ShouldBeNil)
 
 		rm := collect(t, reader)
 		m := findMetric(rm, "requests")
@@ -89,13 +97,13 @@ func TestOtelMetrics_Count_Basic(t *testing.T) {
 	})
 }
 
-func TestOtelMetrics_Count_Accumulates(t *testing.T) {
-	Convey("repeated Count calls accumulate with identical attributes", t, func() {
+func TestOtelMetrics_Add_Accumulates(t *testing.T) {
+	Convey("repeated Add calls accumulate with identical attributes", t, func() {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Count(ctx, "requests", 3, nil), ShouldBeNil)
-		So(c.Count(ctx, "requests", 2, nil), ShouldBeNil)
+		So(c.Add(ctx, Instrument{Name: "requests"}, 3, nil), ShouldBeNil)
+		So(c.Add(ctx, Instrument{Name: "requests"}, 2, nil), ShouldBeNil)
 
 		rm := collect(t, reader)
 		m := findMetric(rm, "requests")
@@ -107,13 +115,13 @@ func TestOtelMetrics_Count_Accumulates(t *testing.T) {
 	})
 }
 
-func TestOtelMetrics_Histogram(t *testing.T) {
-	Convey("Histogram records values", t, func() {
+func TestOtelMetrics_Record(t *testing.T) {
+	Convey("Record records histogram values", t, func() {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Histogram(ctx, "latency", 0.1, map[string]any{"path": "/api"}), ShouldBeNil)
-		So(c.Histogram(ctx, "latency", 0.3, map[string]any{"path": "/api"}), ShouldBeNil)
+		So(c.Record(ctx, Instrument{Name: "latency"}, 0.1, map[string]any{"path": "/api"}), ShouldBeNil)
+		So(c.Record(ctx, Instrument{Name: "latency"}, 0.3, map[string]any{"path": "/api"}), ShouldBeNil)
 
 		rm := collect(t, reader)
 		m := findMetric(rm, "latency")
@@ -176,8 +184,8 @@ func TestOtelMetrics_InvalidName(t *testing.T) {
 		ctx := context.Background()
 
 		for _, name := range []string{"", "!!!", "1bad", "bad name", "bad/name", strings.Repeat("a", 256)} {
-			So(errors.Is(c.Count(ctx, name, 1, nil), ErrInvalidMetricName), ShouldBeTrue)
-			So(errors.Is(c.Histogram(ctx, name, 0.5, nil), ErrInvalidMetricName), ShouldBeTrue)
+			So(errors.Is(c.Add(ctx, Instrument{Name: name}, 1, nil), ErrInvalidMetricName), ShouldBeTrue)
+			So(errors.Is(c.Record(ctx, Instrument{Name: name}, 0.5, nil), ErrInvalidMetricName), ShouldBeTrue)
 		}
 
 		count := 0
@@ -220,10 +228,10 @@ func TestOtelMetrics_Caching(t *testing.T) {
 		c, _ := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Count(ctx, "requests", 1, nil), ShouldBeNil)
-		So(c.Count(ctx, "requests", 1, nil), ShouldBeNil)
-		So(c.Histogram(ctx, "latency", 0.1, nil), ShouldBeNil)
-		So(c.Histogram(ctx, "latency", 0.2, nil), ShouldBeNil)
+		So(c.Add(ctx, Instrument{Name: "requests"}, 1, nil), ShouldBeNil)
+		So(c.Add(ctx, Instrument{Name: "requests"}, 1, nil), ShouldBeNil)
+		So(c.Record(ctx, Instrument{Name: "latency"}, 0.1, nil), ShouldBeNil)
+		So(c.Record(ctx, Instrument{Name: "latency"}, 0.2, nil), ShouldBeNil)
 
 		v, ok := c.instruments.Load("requests")
 		So(ok, ShouldBeTrue)
@@ -249,13 +257,6 @@ func TestOtelMetrics_InstrumentConflict(t *testing.T) {
 		So(errors.Is(c.Record(ctx, Instrument{Name: "requests"}, 0.5, nil), ErrInstrumentConflict), ShouldBeTrue)
 	})
 
-	Convey("legacy Count then instrument Add is a conflict", t, func() {
-		c, _ := newTestMetrics(t)
-		ctx := context.Background()
-
-		So(c.Count(ctx, "requests", 1, nil), ShouldBeNil)
-		So(errors.Is(c.Add(ctx, Instrument{Name: "requests", Unit: "{request}"}, 1, nil), ErrInstrumentConflict), ShouldBeTrue)
-	})
 }
 
 func TestOtelMetrics_DistinctNames(t *testing.T) {
@@ -356,8 +357,8 @@ func TestOtelMetrics_Concurrent(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 50 {
 			wg.Go(func() {
-				_ = c.Count(ctx, "requests", 1, nil)
-				_ = c.Histogram(ctx, "latency", 0.1, nil)
+				_ = c.Add(ctx, Instrument{Name: "requests"}, 1, nil)
+				_ = c.Record(ctx, Instrument{Name: "latency"}, 0.1, nil)
 				_ = c.AddUpDown(ctx, Instrument{Name: "queue.depth"}, 1, nil)
 				_ = c.RecordGauge(ctx, Instrument{Name: "pool.utilization"}, 0.5, nil)
 			})
@@ -382,8 +383,6 @@ func TestOtelMetrics_Stop(t *testing.T) {
 	Convey("Stop rejects subsequent measurements with ErrStopped", t, func() {
 		c, _ := newTestMetrics(t)
 		So(c.Stop(context.Background()), ShouldBeNil)
-		So(errors.Is(c.Count(context.Background(), "requests", 1, nil), ErrStopped), ShouldBeTrue)
-		So(errors.Is(c.Histogram(context.Background(), "latency", 0.1, nil), ErrStopped), ShouldBeTrue)
 		So(errors.Is(c.Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ErrStopped), ShouldBeTrue)
 		So(errors.Is(c.Record(context.Background(), Instrument{Name: "hist"}, 1, nil), ErrStopped), ShouldBeTrue)
 		So(errors.Is(c.AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil), ErrStopped), ShouldBeTrue)
@@ -418,8 +417,6 @@ func TestOtelMetrics_NilContext(t *testing.T) {
 func TestNoopMetrics(t *testing.T) {
 	Convey("noop metrics discard silently", t, func() {
 		m := noopMetrics{}
-		So(m.Count(context.Background(), "requests", 1, nil), ShouldBeNil)
-		So(m.Histogram(context.Background(), "latency", 0.5, nil), ShouldBeNil)
 		So(m.Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ShouldBeNil)
 		So(m.Record(context.Background(), Instrument{Name: "hist"}, 0.5, nil), ShouldBeNil)
 		So(m.AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil), ShouldBeNil)
@@ -451,8 +448,6 @@ func TestDefault_BeforeSetDefault(t *testing.T) {
 	Convey("before SetDefault the package funcs are noop", t, func() {
 		withDefault(t)
 		So(Default(), ShouldHaveSameTypeAs, noopMetrics{})
-		So(Count(context.Background(), "requests", 1, nil), ShouldBeNil)
-		So(Histogram(context.Background(), "latency", 0.5, nil), ShouldBeNil)
 		So(Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ShouldBeNil)
 		So(Record(context.Background(), Instrument{Name: "hist"}, 0.5, nil), ShouldBeNil)
 		So(AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil), ShouldBeNil)
@@ -468,25 +463,10 @@ func TestFacade_SetDefault(t *testing.T) {
 		SetDefault(c)
 		So(Default(), ShouldEqual, c)
 
-		So(Count(context.Background(), "requests", 1, nil), ShouldBeNil)
-		So(Histogram(context.Background(), "latency", 0.5, nil), ShouldBeNil)
 		So(Add(context.Background(), Instrument{Name: "instrument.counter", Unit: "1"}, 1, nil), ShouldBeNil)
 		So(Record(context.Background(), Instrument{Name: "instrument.hist", Unit: "s"}, 0.5, nil), ShouldBeNil)
 		So(AddUpDown(context.Background(), Instrument{Name: "instrument.updown"}, 1, nil), ShouldBeNil)
 		So(RecordGauge(context.Background(), Instrument{Name: "instrument.gauge"}, 0.5, nil), ShouldBeNil)
-	})
-}
-
-func TestFacade_LegacyClientRejectsInstruments(t *testing.T) {
-	Convey("instrument funcs report ErrUnsupportedInstrument for legacy clients", t, func() {
-		withDefault(t)
-		SetDefault(&fakeMetrics{})
-
-		So(errors.Is(Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ErrUnsupportedInstrument), ShouldBeTrue)
-		So(errors.Is(Record(context.Background(), Instrument{Name: "hist"}, 1, nil), ErrUnsupportedInstrument), ShouldBeTrue)
-		So(errors.Is(AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil), ErrUnsupportedInstrument), ShouldBeTrue)
-		So(errors.Is(RecordGauge(context.Background(), Instrument{Name: "gauge"}, 1, nil), ErrUnsupportedInstrument), ShouldBeTrue)
-		So(Count(context.Background(), "requests", 1, nil), ShouldBeNil)
 	})
 }
 
@@ -531,7 +511,6 @@ func TestFacade_SetDefaultNilResets(t *testing.T) {
 		SetDefault(nil)
 		So(Default(), ShouldNotBeNil)
 		So(Default(), ShouldHaveSameTypeAs, noopMetrics{})
-		So(Count(context.Background(), "requests", 1, nil), ShouldBeNil)
 		So(Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ShouldBeNil)
 	})
 }
