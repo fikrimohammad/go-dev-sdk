@@ -1,11 +1,13 @@
-// Package attributes provides helpers for normalizing attribute keys and
-// values shared by the logs, metrics, and tracer packages.
+// Package attributes provides helpers for normalizing developer-style
+// attribute keys and converting values to OpenTelemetry attributes. Keys that
+// already follow OpenTelemetry conventions are preserved.
 package attributes
 
 import (
+	"errors"
 	"fmt"
 	"maps"
-	"regexp"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,36 +18,115 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/appinfo"
 )
 
-// multiDot collapses runs of dots in a normalized key.
-var multiDot = regexp.MustCompile(`\.{2,}`)
+// ErrMissingServiceName indicates that an appinfo.Info has no service name.
+var ErrMissingServiceName = errors.New("service name is required")
 
-// NormalizeKey converts a dev-supplied attribute key to the OTel semantic
-// convention style: lowercase, with underscores replaced by dots. Runs of dots
-// are collapsed and leading/trailing dots are trimmed.
+// maxInt64Value is the largest value representable as an int64 attribute.
+const maxInt64Value = uint64(1<<63 - 1)
+
+// correlationKeys are log and span correlation keys that must keep their
+// standard spelling even though they contain an underscore.
+var correlationKeys = map[string]struct{}{
+	"trace_id":    {},
+	"span_id":     {},
+	"trace_flags": {},
+}
+
+// NormalizeKey converts a developer-supplied attribute key to the OTel
+// semantic convention style: lowercase, with underscores replaced by dots.
+// Runs of dots are collapsed and leading and trailing dots are trimmed.
 //
-//	"order_id" → "order.id"
-//	"shop_id"  → "shop.id"
-//	"service.name" → "service.name"
-//	"__a__"    → "a"
+// A key that already contains a dot is treated as OTel-style and keeps its
+// underscores, so registered keys such as http.response.status_code and
+// user_agent.original are preserved. The standard log correlation keys
+// trace_id, span_id, and trace_flags are also preserved.
+//
+//	"order_id"                  → "order.id"
+//	"HTTP_METHOD"               → "http.method"
+//	"http.response.status_code" → "http.response.status_code"
+//	"trace_id"                  → "trace_id"
 func NormalizeKey(key string) string {
 	key = strings.ToLower(key)
+	key = collapseDots(key)
+	key = strings.Trim(key, ".")
+	if _, ok := correlationKeys[key]; ok {
+		return key
+	}
+	if strings.Contains(key, ".") {
+		return key
+	}
 	key = strings.ReplaceAll(key, "_", ".")
-	key = multiDot.ReplaceAllString(key, ".")
+	key = collapseDots(key)
 	return strings.Trim(key, ".")
 }
 
-// ConvertMapsToKVs merges maps and converts the result to OTel attributes,
-// normalizing keys to the OTel semantic convention style ("order_id" →
-// "order.id"). Later maps override earlier ones when keys normalize to the same
-// value, so identity attributes passed last always win. Values preserve their
-// types: numeric types are widened to int64/float64; time.Duration is recorded
-// as its nanosecond count; []string, []float64, and []bool map to the OTel
-// slice types. Signed types up to 32 bits and unsigned types up to 32 bits fit
-// int64 safely; uint and uint64 are recorded as decimal strings because OTel
-// has no unsigned integer attribute type. error and fmt.Stringer values are
-// recorded as their string forms, nil values are omitted, and any other type
-// is stringified with fmt.Sprint. The result is sorted by key, so it is
-// deterministic across maps. No maps, or only nil/empty maps, yield nil.
+// collapseDots replaces runs of consecutive dots with a single dot without
+// allocating when the input contains no such run.
+func collapseDots(key string) string {
+	if !strings.Contains(key, "..") {
+		return key
+	}
+	var b strings.Builder
+	b.Grow(len(key))
+	for i := 0; i < len(key); i++ {
+		if key[i] == '.' && i > 0 && key[i-1] == '.' {
+			continue
+		}
+		b.WriteByte(key[i])
+	}
+	return b.String()
+}
+
+// IsValidKey reports whether key is a non-empty attribute key containing only
+// ASCII letters, digits, underscores, dots, and hyphens.
+func IsValidKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '_', c == '.', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateAppInfo reports whether info identifies a service. A non-empty
+// service name is required; version and environment are optional.
+func ValidateAppInfo(info appinfo.Info) error {
+	if strings.TrimSpace(info.Name) == "" {
+		return ErrMissingServiceName
+	}
+	return nil
+}
+
+// ConvertMapsToKVs merges maps and converts the result to OTel attributes.
+// Developer-style keys are normalized with [NormalizeKey], while keys that
+// already contain a dot and the standard correlation keys keep their spelling.
+// Later maps override earlier ones when keys normalize to the same value, so
+// identity attributes passed last always win.
+//
+// Values preserve their types: numeric types are widened to int64/float64;
+// time.Duration is recorded as its nanosecond count; []string, []float64, and
+// []bool map to the OTel slice types. Signed types up to 32 bits and unsigned
+// types up to 32 bits fit int64 safely; uint and uint64 values that fit in an
+// int64 are recorded as integers and larger values are recorded as decimal
+// strings because OTel has no unsigned integer attribute type. error and
+// fmt.Stringer values are recorded as their string forms; typed nil
+// error/Stringer values and nil values are omitted. Other types are
+// stringified with fmt.Sprint.
+//
+// An attribute.KeyValue value is appended verbatim, using the key embedded in
+// the KeyValue; the containing map key is used only for merging and ordering.
+// Empty and invalid attribute keys are omitted. The result is sorted by
+// attribute key, so it is deterministic across maps. No maps, or only
+// nil/empty maps, yield nil.
 func ConvertMapsToKVs(ms ...map[string]any) []attribute.KeyValue {
 	merged := make(map[string]any)
 	for _, m := range ms {
@@ -56,10 +137,21 @@ func ConvertMapsToKVs(ms ...map[string]any) []attribute.KeyValue {
 	if len(merged) == 0 {
 		return nil
 	}
+
 	attrs := make([]attribute.KeyValue, 0, len(merged))
 	for _, k := range slices.Sorted(maps.Keys(merged)) {
+		v := merged[k]
+		if kv, ok := v.(attribute.KeyValue); ok {
+			if IsValidKey(string(kv.Key)) {
+				attrs = append(attrs, kv)
+			}
+			continue
+		}
+		if !IsValidKey(k) {
+			continue
+		}
 		key := attribute.Key(k)
-		switch v := merged[k].(type) {
+		switch v := v.(type) {
 		case string:
 			attrs = append(attrs, key.String(v))
 		case int:
@@ -79,9 +171,17 @@ func ConvertMapsToKVs(ms ...map[string]any) []attribute.KeyValue {
 		case uint8:
 			attrs = append(attrs, key.Int64(int64(v)))
 		case uint:
-			attrs = append(attrs, key.String(strconv.FormatUint(uint64(v), 10)))
+			if uint64(v) <= maxInt64Value {
+				attrs = append(attrs, key.Int64(int64(v)))
+			} else {
+				attrs = append(attrs, key.String(strconv.FormatUint(uint64(v), 10)))
+			}
 		case uint64:
-			attrs = append(attrs, key.String(strconv.FormatUint(v, 10)))
+			if v <= maxInt64Value {
+				attrs = append(attrs, key.Int64(int64(v)))
+			} else {
+				attrs = append(attrs, key.String(strconv.FormatUint(v, 10)))
+			}
 		case float64:
 			attrs = append(attrs, key.Float64(v))
 		case float32:
@@ -97,8 +197,14 @@ func ConvertMapsToKVs(ms ...map[string]any) []attribute.KeyValue {
 		case []bool:
 			attrs = append(attrs, key.BoolSlice(v))
 		case error:
+			if isNilValue(v) {
+				continue
+			}
 			attrs = append(attrs, key.String(v.Error()))
 		case fmt.Stringer:
+			if isNilValue(v) {
+				continue
+			}
 			attrs = append(attrs, key.String(v.String()))
 		case nil:
 			continue
@@ -106,17 +212,39 @@ func ConvertMapsToKVs(ms ...map[string]any) []attribute.KeyValue {
 			attrs = append(attrs, key.String(fmt.Sprint(v)))
 		}
 	}
+	slices.SortStableFunc(attrs, func(a, b attribute.KeyValue) int {
+		return strings.Compare(string(a.Key), string(b.Key))
+	})
 	return attrs
 }
 
 // ConvertAppInfoToMap returns the service identity as a map suitable for
-// composition with ConvertMapsToKVs. Passing it last gives the identity
-// attributes (service.name, service.version, deployment.environment)
-// precedence over any colliding earlier keys.
+// composition with [ConvertMapsToKVs]. The service name is always included;
+// version and environment are included only when non-empty. Passing the
+// result last gives the identity attributes precedence over colliding earlier
+// keys.
 func ConvertAppInfoToMap(info appinfo.Info) map[string]any {
-	return map[string]any{
-		"service.name":           info.Name,
-		"service.version":        info.Version,
-		"deployment.environment": info.Environment,
+	m := map[string]any{"service.name": info.Name}
+	if info.Version != "" {
+		m["service.version"] = info.Version
+	}
+	if info.Environment != "" {
+		m["deployment.environment"] = info.Environment
+	}
+	return m
+}
+
+// isNilValue reports whether v is nil or a typed nil pointer, map, slice,
+// channel, function, or interface.
+func isNilValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
 	}
 }

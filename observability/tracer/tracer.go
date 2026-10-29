@@ -79,12 +79,16 @@ func traceIDFrom(ctx context.Context) string {
 //
 // The appinfo.Info identity is attached to every exported span as the OTel
 // semantic convention resource attributes service.name, service.version, and
-// deployment.environment.
+// deployment.environment. New returns an error if info has no service name,
+// cfg is invalid, or the exporter cannot be created.
 //
 // New does not touch the OTel global registry. To route otel.Tracer and
 // auto-instrumentation libraries through this client, register the provider
 // explicitly at the composition root via otel.SetTracerProvider(c.Provider()).
 func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
+	if err := attributes.ValidateAppInfo(info); err != nil {
+		return nil, fmt.Errorf("tracer: %w", err)
+	}
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err

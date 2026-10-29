@@ -14,6 +14,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
 func testInfo() appinfo.Info {
@@ -29,11 +30,14 @@ func fakeClient(shutdown func(context.Context) error) *client {
 	}
 }
 
-// withDefault restores the noop default after the test, isolating the package
-// facade from other tests.
+// withDefault installs the noop default for the duration of the test and
+// restores the previous default afterward, isolating the package facade from
+// other tests.
 func withDefault(t *testing.T) {
 	t.Helper()
+	prev := Default()
 	SetDefault(Noop())
+	t.Cleanup(func() { SetDefault(prev) })
 }
 
 func TestClient_StartSpan(t *testing.T) {
@@ -127,6 +131,11 @@ func TestTracer_Attrs(t *testing.T) {
 }
 
 func TestNew_Validation(t *testing.T) {
+	Convey("New rejects an empty service name", t, func() {
+		_, err := New(context.Background(), appinfo.Info{}, Config{})
+		So(errors.Is(err, attributes.ErrMissingServiceName), ShouldBeTrue)
+	})
+
 	Convey("New rejects an invalid config", t, func() {
 		_, err := New(context.Background(), testInfo(), Config{ExportTimeout: -1})
 		So(err, ShouldNotBeNil)
