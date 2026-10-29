@@ -7,6 +7,11 @@ import (
 )
 
 const (
+	// DefaultInstrumentationScope is the instrumentation scope used when
+	// Config.Scope is empty. It identifies this package as the instrumentation
+	// library rather than the service being instrumented.
+	DefaultInstrumentationScope = "github.com/fikrimohammad/go-dev-sdk/observability/metrics"
+
 	defaultEndpoint            = "localhost:4317"
 	defaultMetricsTimeout      = 10 * time.Second
 	defaultExportInterval      = 10 * time.Second
@@ -26,9 +31,14 @@ type Config struct {
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
 	// ExportInterval controls how often pending metrics are exported.
 	ExportInterval time.Duration `yaml:"export_interval" json:"export_interval"`
+	// Scope is the OTel instrumentation scope name for created instruments.
+	// Empty uses DefaultInstrumentationScope.
+	Scope string `yaml:"scope" json:"scope"`
 	// Insecure disables TLS for the exporter connection. Unset defaults to
 	// insecure, preserving the historical default.
 	Insecure *bool `yaml:"insecure" json:"insecure"`
+	// Headers are extra headers sent with OTLP exports.
+	Headers map[string]string `yaml:"headers" json:"headers"`
 	// GlobalKV contains resource attributes attached to exported metrics.
 	GlobalKV map[string]any `yaml:"global_kv" json:"global_kv"`
 	// HistogramMaxBuckets caps the number of buckets used per histogram.
@@ -48,6 +58,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.ExportInterval == 0 {
 		c.ExportInterval = defaultExportInterval
+	}
+	if c.Scope == "" {
+		c.Scope = DefaultInstrumentationScope
 	}
 	if c.HistogramMaxBuckets == 0 {
 		c.HistogramMaxBuckets = defaultHistogramMaxBuckets

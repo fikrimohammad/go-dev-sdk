@@ -12,8 +12,10 @@ package-level functions delegate to the installed default.
   → stdout, warn/error → stderr), text or JSON format, and adds `trace_id` /
   `span_id` from a valid span context. Writers are injectable through
   `logs.Config`.
-- **metrics** — counters and histograms exported over OTLP gRPC, with
-  exponential histogram buckets by default.
+- **metrics** — counters, histograms, up-down counters, and gauges exported
+  over OTLP gRPC, with instrument units/descriptions, strict name validation,
+  and exponential histogram buckets by default. A stable instrumentation scope
+  identifies this library, not the service.
 - **tracer** — spans exported over OTLP gRPC, plus `Attrs` and `TraceIDFrom`
   helpers; the provider can be registered as the OTel global.
 - **attributes** — shared key normalization (`order_id` → `order.id`) and
@@ -86,14 +88,22 @@ otel.SetTracerProvider(tc.Provider()) // route otel.* + auto-instrumentation thr
 logs.Info(ctx, "request", "method", "GET", "user_id", 42)
 logs.Error(ctx, "job failed", errs.SlogAttr(err))
 
-// Metrics — returns errors; treat them as real.
-_ = metrics.Count(ctx, "http.server.request.count", 1, attrs)
-_ = metrics.Histogram(ctx, "http.server.request.duration", 0.05, attrs)
+// Metrics — returns errors; treat them as real. Instrument metadata carries
+// the UCUM unit and description. Count/Histogram remain for legacy callers.
+if err := metrics.Record(ctx, metrics.Instrument{
+    Name: "http.server.request.duration",
+    Unit: "s",
+    Description: "HTTP server request duration",
+}, 0.05, attrs); err != nil { /* handle */ }
 
 // Traces.
 _, span := tracer.Tracer("my.scope").Start(ctx, "operation")
 defer span.End()
 ```
+
+`Count` and `Histogram` remain for legacy callers and carry no metadata. Do not
+mix the legacy and instrument APIs for the same metric name: reuse with a
+different unit, description, or kind returns `ErrInstrumentConflict`.
 
 ### 6. Shut down on exit
 
@@ -123,7 +133,9 @@ defer tc.Stop(ctx)
 | `Endpoint` | `localhost:4317` | OTLP gRPC collector endpoint |
 | `Timeout` | `10s` | Export connection/operation timeout |
 | `ExportInterval` | `10s` | Export period |
+| `Scope` | package scope | Instrumentation scope name |
 | `Insecure` | `true` (nil) | Disable TLS for the exporter |
+| `Headers` | — | Extra headers sent with exports |
 | `GlobalKV` | — | Resource attributes |
 | `HistogramMaxBuckets` | `160` (max `320`) | Exponential histogram buckets |
 | `HistogramMaxScale` | `20` | Exponential histogram scale (`-10..20`) |
@@ -149,12 +161,19 @@ defer tc.Stop(ctx)
   and `trace_flags` keep their spelling.
 - Metric instrument names are **not** namespaced by service name; identity
   lives only in the resource attributes.
+- Instrument names must be lowercase and match the OTel instrument-name
+  syntax. Names are case-sensitive and are never sanitized or silently merged;
+  reusing a name with different unit, description, or instrument kind returns
+  `ErrInstrumentConflict`.
+- Instrument units use UCUM (`s`, `1`, `{request}`) and are recorded together
+  with the instrument description. The default instrumentation scope is
+  `DefaultInstrumentationScope`; `Config.Scope` and `WrapWithScope` override it.
 
 ## API reference
 
 | Package | Key symbols |
 | --- | --- |
 | `logs` | `New`, `SetDefault`, `Default`, `Debug/Info/Warn/Error`, `Logger` |
-| `metrics` | `New`, `SetDefault`, `Default`, `Count`, `Histogram`, `Stop`, `Client`, `Noop` |
+| `metrics` | `New`, `Wrap`, `WrapWithScope`, `SetDefault`, `Default`, `Add`, `Record`, `AddUpDown`, `RecordGauge`, `Count`, `Histogram`, `Stop`, `Instrument`, `Client`, `InstrumentClient`, `Noop` |
 | `tracer` | `New`, `Wrap`, `Noop`, `SetDefault`, `Tracer`, `Attrs`, `TraceIDFrom`, `Stop`, `Client` |
 | `attributes` | `NormalizeKey`, `ConvertMapsToKVs`, `ConvertAppInfoToMap` |

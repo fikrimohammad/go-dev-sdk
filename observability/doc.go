@@ -36,7 +36,8 @@
 //
 //   - logs: routes structured records to stdout/stderr by severity and adds
 //     trace_id/span_id from a valid span context.
-//   - metrics: records counters and histograms over OTLP gRPC.
+//   - metrics: records counters, histograms, up-down counters, and gauges over
+//     OTLP gRPC with instrument units, descriptions, and a stable scope.
 //   - tracer: starts spans over OTLP gRPC. Registering the OTel global
 //     provider and propagator is the composition root's job (see tracer.New).
 //   - attributes: shared key normalization and resource-attribute helpers.
@@ -59,10 +60,12 @@
 //
 // # Errors
 //
-// The package-level metrics funcs (Count, Histogram, Stop) return error and
-// delegate to the installed client, mirroring the metrics.Client interface;
-// callers should treat their result as a real error. logs.Logger methods and
-// the logs package funcs return nothing, matching the Logger interface.
+// The package-level metrics funcs (Count, Histogram, Add, Record, AddUpDown,
+// RecordGauge, Stop) return error and delegate to the installed client;
+// callers should treat their result as a real error. The instrument-based
+// funcs require the default to implement metrics.InstrumentClient and report
+// metrics.ErrUnsupportedInstrument otherwise. logs.Logger methods and the logs
+// package funcs return nothing, matching the Logger interface.
 //
 // # Lifecycle
 //
@@ -70,8 +73,9 @@
 // metrics and tracer clients are idempotent under Stop, and the composition
 // root (e.g. app resource.Close) stops the concrete clients it built. The
 // metrics.Client and tracer.Client interfaces are the injected-client
-// contracts used by middleware; tracer.New returns a tracer.Client that also
-// exposes Stop and Provider.
+// contracts used by middleware; metrics.New returns a metrics.InstrumentClient
+// and tracer.New returns a tracer.Client, both of which expose Stop and
+// Provider.
 //
 // The appinfo.Info identity is attached to every signal as the OTel semantic
 // convention resource attributes service.name, service.version, and

@@ -15,16 +15,25 @@ func TestConfig_Defaults(t *testing.T) {
 		So(cfg.Endpoint, ShouldEqual, "localhost:4317")
 		So(cfg.Timeout, ShouldEqual, 10*time.Second)
 		So(cfg.ExportInterval, ShouldEqual, 10*time.Second)
+		So(cfg.Scope, ShouldEqual, DefaultInstrumentationScope)
 		So(cfg.HistogramMaxBuckets, ShouldEqual, int32(160))
 		So(cfg.HistogramMaxScale, ShouldEqual, int32(20))
 	})
 
 	Convey("explicit values are preserved", t, func() {
-		cfg := Config{Endpoint: "collector:4318", Timeout: 2 * time.Second, ExportInterval: 1 * time.Minute}
+		cfg := Config{
+			Endpoint:       "collector:4318",
+			Timeout:        2 * time.Second,
+			ExportInterval: 1 * time.Minute,
+			Scope:          "custom.scope",
+			Headers:        map[string]string{"authorization": "Bearer x"},
+		}
 		cfg.setDefaults()
 		So(cfg.Endpoint, ShouldEqual, "collector:4318")
 		So(cfg.Timeout, ShouldEqual, 2*time.Second)
 		So(cfg.ExportInterval, ShouldEqual, 1*time.Minute)
+		So(cfg.Scope, ShouldEqual, "custom.scope")
+		So(cfg.Headers, ShouldEqual, map[string]string{"authorization": "Bearer x"})
 	})
 
 	Convey("histogram tuning values are preserved", t, func() {
