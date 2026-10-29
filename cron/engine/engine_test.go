@@ -171,11 +171,9 @@ func TestEngine_SkipOnOverlap(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_ = eng.Trigger(context.Background(), "slow-job")
-	}()
+	})
 
 	<-started
 
@@ -287,12 +285,10 @@ func TestEngine_ConcurrentRunJobAndStop(t *testing.T) {
 
 	var wg sync.WaitGroup
 	// Concurrently trigger jobs while stopping
-	for i := 0; i < 30; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 30 {
+		wg.Go(func() {
 			_ = eng.Trigger(context.Background(), "race-job")
-		}()
+		})
 	}
 
 	// Concurrently stop

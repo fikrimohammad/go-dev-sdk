@@ -496,10 +496,8 @@ func TestLoaderLazyGetConcurrentCoalesces(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 50)
 	ctx := context.Background()
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			got, gerr := ldr.Data().Debug.Get(ctx)
 			if gerr != nil {
 				errs <- gerr
@@ -508,7 +506,7 @@ func TestLoaderLazyGetConcurrentCoalesces(t *testing.T) {
 			if !got {
 				errs <- fmt.Errorf("expected true")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -557,10 +555,8 @@ func TestLoaderConcurrentStaleCoalesces(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 50)
 	ctx := context.Background()
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			got, gerr := ldr.Data().Debug.Get(ctx)
 			if gerr != nil {
 				errs <- gerr
@@ -569,7 +565,7 @@ func TestLoaderConcurrentStaleCoalesces(t *testing.T) {
 			if !got {
 				errs <- fmt.Errorf("expected true")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

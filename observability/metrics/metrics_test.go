@@ -152,13 +152,11 @@ func TestOtelMetrics_Concurrent(t *testing.T) {
 		ctx := context.Background()
 
 		var wg sync.WaitGroup
-		for i := 0; i < 50; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 50 {
+			wg.Go(func() {
 				_ = c.Count(ctx, "requests", 1, nil)
 				_ = c.Histogram(ctx, "latency", 0.1, nil)
-			}()
+			})
 		}
 		wg.Wait()
 		So(true, ShouldBeTrue)
@@ -168,13 +166,13 @@ func TestOtelMetrics_Concurrent(t *testing.T) {
 func TestOtelMetrics_Stop(t *testing.T) {
 	Convey("Stop is idempotent and shuts the provider exactly once", t, func() {
 		c, _ := newTestMetrics(t)
-		var shut int32
+		var shut atomic.Int32
 		orig := c.shutdown
-		c.shutdown = func(ctx context.Context) error { atomic.AddInt32(&shut, 1); return orig(ctx) }
+		c.shutdown = func(ctx context.Context) error { shut.Add(1); return orig(ctx) }
 
 		So(c.Stop(context.Background()), ShouldBeNil)
 		So(c.Stop(context.Background()), ShouldBeNil)
-		So(atomic.LoadInt32(&shut), ShouldEqual, 1)
+		So(shut.Load(), ShouldEqual, 1)
 	})
 
 	Convey("Stop rejects subsequent measurements with ErrStopped", t, func() {
@@ -284,15 +282,15 @@ func TestFacade_LastWins(t *testing.T) {
 func TestFacade_StopDelegates(t *testing.T) {
 	Convey("Stop delegates to the installed client", t, func() {
 		withDefault(t)
-		var shut int32
+		var shut atomic.Int32
 		fakeMe := &fakeMetrics{onStop: func(context.Context) error {
-			atomic.AddInt32(&shut, 1)
+			shut.Add(1)
 			return nil
 		}}
 		SetDefault(fakeMe)
 
 		So(Stop(context.Background()), ShouldBeNil)
-		So(atomic.LoadInt32(&shut), ShouldEqual, 1)
+		So(shut.Load(), ShouldEqual, 1)
 	})
 
 	Convey("Stop propagates the installed client's error", t, func() {

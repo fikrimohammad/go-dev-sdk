@@ -91,8 +91,8 @@ func (m meta) resolveTag(msg jetstream.Msg) string {
 	}
 	subject := msg.Subject()
 	prefix := m.topic + "."
-	if strings.HasPrefix(subject, prefix) {
-		return strings.TrimPrefix(subject, prefix)
+	if after, ok := strings.CutPrefix(subject, prefix); ok {
+		return after
 	}
 	return ""
 }

@@ -51,7 +51,7 @@ func TestReflectGetters(t *testing.T) {
 		Flg Getter[bool]     `conf:"folder=settings,key=flag"`
 	}
 
-	metas, err := reflectGetters(reflect.TypeOf(good{}))
+	metas, err := reflectGetters(reflect.TypeFor[good]())
 	if err != nil {
 		t.Fatalf("reflectGetters: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestReflectGetters(t *testing.T) {
 		DB Getter[DBConfig] `conf:"folder=default,key=db"`
 		F  func() string
 	}
-	metas, err = reflectGetters(reflect.TypeOf(withFunc{}))
+	metas, err = reflectGetters(reflect.TypeFor[withFunc]())
 	if err != nil {
 		t.Fatalf("reflectGetters withFunc: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestReflectGetters(t *testing.T) {
 	type noTag struct {
 		DB Getter[DBConfig]
 	}
-	if _, err := reflectGetters(reflect.TypeOf(noTag{})); !errors.Is(err, ErrMissingTag) {
+	if _, err := reflectGetters(reflect.TypeFor[noTag]()); !errors.Is(err, ErrMissingTag) {
 		t.Fatalf("expected ErrMissingTag, got %v", err)
 	}
 
@@ -95,7 +95,7 @@ func TestReflectGetters(t *testing.T) {
 	type wrongSig struct {
 		DB func() (DBConfig, string, error) `conf:"folder=default,key=db"`
 	}
-	metas, err = reflectGetters(reflect.TypeOf(wrongSig{}))
+	metas, err = reflectGetters(reflect.TypeFor[wrongSig]())
 	if err != nil {
 		t.Fatalf("reflectGetters wrongSig: %v", err)
 	}

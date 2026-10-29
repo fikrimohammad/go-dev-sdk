@@ -412,7 +412,7 @@ func (p *Producer) getAllProducers() (map[string]jsProducer, error) {
 		errs   []error
 	)
 
-	p.producers.Range(func(key, value interface{}) bool {
+	p.producers.Range(func(key, value any) bool {
 		k, ok := key.(string)
 		if !ok {
 			errs = append(errs, fmt.Errorf("producer: invalid producer key type: %s", key))

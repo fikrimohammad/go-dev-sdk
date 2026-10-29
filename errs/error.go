@@ -2,6 +2,7 @@ package errs
 
 import (
 	"fmt"
+	"maps"
 	"runtime"
 )
 
@@ -40,9 +41,7 @@ func (e *Error) Meta() map[string]any {
 		return nil
 	}
 	m := make(map[string]any, len(e.meta))
-	for k, v := range e.meta {
-		m[k] = v
-	}
+	maps.Copy(m, e.meta)
 	return m
 }
 
@@ -76,9 +75,7 @@ func (e *Error) WithMeta(key string, value any) *Error {
 		newErr.meta = make(map[string]any)
 	} else {
 		m := make(map[string]any, len(newErr.meta)+1)
-		for k, v := range newErr.meta {
-			m[k] = v
-		}
+		maps.Copy(m, newErr.meta)
 		newErr.meta = m
 	}
 	newErr.meta[key] = value

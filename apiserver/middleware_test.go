@@ -598,7 +598,7 @@ func TestLogger_AllRequestsLogged(t *testing.T) {
 		},
 	)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		ts.get(t, "/ok", nil)
 	}
 	time.Sleep(100 * time.Millisecond)

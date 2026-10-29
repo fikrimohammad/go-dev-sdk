@@ -67,7 +67,7 @@ func setupTest(t *testing.T, middlewares []app.HandlerFunc, routes map[string]ap
 
 	go func() { _ = hz.Run() }()
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if hz.IsRunning() {
 			break
 		}

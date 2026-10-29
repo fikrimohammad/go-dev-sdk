@@ -51,12 +51,12 @@ func TestClient_StartSpan(t *testing.T) {
 
 func TestClient_Stop(t *testing.T) {
 	Convey("Stop shuts down the pipeline exactly once and returns its error", t, func() {
-		var shut int32
-		c := fakeClient(func(context.Context) error { atomic.AddInt32(&shut, 1); return nil })
+		var shut atomic.Int32
+		c := fakeClient(func(context.Context) error { shut.Add(1); return nil })
 
 		So(c.Stop(context.Background()), ShouldBeNil)
 		So(c.Stop(context.Background()), ShouldBeNil)
-		So(atomic.LoadInt32(&shut), ShouldEqual, 1)
+		So(shut.Load(), ShouldEqual, 1)
 	})
 
 	Convey("Stop propagates the shutdown error", t, func() {
@@ -186,13 +186,13 @@ func TestFacade_SetDefaultNilResets(t *testing.T) {
 func TestFacade_StopDelegates(t *testing.T) {
 	Convey("Stop delegates to the installed client", t, func() {
 		withDefault(t)
-		var shut int32
+		var shut atomic.Int32
 		SetDefault(fakeClient(func(context.Context) error {
-			atomic.AddInt32(&shut, 1)
+			shut.Add(1)
 			return nil
 		}))
 		So(Stop(context.Background()), ShouldBeNil)
-		So(atomic.LoadInt32(&shut), ShouldEqual, 1)
+		So(shut.Load(), ShouldEqual, 1)
 	})
 
 	Convey("Stop propagates the installed client's error", t, func() {

@@ -92,9 +92,9 @@ type ReadCommands interface {
 	// SDiff returns the members of the set resulting from the difference between the first set and all successive sets.
 	SDiff(ctx context.Context, keys ...string) *redis.StringSliceCmd
 	// SIsMember returns if member is a member of the set stored at key.
-	SIsMember(ctx context.Context, key string, member interface{}) *redis.BoolCmd
+	SIsMember(ctx context.Context, key string, member any) *redis.BoolCmd
 	// SMIsMember returns whether each member is a member of the set stored at key.
-	SMIsMember(ctx context.Context, key string, members ...interface{}) *redis.BoolSliceCmd
+	SMIsMember(ctx context.Context, key string, members ...any) *redis.BoolSliceCmd
 	// SCard returns the set cardinality (number of elements) of the set stored at key.
 	SCard(ctx context.Context, key string) *redis.IntCmd
 	// SRandMember returns one random member from the set stored at key.
@@ -145,22 +145,22 @@ type WriteCommands interface {
 
 	// Set binds value to key with the given expiration. An expiration <= 0
 	// keeps the key without a time-to-live.
-	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
 	// SetNX atomically binds value to key only when key does not already exist,
 	// with the given expiration. The command result reports false when the key
 	// already exists.
-	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+	SetNX(ctx context.Context, key string, value any, expiration time.Duration) *redis.BoolCmd
 	// SetXX atomically binds value to key only when key already exists,
 	// with the given expiration. The command result reports false when the key
 	// does not exist.
-	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+	SetXX(ctx context.Context, key string, value any, expiration time.Duration) *redis.BoolCmd
 	// GetDel atomically returns the value of key and removes key.
 	GetDel(ctx context.Context, key string) *redis.StringCmd
 	// GetEx atomically returns the value of key and sets its expiration. An
 	// expiration of zero persists the key.
 	GetEx(ctx context.Context, key string, expiration time.Duration) *redis.StringCmd
 	// MSet sets the given keys to their respective values.
-	MSet(ctx context.Context, values ...interface{}) *redis.StatusCmd
+	MSet(ctx context.Context, values ...any) *redis.StatusCmd
 	// Incr increments the number stored at key by one.
 	Incr(ctx context.Context, key string) *redis.IntCmd
 	// IncrBy increments the number stored at key by value.
@@ -173,9 +173,9 @@ type WriteCommands interface {
 	DecrBy(ctx context.Context, key string, decrement int64) *redis.IntCmd
 
 	// HSet sets the specified fields to their respective values in the hash stored at key.
-	HSet(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
+	HSet(ctx context.Context, key string, values ...any) *redis.IntCmd
 	// HSetNX sets field in the hash stored at key to value, only if field does not yet exist.
-	HSetNX(ctx context.Context, key, field string, value interface{}) *redis.BoolCmd
+	HSetNX(ctx context.Context, key, field string, value any) *redis.BoolCmd
 	// HDel removes the specified fields from the hash stored at key.
 	HDel(ctx context.Context, key string, fields ...string) *redis.IntCmd
 	// HIncrBy increments the number stored at field in the hash stored at key by incr.
@@ -184,9 +184,9 @@ type WriteCommands interface {
 	HIncrByFloat(ctx context.Context, key, field string, incr float64) *redis.FloatCmd
 
 	// LPush inserts all the specified values at the head of the list stored at key.
-	LPush(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
+	LPush(ctx context.Context, key string, values ...any) *redis.IntCmd
 	// RPush inserts all the specified values at the tail of the list stored at key.
-	RPush(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
+	RPush(ctx context.Context, key string, values ...any) *redis.IntCmd
 	// LPop removes and returns the first element of the list stored at key.
 	LPop(ctx context.Context, key string) *redis.StringCmd
 	// RPop removes and returns the last element of the list stored at key.
@@ -198,14 +198,14 @@ type WriteCommands interface {
 	// LTrim trims an existing list so that it will contain only the specified range of elements.
 	LTrim(ctx context.Context, key string, start, stop int64) *redis.StatusCmd
 	// LRem removes the first count occurrences of elements equal to value from the list stored at key.
-	LRem(ctx context.Context, key string, count int64, value interface{}) *redis.IntCmd
+	LRem(ctx context.Context, key string, count int64, value any) *redis.IntCmd
 	// LSet sets the list element at index to value.
-	LSet(ctx context.Context, key string, index int64, value interface{}) *redis.StatusCmd
+	LSet(ctx context.Context, key string, index int64, value any) *redis.StatusCmd
 
 	// SAdd adds the specified members to the set stored at key.
-	SAdd(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+	SAdd(ctx context.Context, key string, members ...any) *redis.IntCmd
 	// SRem removes the specified members from the set stored at key.
-	SRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+	SRem(ctx context.Context, key string, members ...any) *redis.IntCmd
 	// SPop removes and returns one random member from the set stored at key.
 	SPop(ctx context.Context, key string) *redis.StringCmd
 	// SPopN removes and returns count random members from the set stored at key.
@@ -214,7 +214,7 @@ type WriteCommands interface {
 	// ZAdd adds all the specified members with the specified scores to the sorted set stored at key.
 	ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd
 	// ZRem removes the specified members from the sorted set stored at key.
-	ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+	ZRem(ctx context.Context, key string, members ...any) *redis.IntCmd
 	// ZIncrBy increments the score of member in the sorted set stored at key by increment.
 	ZIncrBy(ctx context.Context, key string, increment float64, member string) *redis.FloatCmd
 	// ZRemRangeByRank removes all elements in the sorted set stored at key with rank between start and stop.
@@ -223,15 +223,15 @@ type WriteCommands interface {
 	ZRemRangeByScore(ctx context.Context, key, min, max string) *redis.IntCmd
 
 	// Publish posts message to the specified channel.
-	Publish(ctx context.Context, channel string, message interface{}) *redis.IntCmd
+	Publish(ctx context.Context, channel string, message any) *redis.IntCmd
 }
 
 // ScriptCommands groups commands for Redis Lua scripting.
 type ScriptCommands interface {
 	// Eval evaluates a Lua script server-side.
-	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
+	Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd
 	// EvalSha evaluates a script cached on the server by its SHA1 digest.
-	EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *redis.Cmd
+	EvalSha(ctx context.Context, sha1 string, keys []string, args ...any) *redis.Cmd
 	// ScriptExists returns information about the existence of the scripts in the script cache.
 	ScriptExists(ctx context.Context, hashes ...string) *redis.BoolSliceCmd
 	// ScriptLoad loads a script into the scripts cache without executing it.

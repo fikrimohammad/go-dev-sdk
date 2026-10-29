@@ -22,7 +22,7 @@ func parseConfTag(tag string) (folder, key string, err error) {
 	if tag == "" {
 		return "", "", ErrInvalidTag
 	}
-	for _, pair := range strings.Split(tag, ",") {
+	for pair := range strings.SplitSeq(tag, ",") {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
 			continue
@@ -58,8 +58,7 @@ func parseConfTag(tag string) (folder, key string, err error) {
 // not by an interface, because Getter[T] is a generic struct type.
 func reflectGetters(t reflect.Type) ([]getterMeta, error) {
 	var metas []getterMeta
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
+	for field := range t.Fields() {
 		ft := field.Type
 
 		get, ok := ft.MethodByName("Get")
@@ -102,8 +101,8 @@ func isGetterSignature(m reflect.Method) bool {
 
 // errType is the reflect type of the built-in error interface, used to
 // validate Getter method signatures.
-var errType = reflect.TypeOf((*error)(nil)).Elem()
+var errType = reflect.TypeFor[error]()
 
 // ctxType is the reflect type of context.Context, used to validate the Get
 // method's first parameter.
-var ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var ctxType = reflect.TypeFor[context.Context]()

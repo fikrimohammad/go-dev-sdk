@@ -496,7 +496,7 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 	}
 	defer func() { _ = c.Shutdown() }()
 
-	for i := 0; i < numMsgs; i++ {
+	for i := range numMsgs {
 		if err := p.PublishSync(context.Background(), topicName, tag, fmt.Sprintf("id-%d", i), []byte("test")); err != nil {
 			t.Fatalf("PublishSync: %v", err)
 		}

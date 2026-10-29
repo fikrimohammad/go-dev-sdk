@@ -61,7 +61,7 @@ func setupTestServer(t *testing.T, runner cron.JobRunner, prefix string) (string
 
 	go func() { _ = hz.Run() }()
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if hz.IsRunning() {
 			break
 		}

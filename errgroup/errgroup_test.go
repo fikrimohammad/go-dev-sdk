@@ -21,7 +21,7 @@ func TestGroup_Go_HappyPath(t *testing.T) {
 
 	var counter atomic.Int32
 	const n = 10
-	for i := 0; i < n; i++ {
+	for range n {
 		g.Go(func(ctx context.Context) error {
 			counter.Add(1)
 			return nil
@@ -135,7 +135,7 @@ func TestGroup_MaxConcurrency_LimitsInFlight(t *testing.T) {
 		maxInflight atomic.Int32
 	)
 
-	for i := 0; i < total; i++ {
+	for range total {
 		g.Go(func(ctx context.Context) error {
 			cur := inflight.Add(1)
 			// Track high-water mark.
@@ -262,7 +262,7 @@ func TestSubGroup_InheritsMaxConcurrency(t *testing.T) {
 		inflight    atomic.Int32
 		maxInflight atomic.Int32
 	)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		child.Go(func(ctx context.Context) error {
 			cur := inflight.Add(1)
 			for {
@@ -387,7 +387,7 @@ func TestNew_ZeroMaxConcurrencyMeansUnlimited(t *testing.T) {
 
 	var counter atomic.Int32
 	const n = 50
-	for i := 0; i < n; i++ {
+	for range n {
 		g.Go(func(ctx context.Context) error {
 			counter.Add(1)
 			return nil

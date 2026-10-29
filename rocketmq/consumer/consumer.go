@@ -208,7 +208,7 @@ func (c *Consumer) getAllConsumers() ([]mqConsumer, error) {
 		errs      []error
 	)
 
-	c.consumers.Range(func(k, v interface{}) bool {
+	c.consumers.Range(func(k, v any) bool {
 		key, ok := k.(string)
 		if !ok {
 			errs = append(errs, fmt.Errorf("consumer: invalid consumer key: %v", k))

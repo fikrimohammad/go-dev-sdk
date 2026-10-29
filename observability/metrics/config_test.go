@@ -7,8 +7,6 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-func boolPtr(v bool) *bool { return &v }
-
 func TestConfig_Defaults(t *testing.T) {
 	Convey("an empty Config gets sane defaults", t, func() {
 		cfg := Config{}
@@ -99,7 +97,7 @@ func TestConfig_IsInsecure(t *testing.T) {
 	})
 
 	Convey("isInsecure honors an explicit value", t, func() {
-		So(Config{Insecure: boolPtr(false)}.isInsecure(), ShouldBeFalse)
-		So(Config{Insecure: boolPtr(true)}.isInsecure(), ShouldBeTrue)
+		So(Config{Insecure: new(false)}.isInsecure(), ShouldBeFalse)
+		So(Config{Insecure: new(true)}.isInsecure(), ShouldBeTrue)
 	})
 }
