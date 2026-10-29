@@ -438,3 +438,44 @@ func TestLogger_GlobalCorrelationWins(t *testing.T) {
 		So(record["span_id"], ShouldEqual, span.SpanContext().SpanID().String())
 	})
 }
+
+func TestNew_InvalidConfig(t *testing.T) {
+	Convey("New rejects invalid configuration through the constructor", t, func() {
+		_, err := New(testInfo(), Config{Format: "xml"})
+		So(errors.Is(err, ErrInvalidLogFormat), ShouldBeTrue)
+
+		_, err = New(testInfo(), Config{Level: "verbose"})
+		So(errors.Is(err, ErrInvalidLogLevel), ShouldBeTrue)
+	})
+}
+
+func BenchmarkLogger_Info(b *testing.B) {
+	logger := mustLogger(testInfo(), Config{Writer: io.Discard, ErrorWriter: io.Discard})
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		logger.Info(ctx, "benchmark", "user_id", "u1", "order_id", "o-1")
+	}
+}
+
+func TestSetStreams(t *testing.T) {
+	Convey("SetStreams redirects package streams", t, func() {
+		var outBuf, errBuf bytes.Buffer
+		SetStreams(&outBuf, &errBuf)               //nolint:staticcheck // exercising deprecated compatibility API
+		t.Cleanup(func() { SetStreams(nil, nil) }) //nolint:staticcheck // exercising deprecated compatibility API
+
+		l := mustLogger(testInfo(), Config{})
+		l.Info(context.Background(), "stream_info")
+		l.Error(context.Background(), "stream_error")
+
+		So(outBuf.String(), ShouldContainSubstring, "stream_info")
+		So(errBuf.String(), ShouldContainSubstring, "stream_error")
+	})
+}
+
+func TestParseLevel_Invalid(t *testing.T) {
+	Convey("parseLevel rejects an unsupported level", t, func() {
+		_, err := parseLevel("verbose")
+		So(err, ShouldNotBeNil)
+	})
+}

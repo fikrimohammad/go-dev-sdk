@@ -774,12 +774,12 @@ func TestTracer_JoinsUpstreamTraceContext(t *testing.T) {
 	const upstreamTraceID = "0af7651916cd43dd8448eb211c80319c"
 	traceparent := "00-" + upstreamTraceID + "-b7ad6b7169203331-01"
 
-	var gotTraceID string
+	traceIDCh := make(chan string, 1)
 	ts := setupTest(t,
 		[]app.HandlerFunc{Tracer(tc)},
 		map[string]app.HandlerFunc{
 			"GET /test": func(ctx context.Context, c *app.RequestContext) {
-				gotTraceID = tracer.TraceIDFrom(ctx)
+				traceIDCh <- tracer.TraceIDFrom(ctx)
 				c.JSON(200, map[string]string{"status": "ok"})
 			},
 		},
@@ -790,7 +790,7 @@ func TestTracer_JoinsUpstreamTraceContext(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
 
-	if gotTraceID != upstreamTraceID {
+	if gotTraceID := <-traceIDCh; gotTraceID != upstreamTraceID {
 		t.Errorf("trace ID = %q, want upstream %q", gotTraceID, upstreamTraceID)
 	}
 }
@@ -805,12 +805,12 @@ func TestTracer_StartsNewTraceWithoutUpstreamContext(t *testing.T) {
 
 	tc := newTestTracerClient(t)
 
-	var gotTraceID string
+	traceIDCh := make(chan string, 1)
 	ts := setupTest(t,
 		[]app.HandlerFunc{Tracer(tc)},
 		map[string]app.HandlerFunc{
 			"GET /test": func(ctx context.Context, c *app.RequestContext) {
-				gotTraceID = tracer.TraceIDFrom(ctx)
+				traceIDCh <- tracer.TraceIDFrom(ctx)
 				c.JSON(200, map[string]string{"status": "ok"})
 			},
 		},
@@ -821,7 +821,7 @@ func TestTracer_StartsNewTraceWithoutUpstreamContext(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
 
-	if len(gotTraceID) != 32 {
+	if gotTraceID := <-traceIDCh; len(gotTraceID) != 32 {
 		t.Errorf("expected a fresh 32-hex trace ID, got %q", gotTraceID)
 	}
 }

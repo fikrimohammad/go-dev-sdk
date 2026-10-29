@@ -345,3 +345,18 @@ func TestSetGlobal(t *testing.T) {
 		So(carrier.Get("traceparent"), ShouldContainSubstring, span.SpanContext().TraceID().String())
 	})
 }
+
+func TestSetGlobal_Nil(t *testing.T) {
+	Convey("SetGlobal(nil) installs the noop provider and W3C propagator", t, func() {
+		prevProvider := otel.GetTracerProvider()
+		prevPropagator := otel.GetTextMapPropagator()
+		t.Cleanup(func() {
+			otel.SetTracerProvider(prevProvider)
+			otel.SetTextMapPropagator(prevPropagator)
+		})
+
+		SetGlobal(nil)
+		So(otel.GetTracerProvider(), ShouldNotBeNil)
+		So(otel.GetTextMapPropagator().Fields(), ShouldContain, "traceparent")
+	})
+}

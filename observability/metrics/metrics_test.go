@@ -560,3 +560,33 @@ func findMetric(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics 
 	}
 	return nil
 }
+
+func newBenchMetrics(b *testing.B) *otelMetrics {
+	b.Helper()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	b.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	return newInstrumentClient(provider, "bench", provider.Shutdown)
+}
+
+func BenchmarkOtelMetrics_Add(b *testing.B) {
+	client := newBenchMetrics(b)
+	ctx := context.Background()
+	instrument := Instrument{Name: "bench.counter", Unit: "1"}
+	attrs := map[string]any{"http.response.status_code": 200, "http.request.method": "GET"}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = client.Add(ctx, instrument, 1, attrs)
+	}
+}
+
+func BenchmarkOtelMetrics_Record(b *testing.B) {
+	client := newBenchMetrics(b)
+	ctx := context.Background()
+	instrument := Instrument{Name: "bench.duration", Unit: "s"}
+	attrs := map[string]any{"http.response.status_code": 200, "http.request.method": "GET"}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = client.Record(ctx, instrument, 0.05, attrs)
+	}
+}

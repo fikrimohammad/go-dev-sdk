@@ -30,6 +30,31 @@ package-level functions delegate to the installed default.
 - **Construction vs. globals** — `New` is global-free; installing/owning the
   lifecycle is the composition root's job.
 
+## API status and migration
+
+These modules are still in development, so the current API is intentionally
+allowed to break between phases. Current contract changes worth noting:
+
+- Metrics are instrument-based only. `Count` and `Histogram` were removed; use
+  `Add`, `Record`, `AddUpDown`, or `RecordGauge` with an `Instrument` that
+  carries the metric name, UCUM unit, and description. Names are strict,
+  lowercase, and never silently sanitized.
+- Metric instrumentation scope defaults to `DefaultInstrumentationScope`, not
+  the service name. Service identity remains in resource attributes.
+- Logs automatically add `trace_id` and `span_id` from a valid span context;
+  explicit values win. `Config.Writer`/`ErrorWriter` replace process-wide
+  `SetStreams` (which is deprecated).
+- Tracer `SetGlobal` installs the provider and the W3C TraceContext/Baggage
+  propagator in one call. `SetGlobal` does not change the package default;
+  call `SetDefault` separately.
+- Registered semantic-convention keys and the correlation keys `trace_id`,
+  `span_id`, and `trace_flags` keep their spelling. Developer-style keys are
+  still normalized (`order_id` → `order.id`).
+- `SetDefault(nil)` restores each signal's safe default.
+
+CI runs `go test -shuffle=on` and a separate `go test -race -shuffle=on` pass
+for every module.
+
 ## Installation
 
 ```bash

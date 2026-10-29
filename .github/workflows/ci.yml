@@ -70,7 +70,10 @@ jobs:
 
       # mockey-based tests require inlining disabled (see repo README).
       - name: Test
-        run: go test -count=1 -gcflags="all=-N -l" ./...
+        run: go test -count=1 -shuffle=on -gcflags="all=-N -l" ./...
+
+      - name: Test with race detector
+        run: go test -count=1 -race -shuffle=on -gcflags="all=-N -l" ./...
 
       - name: Tidy check
         run: go mod tidy -diff
