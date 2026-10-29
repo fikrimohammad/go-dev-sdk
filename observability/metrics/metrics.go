@@ -167,16 +167,14 @@ func sanitizeName(name string) string {
 //
 // The appinfo.Info identity is attached to every exported metric as the OTel
 // semantic convention resource attributes service.name, service.version, and
-// deployment.environment.
+// deployment.environment. New returns an error if info has no service name,
+// cfg is invalid, or the exporter cannot be created.
 func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if strings.TrimSpace(info.Name) == "" {
-		return nil, fmt.Errorf("%w: app name is required", ErrInvalidMetricName)
-	}
-	if !metricNamePattern.MatchString(info.Name) {
-		return nil, fmt.Errorf("%w: %q", ErrInvalidMetricName, info.Name)
+	if err := attributes.ValidateAppInfo(info); err != nil {
+		return nil, fmt.Errorf("metrics: %w", err)
 	}
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {

@@ -16,7 +16,8 @@ package-level functions delegate to the installed default.
   helpers; the provider can be registered as the OTel global.
 - **attributes** — shared key normalization (`order_id` → `order.id`) and
   resource-attribute helpers, plus `service.*` / `deployment.environment`
-  identity from `appinfo`.
+  identity from `appinfo`. Keys that already contain a dot, and the standard
+  `trace_id` / `span_id` correlation keys, keep their spelling.
 - **Safe defaults** — before any `SetDefault`, logs write debug text to stderr
   and metrics/tracer are no-op implementations, so package-level calls are
   always safe.
@@ -39,6 +40,9 @@ go get github.com/fikrimohammad/go-dev-sdk/observability
 ```go
 info := appinfo.Default() // APP_NAME / APP_VERSION / APP_ENV
 ```
+
+`info.Name` must be non-empty. `Version` and `Environment` are optional; empty
+values are omitted from the exported resource attributes.
 
 ### 2. Configure logs
 
@@ -128,9 +132,13 @@ defer tc.Stop(ctx)
 ## Telemetry conventions
 
 - Every signal carries the service identity as resource attributes
-  (`service.name`, `service.version`, `deployment.environment`).
-- Attribute keys are normalized to OTel semantic-convention style
-  (`order_id` → `order.id`).
+  (`service.name`, `service.version`, `deployment.environment`). A non-empty
+  `service.name` is required; empty `service.version` and
+  `deployment.environment` values are omitted.
+- Developer-style attribute keys are normalized to OTel semantic-convention
+  style (`order_id` → `order.id`). Keys that already contain a dot (such as
+  `http.response.status_code`) and the correlation keys `trace_id`, `span_id`,
+  and `trace_flags` keep their spelling.
 - Metric instrument names are **not** namespaced by service name; identity
   lives only in the resource attributes.
 
