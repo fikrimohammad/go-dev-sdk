@@ -405,8 +405,8 @@ func TestLogger_IncludesTraceID(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	out := buf.String()
-	if !strings.Contains(out, "trace_id") {
-		t.Errorf("expected trace_id field in log, got: %s", out)
+	if !strings.Contains(out, "trace.id") {
+		t.Errorf("expected trace.id field in log, got: %s", out)
 	}
 }
 

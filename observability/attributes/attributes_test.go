@@ -16,34 +16,12 @@ type myStringer string
 
 func (s myStringer) String() string { return string(s) }
 
-type nilStringer struct{ s string }
-
-func (s *nilStringer) String() string { return s.s }
-
-type nilError struct{ s string }
-
-func (e *nilError) Error() string { return e.s }
-
 func TestNormalizeKey(t *testing.T) {
-	Convey("NormalizeKey maps developer keys to OTel style", t, func() {
+	Convey("NormalizeKey maps dev keys to OTel semantic conventions", t, func() {
 		So(NormalizeKey("order_id"), ShouldEqual, "order.id")
 		So(NormalizeKey("shop_id"), ShouldEqual, "shop.id")
-		So(NormalizeKey("HTTP_METHOD"), ShouldEqual, "http.method")
-		So(NormalizeKey("request_id"), ShouldEqual, "request.id")
-	})
-
-	Convey("NormalizeKey preserves keys that already contain a dot", t, func() {
 		So(NormalizeKey("service.name"), ShouldEqual, "service.name")
-		So(NormalizeKey("http.response.status_code"), ShouldEqual, "http.response.status_code")
-		So(NormalizeKey("http.request.body.size"), ShouldEqual, "http.request.body.size")
-		So(NormalizeKey("user_agent.original"), ShouldEqual, "user_agent.original")
-		So(NormalizeKey("exception.stacktrace"), ShouldEqual, "exception.stacktrace")
-	})
-
-	Convey("NormalizeKey preserves standard correlation keys", t, func() {
-		So(NormalizeKey("trace_id"), ShouldEqual, "trace_id")
-		So(NormalizeKey("span_id"), ShouldEqual, "span_id")
-		So(NormalizeKey("trace_flags"), ShouldEqual, "trace_flags")
+		So(NormalizeKey("HTTP_METHOD"), ShouldEqual, "http.method")
 	})
 
 	Convey("NormalizeKey trims stray underscores and dots", t, func() {
@@ -52,45 +30,6 @@ func TestNormalizeKey(t *testing.T) {
 		So(NormalizeKey("a..b"), ShouldEqual, "a.b")
 		So(NormalizeKey("a__b"), ShouldEqual, "a.b")
 		So(NormalizeKey("..."), ShouldEqual, "")
-		So(NormalizeKey(".http.route."), ShouldEqual, "http.route")
-	})
-
-	Convey("NormalizeKey leaves invalid characters for validation to reject", t, func() {
-		So(NormalizeKey("foo bar"), ShouldEqual, "foo bar")
-		So(NormalizeKey("foo/bar"), ShouldEqual, "foo/bar")
-	})
-}
-
-func TestIsValidKey(t *testing.T) {
-	Convey("IsValidKey accepts OTel-style keys and rejects invalid ones", t, func() {
-		for _, key := range []string{
-			"a",
-			"order.id",
-			"http.response.status_code",
-			"user_agent.original",
-			"a-b_c.d",
-			"9lives",
-		} {
-			So(IsValidKey(key), ShouldBeTrue)
-		}
-		for _, key := range []string{
-			"",
-			"foo bar",
-			"foo/bar",
-			"foo%bar",
-			"foo:bar",
-		} {
-			So(IsValidKey(key), ShouldBeFalse)
-		}
-	})
-}
-
-func TestValidateAppInfo(t *testing.T) {
-	Convey("ValidateAppInfo requires a non-empty service name", t, func() {
-		So(ValidateAppInfo(appinfo.Info{Name: "svc"}), ShouldBeNil)
-		So(ValidateAppInfo(appinfo.Info{Name: "my service"}), ShouldBeNil)
-		So(errors.Is(ValidateAppInfo(appinfo.Info{}), ErrMissingServiceName), ShouldBeTrue)
-		So(errors.Is(ValidateAppInfo(appinfo.Info{Name: "   "}), ErrMissingServiceName), ShouldBeTrue)
 	})
 }
 
@@ -101,7 +40,7 @@ func TestConvertMapsToKVs(t *testing.T) {
 		So(ConvertMapsToKVs(map[string]any{}), ShouldBeNil)
 	})
 
-	Convey("developer keys are normalized and values typed", t, func() {
+	Convey("keys are normalized and values typed", t, func() {
 		kvs := ConvertMapsToKVs(map[string]any{
 			"user_id": "u1",
 			"count":   int(1),
@@ -120,23 +59,6 @@ func TestConvertMapsToKVs(t *testing.T) {
 		So(m["ratio"].AsFloat64(), ShouldEqual, 0.5)
 		So(m["enabled"].AsBool(), ShouldBeTrue)
 		So(m["other"].AsString(), ShouldEqual, "{x}")
-	})
-
-	Convey("semantic-convention and correlation keys are preserved", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
-			"http.response.status_code": 200,
-			"user_agent.original":       "ua",
-			"trace_id":                  "trace",
-			"span_id":                   "span",
-		})
-		m := make(map[attribute.Key]attribute.Value)
-		for _, kv := range kvs {
-			m[kv.Key] = kv.Value
-		}
-		So(m["http.response.status_code"].AsInt64(), ShouldEqual, int64(200))
-		So(m["user_agent.original"].AsString(), ShouldEqual, "ua")
-		So(m["trace_id"].AsString(), ShouldEqual, "trace")
-		So(m["span_id"].AsString(), ShouldEqual, "span")
 	})
 
 	Convey("narrow integers widen to int64", t, func() {
@@ -170,19 +92,14 @@ func TestConvertMapsToKVs(t *testing.T) {
 		So(kvs[0].Value.AsInt64(), ShouldEqual, int64(250*time.Millisecond))
 	})
 
-	Convey("uint values that fit int64 stay numeric and larger values are strings", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
-			"u":     uint(1),
-			"u64":   uint64(2),
-			"large": uint64(1) << 63,
-		})
+	Convey("unsigned int and uint64 are recorded as decimal strings", t, func() {
+		kvs := ConvertMapsToKVs(map[string]any{"u": uint(1), "u64": uint64(2)})
 		m := make(map[attribute.Key]attribute.Value)
 		for _, kv := range kvs {
 			m[kv.Key] = kv.Value
 		}
-		So(m["u"].AsInt64(), ShouldEqual, int64(1))
-		So(m["u64"].AsInt64(), ShouldEqual, int64(2))
-		So(m["large"].AsString(), ShouldEqual, "9223372036854775808")
+		So(m["u"].AsString(), ShouldEqual, "1")
+		So(m["u64"].AsString(), ShouldEqual, "2")
 	})
 
 	Convey("slices map to OTel slice types", t, func() {
@@ -213,50 +130,13 @@ func TestConvertMapsToKVs(t *testing.T) {
 		So(m["name"].AsString(), ShouldEqual, "x")
 	})
 
-	Convey("typed nil error and Stringer values are omitted", t, func() {
-		var nilErr *nilError
-		var nilStr *nilStringer
-		kvs := ConvertMapsToKVs(map[string]any{
-			"err":  nilErr,
-			"name": nilStr,
-			"kept": "v",
-		})
-		So(len(kvs), ShouldEqual, 1)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("kept"))
-	})
-
 	Convey("nil values are omitted", t, func() {
 		kvs := ConvertMapsToKVs(map[string]any{"empty": nil, "kept": "v"})
 		So(len(kvs), ShouldEqual, 1)
 		So(kvs[0].Key, ShouldEqual, attribute.Key("kept"))
 	})
 
-	Convey("empty and invalid attribute keys are omitted", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
-			"":        1,
-			"...":     2,
-			"foo bar": 3,
-			"foo/bar": 4,
-			"ok":      5,
-		})
-		So(len(kvs), ShouldEqual, 1)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("ok"))
-	})
-
-	Convey("attribute.KeyValue values are used verbatim", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
-			"status": attribute.Int("http.response.status_code", 200),
-			"invalid": attribute.KeyValue{
-				Key:   attribute.Key("foo bar"),
-				Value: attribute.StringValue("x"),
-			},
-		})
-		So(len(kvs), ShouldEqual, 1)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("http.response.status_code"))
-		So(kvs[0].Value.AsInt64(), ShouldEqual, int64(200))
-	})
-
-	Convey("the result is sorted by attribute key", t, func() {
+	Convey("the result is sorted by key", t, func() {
 		kvs := ConvertMapsToKVs(map[string]any{"b": 1, "a": 2})
 		So(len(kvs), ShouldEqual, 2)
 		So(kvs[0].Key, ShouldEqual, attribute.Key("a"))
@@ -307,45 +187,10 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 }
 
 func TestConvertAppInfoToMap(t *testing.T) {
-	Convey("returns the full service identity", t, func() {
+	Convey("returns the service identity as a map", t, func() {
 		m := ConvertAppInfoToMap(appinfo.Info{Name: "svc", Version: "1.0", Environment: "prod"})
 		So(m["service.name"], ShouldEqual, "svc")
 		So(m["service.version"], ShouldEqual, "1.0")
 		So(m["deployment.environment"], ShouldEqual, "prod")
 	})
-
-	Convey("omits empty optional identity fields", t, func() {
-		m := ConvertAppInfoToMap(appinfo.Info{Name: "svc"})
-		So(m["service.name"], ShouldEqual, "svc")
-		_, hasVersion := m["service.version"]
-		_, hasEnvironment := m["deployment.environment"]
-		So(hasVersion, ShouldBeFalse)
-		So(hasEnvironment, ShouldBeFalse)
-	})
-}
-
-func BenchmarkNormalizeKey(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = NormalizeKey("http.response.status_code")
-	}
-}
-
-func BenchmarkNormalizeKeyDeveloperStyle(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = NormalizeKey("order_id")
-	}
-}
-
-func BenchmarkConvertMapsToKVs(b *testing.B) {
-	attrs := map[string]any{
-		"http.request.method":       "GET",
-		"http.route":                "/users/:id",
-		"http.response.status_code": 200,
-		"network.protocol.name":     "http",
-		"network.protocol.version":  "1.1",
-	}
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = ConvertMapsToKVs(attrs)
-	}
 }

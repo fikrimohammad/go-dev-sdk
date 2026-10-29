@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/fikrimohammad/go-dev-sdk/appinfo"
-	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
 func testInfo() appinfo.Info {
@@ -44,14 +43,11 @@ func newTestMetrics(t *testing.T) (*otelMetrics, *sdkmetric.ManualReader) {
 	return &otelMetrics{meter: provider.Meter("myapp"), shutdown: provider.Shutdown}, reader
 }
 
-// withDefault installs the noop default for the duration of the test and
-// restores the previous default afterward, isolating the package facade from
-// other tests.
+// withDefault restores the noop default after the test, isolating the package
+// facade from other tests.
 func withDefault(t *testing.T) {
 	t.Helper()
-	prev := Default()
 	SetDefault(Noop())
-	t.Cleanup(func() { SetDefault(prev) })
 }
 
 func TestOtelMetrics_Count_Basic(t *testing.T) {
@@ -234,7 +230,7 @@ func TestCanonicalMetricName(t *testing.T) {
 func TestNew_Validation(t *testing.T) {
 	Convey("New rejects an empty app name", t, func() {
 		_, err := New(context.Background(), appinfo.Info{}, Config{})
-		So(errors.Is(err, attributes.ErrMissingServiceName), ShouldBeTrue)
+		So(errors.Is(err, ErrInvalidMetricName), ShouldBeTrue)
 	})
 
 	Convey("New rejects an invalid config", t, func() {

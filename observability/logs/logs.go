@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 
 	"github.com/fikrimohammad/go-dev-sdk/appinfo"
@@ -16,10 +17,8 @@ import (
 )
 
 // Logger emits structured log records. All methods accept a context for trace
-// correlation and key/value args whose developer-style keys are normalized to
-// OTel semantic convention style ("order_id" → "order.id"). Keys that already
-// contain a dot and the standard correlation keys (trace_id, span_id, and
-// trace_flags) keep their spelling.
+// correlation and key/value args whose keys are normalized to OTel semantic
+// convention style ("order_id" → "order.id").
 type Logger interface {
 	Debug(ctx context.Context, msg string, args ...any)
 	Info(ctx context.Context, msg string, args ...any)
@@ -125,11 +124,10 @@ func (l *slogLogger) Error(ctx context.Context, msg string, args ...any) {
 
 // New builds a configured logger routing by severity to stdout/stderr.
 // The returned Logger resolves the streams lazily, so output follows
-// redirection even after construction. New returns an error if info has no
-// service name or cfg is invalid.
+// redirection even after construction.
 func New(info appinfo.Info, cfg Config) (Logger, error) {
-	if err := attributes.ValidateAppInfo(info); err != nil {
-		return nil, fmt.Errorf("logs: %w", err)
+	if info.Name == "" || filepath.Base(info.Name) != info.Name {
+		return nil, fmt.Errorf("logs: invalid application name %q", info.Name)
 	}
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
@@ -163,11 +161,10 @@ func newHandler(format string, w io.Writer, opts *slog.HandlerOptions, attrs []s
 	return h
 }
 
-// normalizeArgs standardizes developer-style attribute keys in a log call's
-// args to the OTel semantic convention style (e.g. "order_id" → "order.id").
-// Keys that already contain a dot and standard correlation keys keep their
-// spelling. It handles both key/value pairs and slog.Attr values, mirroring
-// slog's argument parsing so that attributes and pairs can be mixed.
+// normalizeArgs standardizes attribute keys in a log call's args to the OTel
+// semantic convention style (e.g. "order_id" → "order.id"). It handles both
+// key/value pairs and slog.Attr values, mirroring slog's argument parsing so
+// that attributes and pairs can be mixed.
 func normalizeArgs(args []any) []any {
 	out := make([]any, len(args))
 	copy(out, args)
