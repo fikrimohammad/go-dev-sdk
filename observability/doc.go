@@ -72,7 +72,10 @@
 //
 // The appinfo.Info identity is attached to every signal as the OTel semantic
 // convention resource attributes service.name, service.version, and
-// deployment.environment, and attribute keys are normalized to that style
-// ("order_id" → "order.id"). Metric instrument names are NOT namespaced by the
-// service name; service identity lives solely in the resource attributes.
+// deployment.environment. A non-empty service name is required; empty optional
+// identity fields are omitted. Developer-style attribute keys are normalized to
+// that style ("order_id" → "order.id"), while keys that already contain a dot
+// and the standard correlation keys trace_id, span_id, and trace_flags keep
+// their spelling. Metric instrument names are NOT namespaced by the service
+// name; service identity lives solely in the resource attributes.
 package observability

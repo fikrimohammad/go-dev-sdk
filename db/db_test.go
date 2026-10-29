@@ -416,8 +416,8 @@ func TestNamedExecContext_Success(t *testing.T) {
 	if count.attrs["db.query.text"] == "" {
 		t.Fatalf("db.query.text missing on count: %v", count.attrs)
 	}
-	if count.attrs["db.response.status.code"] != "" {
-		t.Fatalf("status_code should be empty on success, got %v", count.attrs["db.response.status.code"])
+	if count.attrs["db.response.status_code"] != "" {
+		t.Fatalf("status_code should be empty on success, got %v", count.attrs["db.response.status_code"])
 	}
 	if count.attrs["error.type"] != "" {
 		t.Fatalf("error.type should be empty on success, got %v", count.attrs["error.type"])
@@ -443,8 +443,8 @@ func TestNamedExecContext_Success(t *testing.T) {
 	if attrs["db.query.text"] == "" {
 		t.Fatal("db.query.text missing on span")
 	}
-	if attrs["db.response.status.code"] != "" {
-		t.Fatalf("span status_code should be empty on success, got %v", attrs["db.response.status.code"])
+	if attrs["db.response.status_code"] != "" {
+		t.Fatalf("span status_code should be empty on success, got %v", attrs["db.response.status_code"])
 	}
 	if attrs["error.type"] != "" {
 		t.Fatalf("span error.type should be empty on success, got %v", attrs["error.type"])
@@ -490,8 +490,8 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 	if count.attrs["error.type"] != "duplicate entry" {
 		t.Fatalf("error.type = %v, want the error message", count.attrs["error.type"])
 	}
-	if count.attrs["db.response.status.code"] != "1066" {
-		t.Fatalf("status_code = %v, want 1066", count.attrs["db.response.status.code"])
+	if count.attrs["db.response.status_code"] != "1066" {
+		t.Fatalf("status_code = %v, want 1066", count.attrs["db.response.status_code"])
 	}
 
 	sp, ok := ex.last()
@@ -505,8 +505,8 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 	if attrs["error.type"] != "duplicate entry" {
 		t.Fatalf("span error.type = %v, want the error message", attrs["error.type"])
 	}
-	if attrs["db.response.status.code"] != "1066" {
-		t.Fatalf("span status_code = %v, want 1066", attrs["db.response.status.code"])
+	if attrs["db.response.status_code"] != "1066" {
+		t.Fatalf("span status_code = %v, want 1066", attrs["db.response.status_code"])
 	}
 }
 
@@ -794,8 +794,8 @@ func TestPostgresErrorTelemetry(t *testing.T) {
 	if count.attrs["db.system.name"] != "postgresql" {
 		t.Fatalf("db.system.name = %v, want postgresql", count.attrs["db.system.name"])
 	}
-	if count.attrs["db.response.status.code"] != "23505" {
-		t.Fatalf("status_code = %v, want 23505", count.attrs["db.response.status.code"])
+	if count.attrs["db.response.status_code"] != "23505" {
+		t.Fatalf("status_code = %v, want 23505", count.attrs["db.response.status_code"])
 	}
 	if count.attrs["error.type"] != "duplicate key value violates unique constraint" {
 		t.Fatalf("error.type = %v", count.attrs["error.type"])
@@ -808,7 +808,7 @@ func TestPostgresErrorTelemetry(t *testing.T) {
 	if sp.Status().Code != codes.Error {
 		t.Fatalf("status = %v, want error", sp.Status().Code)
 	}
-	if got := spanAttrs(sp)["db.response.status.code"]; got != "23505" {
+	if got := spanAttrs(sp)["db.response.status_code"]; got != "23505" {
 		t.Fatalf("span status_code = %v, want 23505", got)
 	}
 }

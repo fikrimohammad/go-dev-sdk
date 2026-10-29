@@ -176,7 +176,7 @@ func TestProcessHook_Get_Success(t *testing.T) {
 		"db.operation.name":       "GET",
 		"db.namespace":            "2",
 		"db.query.text":           "GET ?",
-		"db.response.status.code": "",
+		"db.response.status_code": "",
 		"error.type":              "",
 	}
 	assertAttrs(t, count.attrs, wantAttrs)
@@ -195,7 +195,7 @@ func TestProcessHook_Get_Success(t *testing.T) {
 		"db.operation.name":       "GET",
 		"db.namespace":            "2",
 		"db.query.text":           "GET ?",
-		"db.response.status.code": "",
+		"db.response.status_code": "",
 		"error.type":              "",
 	}
 	assertAttrs(t, spanAttrs(sp), spanWant)
@@ -238,8 +238,8 @@ func TestProcessHook_Error(t *testing.T) {
 	if !ok {
 		t.Fatal("no count recorded")
 	}
-	if count.attrs["db.response.status.code"] != "WRONGTYPE" {
-		t.Fatalf("db.response.status.code = %v, want WRONGTYPE", count.attrs["db.response.status.code"])
+	if count.attrs["db.response.status_code"] != "WRONGTYPE" {
+		t.Fatalf("db.response.status_code = %v, want WRONGTYPE", count.attrs["db.response.status_code"])
 	}
 	if count.attrs["error.type"] != boom.Error() {
 		t.Fatalf("error.type = %v, want %q", count.attrs["error.type"], boom.Error())
@@ -253,7 +253,7 @@ func TestProcessHook_Error(t *testing.T) {
 		t.Fatalf("status = %v, want error", sp.Status().Code)
 	}
 	attrs := spanAttrs(sp)
-	if attrs["db.response.status.code"] != "WRONGTYPE" || attrs["error.type"] != boom.Error() {
+	if attrs["db.response.status_code"] != "WRONGTYPE" || attrs["error.type"] != boom.Error() {
 		t.Fatalf("span attrs = %v", attrs)
 	}
 }
@@ -270,7 +270,7 @@ func TestProcessHook_RedisNil_NotError(t *testing.T) {
 	if !ok {
 		t.Fatal("no count recorded")
 	}
-	if count.attrs["db.response.status.code"] != "" || count.attrs["error.type"] != "" {
+	if count.attrs["db.response.status_code"] != "" || count.attrs["error.type"] != "" {
 		t.Fatalf("redis.Nil must not set error telemetry, got %v", count.attrs)
 	}
 	sp, ok := ex.last()
@@ -516,8 +516,8 @@ func TestProcessPipelineHook_RedisNilFirst_WithErrorLater(t *testing.T) {
 	if !ok {
 		t.Fatal("no count recorded")
 	}
-	if count.attrs["db.response.status.code"] != "ERR" {
-		t.Fatalf("db.response.status.code = %v, want ERR", count.attrs["db.response.status.code"])
+	if count.attrs["db.response.status_code"] != "ERR" {
+		t.Fatalf("db.response.status_code = %v, want ERR", count.attrs["db.response.status_code"])
 	}
 	if count.attrs["error.type"] != boom.Error() {
 		t.Fatalf("error.type = %v, want %q", count.attrs["error.type"], boom.Error())
