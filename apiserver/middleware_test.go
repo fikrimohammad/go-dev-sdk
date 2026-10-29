@@ -959,3 +959,51 @@ func TestMiddlewareChain_FullStackError(t *testing.T) {
 		t.Errorf("expected error message in log, got: %s", out)
 	}
 }
+
+func TestMetrics_InstrumentMetadata(t *testing.T) {
+	rec := newRecordingMetrics()
+	ts := setupTest(t,
+		[]app.HandlerFunc{Metrics(rec)},
+		map[string]app.HandlerFunc{
+			"GET /ok": func(ctx context.Context, c *app.RequestContext) {
+				c.JSON(200, map[string]string{"status": "ok"})
+			},
+		},
+	)
+
+	_ = readBody(t, ts.get(t, "/ok", nil))
+
+	add, ok := rec.lastAdd()
+	if !ok {
+		t.Fatal("no counter recorded")
+	}
+	if add.instrument.Name != "http.server.request.count" {
+		t.Fatalf("counter name = %q", add.instrument.Name)
+	}
+	if add.instrument.Unit != "{request}" {
+		t.Fatalf("counter unit = %q", add.instrument.Unit)
+	}
+	if add.instrument.Description == "" {
+		t.Fatal("counter description is empty")
+	}
+	if add.value != 1 {
+		t.Fatalf("counter value = %v, want 1", add.value)
+	}
+
+	record, ok := rec.lastRecord()
+	if !ok {
+		t.Fatal("no histogram recorded")
+	}
+	if record.instrument.Name != "http.server.request.duration" {
+		t.Fatalf("histogram name = %q", record.instrument.Name)
+	}
+	if record.instrument.Unit != "s" {
+		t.Fatalf("histogram unit = %q", record.instrument.Unit)
+	}
+	if record.instrument.Description == "" {
+		t.Fatal("histogram description is empty")
+	}
+	if record.value < 0 {
+		t.Fatalf("histogram value = %v", record.value)
+	}
+}

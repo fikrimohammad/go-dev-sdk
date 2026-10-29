@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,58 @@ type testServer struct {
 func newTestMetricsClient(t *testing.T) metrics.Client {
 	t.Helper()
 	return metrics.Noop()
+}
+
+// metricCall records one measurement for assertions.
+type metricCall struct {
+	instrument metrics.Instrument
+	value      float64
+	attrs      map[string]any
+}
+
+// recordingMetrics captures Add and Record calls. The embedded noop Client
+// supplies the remaining Client methods.
+type recordingMetrics struct {
+	metrics.Client
+	mu      sync.Mutex
+	adds    []metricCall
+	records []metricCall
+}
+
+func newRecordingMetrics() *recordingMetrics {
+	return &recordingMetrics{Client: metrics.Noop()}
+}
+
+func (m *recordingMetrics) Add(_ context.Context, instrument metrics.Instrument, value int64, attrs map[string]any) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.adds = append(m.adds, metricCall{instrument: instrument, value: float64(value), attrs: attrs})
+	return nil
+}
+
+func (m *recordingMetrics) Record(_ context.Context, instrument metrics.Instrument, value float64, attrs map[string]any) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records = append(m.records, metricCall{instrument: instrument, value: value, attrs: attrs})
+	return nil
+}
+
+func (m *recordingMetrics) lastAdd() (metricCall, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.adds) == 0 {
+		return metricCall{}, false
+	}
+	return m.adds[len(m.adds)-1], true
+}
+
+func (m *recordingMetrics) lastRecord() (metricCall, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.records) == 0 {
+		return metricCall{}, false
+	}
+	return m.records[len(m.records)-1], true
 }
 
 func newTestTracerClient(t *testing.T) tracer.Client {
