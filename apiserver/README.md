@@ -38,7 +38,7 @@ info := appinfo.Default()
 
 tc, _ := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317"})
 tracer.SetDefault(tc)
-otel.SetTracerProvider(tc.Provider())
+tracer.SetGlobal(tc) // provider + W3C TraceContext/Baggage propagator
 
 mc, _ := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317"})
 metrics.SetDefault(mc)

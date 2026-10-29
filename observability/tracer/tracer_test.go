@@ -3,12 +3,15 @@ package tracer
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	noop "go.opentelemetry.io/otel/trace/noop"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -219,5 +222,126 @@ func TestWrap_NilProvider(t *testing.T) {
 		_, span := c.Tracer("scope").Start(context.Background(), "op")
 		So(span.SpanContext().IsValid(), ShouldBeFalse)
 		span.End()
+	})
+}
+
+func TestSpanIDFrom(t *testing.T) {
+	Convey("extracts the span ID from a valid span context", t, func() {
+		provider := sdktrace.NewTracerProvider()
+		defer func() { _ = provider.Shutdown(context.Background()) }()
+
+		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+		defer span.End()
+
+		So(SpanIDFrom(ctx), ShouldEqual, span.SpanContext().SpanID().String())
+		So(SpanIDFrom(context.Background()), ShouldEqual, "")
+		So(SpanIDFrom(nil), ShouldEqual, "") //nolint:staticcheck // intentionally verifying nil handling
+	})
+}
+
+// fakeSpanExporter captures exported spans for client construction tests.
+type fakeSpanExporter struct {
+	mu       sync.Mutex
+	spans    []sdktrace.ReadOnlySpan
+	shutdown atomic.Int32
+}
+
+func (f *fakeSpanExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spans = append(f.spans, spans...)
+	return nil
+}
+
+func (f *fakeSpanExporter) Shutdown(context.Context) error {
+	f.shutdown.Add(1)
+	return nil
+}
+
+func (f *fakeSpanExporter) snapshot() []sdktrace.ReadOnlySpan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]sdktrace.ReadOnlySpan, len(f.spans))
+	copy(out, f.spans)
+	return out
+}
+
+func TestNewClientWithExporter_Resource(t *testing.T) {
+	Convey("builds a provider with resource identity, scope, and exporter shutdown", t, func() {
+		cfg := Config{GlobalKV: map[string]any{"deployment.environment": "staging"}}
+		cfg.setDefaults()
+		exporter := &fakeSpanExporter{}
+		info := appinfo.Info{Name: "svc", Version: "1.0.0"}
+
+		c, err := newClientWithExporter(context.Background(), info, cfg, exporter)
+		So(err, ShouldBeNil)
+		So(c.Provider(), ShouldNotBeNil)
+
+		ctx, span := c.Tracer("custom.scope").Start(context.Background(), "op")
+		span.End()
+
+		provider := c.Provider().(*sdktrace.TracerProvider)
+		So(provider.ForceFlush(context.Background()), ShouldBeNil)
+
+		spans := exporter.snapshot()
+		So(len(spans), ShouldEqual, 1)
+		So(spans[0].InstrumentationScope().Name, ShouldEqual, "custom.scope")
+
+		attrs := map[string]string{}
+		for _, kv := range spans[0].Resource().Attributes() {
+			attrs[string(kv.Key)] = kv.Value.AsString()
+		}
+		So(attrs["service.name"], ShouldEqual, "svc")
+		So(attrs["service.version"], ShouldEqual, "1.0.0")
+		So(attrs["deployment.environment"], ShouldEqual, "staging")
+
+		So(c.Stop(ctx), ShouldBeNil)
+		So(exporter.shutdown.Load(), ShouldEqual, 1)
+	})
+}
+
+func TestNewClientWithExporter_Sampler(t *testing.T) {
+	Convey("honors the configured sampler", t, func() {
+		cfg := Config{Sampler: sdktrace.NeverSample()}
+		cfg.setDefaults()
+		exporter := &fakeSpanExporter{}
+
+		c, err := newClientWithExporter(context.Background(), testInfo(), cfg, exporter)
+		So(err, ShouldBeNil)
+
+		_, span := c.Tracer("test").Start(context.Background(), "op")
+		So(span.SpanContext().IsSampled(), ShouldBeFalse)
+		span.End()
+
+		provider := c.Provider().(*sdktrace.TracerProvider)
+		So(provider.ForceFlush(context.Background()), ShouldBeNil)
+		So(len(exporter.snapshot()), ShouldEqual, 0)
+
+		So(c.Stop(context.Background()), ShouldBeNil)
+		So(exporter.shutdown.Load(), ShouldEqual, 1)
+	})
+}
+
+func TestSetGlobal(t *testing.T) {
+	Convey("installs the provider and W3C propagator", t, func() {
+		prevProvider := otel.GetTracerProvider()
+		prevPropagator := otel.GetTextMapPropagator()
+		t.Cleanup(func() {
+			otel.SetTracerProvider(prevProvider)
+			otel.SetTextMapPropagator(prevPropagator)
+		})
+
+		provider := sdktrace.NewTracerProvider()
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+		SetGlobal(Wrap(provider))
+		So(otel.GetTracerProvider(), ShouldEqual, provider)
+
+		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+		defer span.End()
+
+		carrier := propagation.MapCarrier{}
+		otel.GetTextMapPropagator().Inject(ctx, carrier)
+		So(carrier.Get("traceparent"), ShouldContainSubstring, span.SpanContext().TraceID().String())
 	})
 }

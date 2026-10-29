@@ -1,5 +1,5 @@
 // Package tracer installs the trace pipeline and exposes named tracers,
-// attribute conversion, and trace-ID extraction.
+// attribute conversion, trace and span ID extraction, and global setup.
 package tracer
 
 import (
@@ -8,8 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -25,8 +27,8 @@ import (
 type Client interface {
 	// Tracer returns an OTel tracer for the given instrumentation scope name.
 	Tracer(name string, opts ...trace.TracerOption) trace.Tracer
-	// Provider exposes the underlying TracerProvider, e.g. for explicit global
-	// registration via otel.SetTracerProvider at the composition root.
+	// Provider exposes the underlying TracerProvider, e.g. for [SetGlobal] or
+	// explicit otel.SetTracerProvider registration at the composition root.
 	Provider() trace.TracerProvider
 	// Stop flushes pending traces and shuts down the underlying provider. It is
 	// safe to call multiple times; only the first call performs work.
@@ -62,29 +64,40 @@ func (c *client) Stop(ctx context.Context) error {
 	return c.stopErr
 }
 
-func traceIDFrom(ctx context.Context) string {
+func spanContextFrom(ctx context.Context) trace.SpanContext {
 	if ctx == nil {
-		return ""
+		return trace.SpanContext{}
 	}
-	sc := trace.SpanContextFromContext(ctx)
+	return trace.SpanContextFromContext(ctx)
+}
+
+func traceIDFrom(ctx context.Context) string {
+	sc := spanContextFrom(ctx)
 	if !sc.IsValid() {
 		return ""
 	}
 	return sc.TraceID().String()
 }
 
+func spanIDFrom(ctx context.Context) string {
+	sc := spanContextFrom(ctx)
+	if !sc.IsValid() {
+		return ""
+	}
+	return sc.SpanID().String()
+}
+
 // New builds a Client backed by an OTLP gRPC exporter.
 // The exporter pushes traces to the collector in batches. Call Stop on the
 // returned Client when the application exits to flush pending traces.
 //
-// The appinfo.Info identity is attached to every exported span as the OTel
-// semantic convention resource attributes service.name, service.version, and
-// deployment.environment. New returns an error if info has no service name,
-// cfg is invalid, or the exporter cannot be created.
+// The appinfo.Info identity and Config.GlobalKV are attached to every exported
+// span as OTel resource attributes. Config.Sampler and the batch settings
+// control sampling and export behavior. New returns an error if info has no
+// service name, cfg is invalid, or the exporter cannot be created.
 //
-// New does not touch the OTel global registry. To route otel.Tracer and
-// auto-instrumentation libraries through this client, register the provider
-// explicitly at the composition root via otel.SetTracerProvider(c.Provider()).
+// New does not touch the OTel global registry. Call [SetGlobal] at the
+// composition root to install both the provider and the W3C propagator.
 func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("tracer: %w", err)
@@ -112,18 +125,42 @@ func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tracer: creating OTLP trace exporter: %w", err)
 	}
+	return newClientWithExporter(ctx, info, cfg, exporter)
+}
 
-	res, err := resource.New(ctx, resource.WithAttributes(attributes.ConvertMapsToKVs(attributes.ConvertAppInfoToMap(info))...))
+// newClientWithExporter builds the provider and client around exporter. It is
+// separate from New so tests can supply a fake exporter.
+func newClientWithExporter(ctx context.Context, info appinfo.Info, cfg Config, exporter sdktrace.SpanExporter) (Client, error) {
+	provider, err := newProvider(ctx, info, cfg, exporter)
 	if err != nil {
 		_ = exporter.Shutdown(context.Background())
+		return nil, err
+	}
+	return &client{provider: provider, shutdown: provider.Shutdown}, nil
+}
+
+// newProvider builds a tracer provider with the configured resource, sampler,
+// and batch processor.
+func newProvider(ctx context.Context, info appinfo.Info, cfg Config, exporter sdktrace.SpanExporter) (*sdktrace.TracerProvider, error) {
+	res, err := resource.New(ctx, resource.WithAttributes(
+		attributes.ConvertMapsToKVs(cfg.GlobalKV, attributes.ConvertAppInfoToMap(info))...,
+	))
+	if err != nil {
 		return nil, fmt.Errorf("tracer: creating trace resource: %w", err)
 	}
 
-	provider := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+	opts := []sdktrace.TracerProviderOption{
+		sdktrace.WithBatcher(exporter,
+			sdktrace.WithBatchTimeout(cfg.BatchTimeout),
+			sdktrace.WithMaxQueueSize(cfg.MaxQueueSize),
+			sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize),
+		),
 		sdktrace.WithResource(res),
-	)
-	return &client{provider: provider, shutdown: provider.Shutdown}, nil
+	}
+	if cfg.Sampler != nil {
+		opts = append(opts, sdktrace.WithSampler(cfg.Sampler))
+	}
+	return sdktrace.NewTracerProvider(opts...), nil
 }
 
 // Wrap returns a Client backed by the given provider. A nil provider is
@@ -165,6 +202,23 @@ func SetDefault(c Client) {
 	defaultClient.Store(&c)
 }
 
+// SetGlobal installs c's provider as the OTel global tracer provider and
+// installs a W3C TraceContext and Baggage propagator for inbound extraction
+// and outbound injection. A nil c installs the noop provider. SetGlobal mutates
+// process-global OTel state and should be called once at the composition root.
+// It does not change the package default; call [SetDefault] separately when
+// package-level tracer funcs should use c.
+func SetGlobal(c Client) {
+	if c == nil {
+		c = Noop()
+	}
+	otel.SetTracerProvider(c.Provider())
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+}
+
 // Tracer returns an OTel tracer for the given instrumentation scope name.
 func Tracer(name string, opts ...trace.TracerOption) trace.Tracer {
 	return Default().Tracer(name, opts...)
@@ -187,4 +241,10 @@ func Attrs(kv map[string]any) []attribute.KeyValue {
 // span context. It is a pure helper and does not require Init.
 func TraceIDFrom(ctx context.Context) string {
 	return traceIDFrom(ctx)
+}
+
+// SpanIDFrom extracts the span ID from ctx, or "" when there is no valid span
+// context. It is a pure helper and does not require Init.
+func SpanIDFrom(ctx context.Context) string {
+	return spanIDFrom(ctx)
 }
