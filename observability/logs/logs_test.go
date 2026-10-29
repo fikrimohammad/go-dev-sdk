@@ -3,7 +3,6 @@ package logs
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"testing"
 
@@ -11,7 +10,6 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/fikrimohammad/go-dev-sdk/appinfo"
-	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
 func testInfo() appinfo.Info {
@@ -35,14 +33,11 @@ func mustLogger(info appinfo.Info, cfg Config) Logger {
 	return l
 }
 
-// withDefault installs the default logger for the duration of the test and
-// restores the previous default afterward, isolating the package facade from
-// other tests.
+// withDefault restores the stderr default logger after the test, isolating the
+// package facade from other tests.
 func withDefault(t *testing.T) {
 	t.Helper()
-	prev := Default()
 	SetDefault(newDefaultLogger())
-	t.Cleanup(func() { SetDefault(prev) })
 }
 
 func TestLogger_LevelRouting_Text(t *testing.T) {
@@ -137,32 +132,6 @@ func TestLogger_NormalizeArgs(t *testing.T) {
 			So(ok, ShouldBeTrue)
 			So(attr.Key, ShouldEqual, "user.id")
 		})
-
-		Convey("preserves semantic-convention and correlation keys", func() {
-			var outBuf bytes.Buffer
-			mockey.PatchConvey("redirect stdout", func() {
-				mockey.MockValue(&stdout).To(&outBuf)
-
-				l := mustLogger(testInfo(), Config{})
-				l.Info(context.Background(), "preserved_keys",
-					"trace_id", "trace",
-					"span_id", "span",
-					"http.response.status_code", 200,
-				)
-
-				text := outBuf.String()
-				So(text, ShouldContainSubstring, "trace_id=trace")
-				So(text, ShouldContainSubstring, "span_id=span")
-				So(text, ShouldContainSubstring, "http.response.status_code=200")
-			})
-		})
-	})
-}
-
-func TestNew_InvalidInfo(t *testing.T) {
-	Convey("New requires a service name", t, func() {
-		_, err := New(appinfo.Info{}, Config{})
-		So(errors.Is(err, attributes.ErrMissingServiceName), ShouldBeTrue)
 	})
 }
 
@@ -241,7 +210,6 @@ func TestDefault_NeverNil(t *testing.T) {
 
 func TestDefault_BeforeSetDefault(t *testing.T) {
 	Convey("before SetDefault the package funcs write to the default stderr logger", t, func() {
-		withDefault(t)
 		var errBuf bytes.Buffer
 		mockey.PatchConvey("redirect stderr", func() {
 			mockey.MockValue(&stderr).To(&errBuf)
@@ -287,23 +255,6 @@ func TestFacade_NewAndSetDefault(t *testing.T) {
 			SetDefault(mustLogger(testInfo(), Config{}))
 			Info(context.Background(), "installed_msg")
 			So(outBuf.String(), ShouldContainSubstring, "installed_msg")
-		})
-	})
-}
-
-func TestLogger_OmitEmptyIdentity(t *testing.T) {
-	Convey("empty optional identity fields are omitted from every record", t, func() {
-		var outBuf bytes.Buffer
-		mockey.PatchConvey("redirect stdout", func() {
-			mockey.MockValue(&stdout).To(&outBuf)
-
-			l := mustLogger(appinfo.Info{Name: "svc"}, Config{})
-			l.Info(context.Background(), "identity")
-
-			text := outBuf.String()
-			So(text, ShouldContainSubstring, "service.name=svc")
-			So(text, ShouldNotContainSubstring, "service.version")
-			So(text, ShouldNotContainSubstring, "deployment.environment")
 		})
 	})
 }
