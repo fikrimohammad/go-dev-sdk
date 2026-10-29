@@ -16,8 +16,10 @@ package-level functions delegate to the installed default.
   over OTLP gRPC, with instrument units/descriptions, strict name validation,
   and exponential histogram buckets by default. A stable instrumentation scope
   identifies this library, not the service.
-- **tracer** — spans exported over OTLP gRPC, plus `Attrs` and `TraceIDFrom`
-  helpers; the provider can be registered as the OTel global.
+- **tracer** — spans exported over OTLP gRPC with configurable sampler, batch
+  settings, resource attributes, and OTLP headers. `SetGlobal` installs the
+  provider and the W3C TraceContext/Baggage propagator in one call; `Attrs`,
+  `TraceIDFrom`, and `SpanIDFrom` are shared helpers.
 - **attributes** — shared key normalization (`order_id` → `order.id`) and
   resource-attribute helpers, plus `service.*` / `deployment.environment`
   identity from `appinfo`. Keys that already contain a dot, and the standard
@@ -77,7 +79,7 @@ tc, err := tracer.New(ctx, info, tracer.Config{
 })
 if err != nil { /* handle */ }
 tracer.SetDefault(tc)
-otel.SetTracerProvider(tc.Provider()) // route otel.* + auto-instrumentation through it
+tracer.SetGlobal(tc) // installs the provider and W3C TraceContext/Baggage propagator
 ```
 
 ### 5. Emit signals
@@ -147,6 +149,11 @@ defer tc.Stop(ctx)
 | `ExportTimeout` | `5s` | Per-export timeout |
 | `Insecure` | `true` (nil) | Disable TLS for the exporter |
 | `Headers` | — | Extra headers sent with exports |
+| `GlobalKV` | — | Resource attributes |
+| `Sampler` | SDK default | Programmatic sampler override (`otel/sdk/trace.Sampler`) |
+| `BatchTimeout` | `5s` | Maximum batch delay |
+| `MaxQueueSize` | `2048` | Maximum queued spans |
+| `MaxExportBatchSize` | `512` | Maximum spans per export batch |
 
 ## Telemetry conventions
 
@@ -174,5 +181,5 @@ defer tc.Stop(ctx)
 | --- | --- |
 | `logs` | `New`, `SetDefault`, `Default`, `Debug/Info/Warn/Error`, `Logger` |
 | `metrics` | `New`, `Wrap`, `WrapWithScope`, `SetDefault`, `Default`, `Add`, `Record`, `AddUpDown`, `RecordGauge`, `Stop`, `Instrument`, `Client`, `Noop` |
-| `tracer` | `New`, `Wrap`, `Noop`, `SetDefault`, `Tracer`, `Attrs`, `TraceIDFrom`, `Stop`, `Client` |
+| `tracer` | `New`, `Wrap`, `Noop`, `SetDefault`, `SetGlobal`, `Tracer`, `Attrs`, `TraceIDFrom`, `SpanIDFrom`, `Stop`, `Client` |
 | `attributes` | `NormalizeKey`, `ConvertMapsToKVs`, `ConvertAppInfoToMap` |

@@ -22,7 +22,7 @@
 //	    // handle
 //	}
 //	tracer.SetDefault(tc)
-//	otel.SetTracerProvider(tc.Provider())
+//	tracer.SetGlobal(tc)
 //
 //	defer mc.Stop(ctx)
 //	defer tc.Stop(ctx)
@@ -38,8 +38,9 @@
 //     trace_id/span_id from a valid span context.
 //   - metrics: records counters, histograms, up-down counters, and gauges over
 //     OTLP gRPC with instrument units, descriptions, and a stable scope.
-//   - tracer: starts spans over OTLP gRPC. Registering the OTel global
-//     provider and propagator is the composition root's job (see tracer.New).
+//   - tracer: starts spans over OTLP gRPC with configurable sampler, batch,
+//     and resource options. SetGlobal installs the provider and W3C propagator
+//     at the composition root.
 //   - attributes: shared key normalization and resource-attribute helpers.
 //
 // # Construction vs. globals
