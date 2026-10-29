@@ -239,15 +239,19 @@ func Noop() Client {
 }
 
 // Default returns the Client used by the package-level Count and Histogram
-// funcs. It is never nil: before SetDefault is called it is a noop
-// implementation.
+// funcs. It is never nil: before SetDefault is called, and after
+// SetDefault(nil), it is a noop implementation.
 func Default() Client {
 	return *defaultMetrics.Load()
 }
 
 // SetDefault makes m the Client used by the package-level funcs, replacing any
-// installed earlier. It is safe to call concurrently with measurement calls.
+// installed earlier. A nil m restores the noop client. It is safe to call
+// concurrently with measurement calls.
 func SetDefault(m Client) {
+	if m == nil {
+		m = Noop()
+	}
 	defaultMetrics.Store(&m)
 }
 

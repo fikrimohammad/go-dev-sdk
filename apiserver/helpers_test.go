@@ -153,17 +153,18 @@ func initTestLogger(t *testing.T) *logReader {
 	if err != nil {
 		t.Fatalf("create stderr capture file: %v", err)
 	}
-	logs.SetStreams(stdoutFile, stderrFile)
-	log, err := logs.New(appinfo.Info{Name: "test"}, logs.Config{Format: "text"})
+	log, err := logs.New(appinfo.Info{Name: "test"}, logs.Config{
+		Format:      "text",
+		Writer:      stdoutFile,
+		ErrorWriter: stderrFile,
+	})
 	if err != nil {
-		logs.SetStreams(os.Stdout, os.Stderr)
 		_ = stdoutFile.Close()
 		_ = stderrFile.Close()
 		t.Fatalf("initialize test logger: %v", err)
 	}
 	logs.SetDefault(log)
 	t.Cleanup(func() {
-		logs.SetStreams(os.Stdout, os.Stderr)
 		_ = stdoutFile.Close()
 		_ = stderrFile.Close()
 	})

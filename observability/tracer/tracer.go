@@ -126,10 +126,14 @@ func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
 	return &client{provider: provider, shutdown: provider.Shutdown}, nil
 }
 
-// Wrap returns a Client backed by the given provider. Stop is a no-op; the
-// caller retains ownership of the provider's lifecycle. Intended for tests
-// and callers that build their own TracerProvider.
+// Wrap returns a Client backed by the given provider. A nil provider is
+// treated as a noop provider. Stop is a no-op; the caller retains ownership of
+// the provider's lifecycle. Intended for tests and callers that build their
+// own TracerProvider.
 func Wrap(provider trace.TracerProvider) Client {
+	if provider == nil {
+		provider = noop.NewTracerProvider()
+	}
 	return &client{provider: provider}
 }
 
@@ -145,7 +149,8 @@ func init() {
 }
 
 // Default returns the Client used by the package-level Tracer func. It is
-// never nil: before SetDefault is called it silently discards traces.
+// never nil: before SetDefault is called, and after SetDefault(nil), it
+// silently discards traces.
 func Default() Client {
 	return *defaultClient.Load()
 }

@@ -315,3 +315,16 @@ func findMetric(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics 
 	}
 	return nil
 }
+
+func TestFacade_SetDefaultNilResets(t *testing.T) {
+	Convey("SetDefault(nil) restores the noop client", t, func() {
+		prev := Default()
+		t.Cleanup(func() { SetDefault(prev) })
+
+		SetDefault(nil)
+		So(Default(), ShouldNotBeNil)
+		So(Default(), ShouldHaveSameTypeAs, noopMetrics{})
+		So(Count(context.Background(), "requests", 1, nil), ShouldBeNil)
+		So(Histogram(context.Background(), "latency", 0.5, nil), ShouldBeNil)
+	})
+}

@@ -9,7 +9,9 @@ package-level functions delegate to the installed default.
 ## Features
 
 - **logs** — routes structured records to stdout/stderr by severity (debug/info
-  → stdout, warn/error → stderr), text or JSON format.
+  → stdout, warn/error → stderr), text or JSON format, and adds `trace_id` /
+  `span_id` from a valid span context. Writers are injectable through
+  `logs.Config`.
 - **metrics** — counters and histograms exported over OTLP gRPC, with
   exponential histogram buckets by default.
 - **tracer** — spans exported over OTLP gRPC, plus `Attrs` and `TraceIDFrom`
@@ -20,9 +22,9 @@ package-level functions delegate to the installed default.
   `trace_id` / `span_id` correlation keys, keep their spelling.
 - **Safe defaults** — before any `SetDefault`, logs write debug text to stderr
   and metrics/tracer are no-op implementations, so package-level calls are
-  always safe.
-- **Construction vs. globals** — `New` is a pure constructor with no global
-  side effects; installing/owning the lifecycle is the composition root's job.
+  always safe. `SetDefault(nil)` restores each signal's safe default.
+- **Construction vs. globals** — `New` is global-free; installing/owning the
+  lifecycle is the composition root's job.
 
 ## Installation
 
@@ -52,6 +54,9 @@ if err != nil { /* handle */ }
 logs.SetDefault(log)
 ```
 
+Pass `Config.Writer` and `Config.ErrorWriter` to send output to specific
+streams. `SetStreams` is deprecated and remains for tests and legacy callers.
+
 ### 3. Configure metrics
 
 ```go
@@ -76,7 +81,8 @@ otel.SetTracerProvider(tc.Provider()) // route otel.* + auto-instrumentation thr
 ### 5. Emit signals
 
 ```go
-// Logs — keys are normalized (user_id → user.id).
+// Logs — keys are normalized (user_id → user.id); a valid span context in ctx
+// adds trace_id and span_id automatically.
 logs.Info(ctx, "request", "method", "GET", "user_id", 42)
 logs.Error(ctx, "job failed", errs.SlogAttr(err))
 
@@ -107,6 +113,8 @@ defer tc.Stop(ctx)
 | `Format` | `"text"` | `"text"` or `"json"` |
 | `Level` | `"debug"` | Minimum severity |
 | `GlobalKV` | — | Fields attached to every record |
+| `Writer` | package stdout | Destination for debug/info records |
+| `ErrorWriter` | package stderr | Destination for warn/error records |
 
 ### metrics.Config
 

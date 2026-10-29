@@ -34,7 +34,8 @@
 //
 // # Packages
 //
-//   - logs: routes structured records to stdout/stderr by severity.
+//   - logs: routes structured records to stdout/stderr by severity and adds
+//     trace_id/span_id from a valid span context.
 //   - metrics: records counters and histograms over OTLP gRPC.
 //   - tracer: starts spans over OTLP gRPC. Registering the OTel global
 //     provider and propagator is the composition root's job (see tracer.New).
@@ -42,17 +43,19 @@
 //
 // # Construction vs. globals
 //
-// New is a pure constructor: it validates config and returns a fresh,
-// started client with no global side effects. SetDefault swaps that client
-// into the package default (an atomic store, lock-free for readers), and
-// Default returns the current default. The package-level funcs (logs.Info,
-// metrics.Count, tracer.Tracer, tracer.TraceIDFrom) delegate to Default, so
-// code that does not receive an injected client can call the same API.
+// New is a global-free constructor: it validates config and returns a fresh,
+// started client without mutating package defaults. SetDefault swaps that
+// client into the package default (an atomic store, lock-free for readers),
+// and Default returns the current default. The package-level funcs (logs.Info,
+// metrics.Count, tracer.Tracer) delegate to Default, so code that does not
+// receive an injected client can call the same API. tracer.TraceIDFrom is a
+// pure context helper and does not require a default client.
 //
 // Each package's default is populated at init with a safe fallback — logs
 // writes to a debug-level text logger on stderr, metrics and tracer are noop —
 // so Default never returns nil and the package funcs are safe to call
-// anywhere, before or after SetDefault.
+// anywhere, before or after SetDefault. SetDefault(nil) restores that safe
+// fallback.
 //
 // # Errors
 //
