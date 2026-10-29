@@ -6,10 +6,12 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jmoiron/sqlx"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -209,8 +211,14 @@ func (r *stubRows) Next(dest []driver.Value) error {
 }
 
 // setupTest installs a fresh stub DB plus a capturing tracer and metrics client,
-// and returns the instrumented DB alongside assertion handles.
+// and returns the instrumented DB alongside assertion handles. It runs against
+// the MySQL driver by default; see setupTestWithDriver for other dialects.
 func setupTest(t *testing.T, d *stubDB) (DB, *fakeMetrics, *recordingExporter) {
+	t.Helper()
+	return setupTestWithDriver(t, d, mysqlDriver, "mysql", "report_db")
+}
+
+func setupTestWithDriver(t *testing.T, d *stubDB, spec driverSpec, systemName, namespace string) (DB, *fakeMetrics, *recordingExporter) {
 	t.Helper()
 
 	testBackend.mu.Lock()
@@ -235,9 +243,11 @@ func setupTest(t *testing.T, d *stubDB) (DB, *fakeMetrics, *recordingExporter) {
 	fm := &fakeMetrics{}
 	metrics.SetDefault(fm)
 
-	return &dbConn{DB: sqlx.NewDb(sqlDB, "mysql"), meta: meta{
-		systemName: "mysql",
-		namespace:  "report_db",
+	return &dbConn{DB: sqlx.NewDb(sqlDB, spec.name), driver: spec, meta: meta{
+		systemName: systemName,
+		namespace:  namespace,
+		serverAddr: "db.example.com",
+		serverPort: spec.port,
 	}}, fm, ex
 }
 
@@ -281,6 +291,7 @@ func normalizeAttrs(attrs map[string]any) map[string]any {
 func TestConnect(t *testing.T) {
 	db, err := Connect(Config{
 		Driver:       "dbstub",
+		DSN:          "test",
 		Host:         "localhost",
 		Port:         3306,
 		Database:     "report_db",
@@ -298,22 +309,14 @@ func TestConnect(t *testing.T) {
 	if c.namespace != "report_db" {
 		t.Fatalf("namespace = %q, want report_db", c.namespace)
 	}
+	if c.serverAddr != "localhost" || c.serverPort != 3306 {
+		t.Fatalf("server = %s:%d, want localhost:3306", c.serverAddr, c.serverPort)
+	}
 	if got := c.DB.Stats().MaxOpenConnections; got != 5 {
 		t.Fatalf("MaxOpenConnections = %d, want 5", got)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
-	}
-}
-
-func TestBuildDSN(t *testing.T) {
-	got := buildDSN(Config{
-		Host: "db.example.com", Port: 3306, Database: "report_db",
-		Username: "user", Password: "p@ss",
-	})
-	want := "user:p@ss@tcp(db.example.com:3306)/report_db?parseTime=true"
-	if got != want {
-		t.Fatalf("buildDSN = %q, want %q", got, want)
 	}
 }
 
@@ -339,7 +342,7 @@ func TestConnect_InjectedClients(t *testing.T) {
 	t.Cleanup(func() { _ = injTp.Shutdown(context.Background()) })
 	injFm := &fakeMetrics{}
 
-	db, err := Connect(Config{Driver: "dbstub", Host: "localhost", Port: 3306, Database: "report_db", Username: "user"},
+	db, err := Connect(Config{Driver: "dbstub", DSN: "test", Host: "localhost", Port: 3306, Database: "report_db", Username: "user"},
 		WithMetrics(injFm), WithTracer(tracer.Wrap(injTp)))
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -404,6 +407,12 @@ func TestNamedExecContext_Success(t *testing.T) {
 	if count.attrs["db.namespace"] != "report_db" {
 		t.Fatalf("count db.namespace = %v, want report_db", count.attrs["db.namespace"])
 	}
+	if count.attrs["server.address"] != "db.example.com" {
+		t.Fatalf("count server.address = %v, want db.example.com", count.attrs["server.address"])
+	}
+	if count.attrs["server.port"] != 3306 {
+		t.Fatalf("count server.port = %v, want 3306", count.attrs["server.port"])
+	}
 	if count.attrs["db.query.text"] == "" {
 		t.Fatalf("db.query.text missing on count: %v", count.attrs)
 	}
@@ -445,6 +454,24 @@ func TestNamedExecContext_Success(t *testing.T) {
 	}
 }
 
+func TestNamedExecContext_StructArg(t *testing.T) {
+	dbx, _, _ := setupTest(t, &stubDB{})
+
+	if _, err := dbx.NamedExecContext(context.Background(),
+		"INSERT INTO t (id, name) VALUES (:id, :name)",
+		report{ID: 3, Name: "c"}); err != nil {
+		t.Fatalf("NamedExecContext: %v", err)
+	}
+
+	q := recordedQuery(t)
+	if q.query != "INSERT INTO t (id, name) VALUES (?, ?)" {
+		t.Fatalf("query = %q, want struct binding", q.query)
+	}
+	if len(q.args) != 2 || q.args[0] != int64(3) || q.args[1] != "c" {
+		t.Fatalf("args = %v, want [3 c]", q.args)
+	}
+}
+
 func TestNamedExecContext_MySQLError(t *testing.T) {
 	dbx, fm, ex := setupTest(t, &stubDB{})
 	stubExecErr(t, &mysql.MySQLError{Number: 1066, Message: "duplicate entry"})
@@ -480,19 +507,6 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 	}
 	if attrs["db.response.status.code"] != "1066" {
 		t.Fatalf("span status_code = %v, want 1066", attrs["db.response.status.code"])
-	}
-}
-
-func TestMySQLErrorCode(t *testing.T) {
-	if got := mysqlErrorCode(&mysql.MySQLError{Number: 1062}); got != "1062" {
-		t.Fatalf("mysqlErrorCode = %q, want 1062", got)
-	}
-	if got := mysqlErrorCode(errors.New("boom")); got != "" {
-		t.Fatalf("mysqlErrorCode(plain) = %q, want empty", got)
-	}
-	wrapped := &mysql.MySQLError{Number: 1452}
-	if got := mysqlErrorCode(errors.Join(errors.New("x"), wrapped)); got != "1452" {
-		t.Fatalf("mysqlErrorCode(wrapped) = %q, want 1452", got)
 	}
 }
 
@@ -655,22 +669,209 @@ func TestOperationName(t *testing.T) {
 	}
 }
 
-func TestSemconvSystemName(t *testing.T) {
-	cases := map[string]string{
-		"mysql":    "mysql",
-		"postgres": "postgresql",
-		"pgx":      "postgresql",
-		"sqlite3":  "sqlite",
-		"unknown":  "unknown",
-	}
-	for in, want := range cases {
-		if got := semconvSystemName(in); got != want {
-			t.Errorf("semconvSystemName(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 type report struct {
 	ID   int64  `db:"id"`
 	Name string `db:"name"`
+}
+
+// --- PostgreSQL execution paths -------------------------------------------
+
+func TestPostgresNamedBind(t *testing.T) {
+	dbx, _, _ := setupTestWithDriver(t, &stubDB{
+		cols: []string{"id", "name"},
+		rows: [][]driver.Value{{int64(1), "a"}},
+	}, postgresDriver, "postgresql", "report_db")
+
+	var items []report
+	if err := dbx.NamedSelectContext(context.Background(), &items,
+		"SELECT id, name FROM t WHERE id = :id", map[string]any{"id": int64(1)}); err != nil {
+		t.Fatalf("NamedSelectContext: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != 1 {
+		t.Fatalf("items = %+v", items)
+	}
+
+	q := recordedQuery(t)
+	if q.query != "SELECT id, name FROM t WHERE id = $1" {
+		t.Fatalf("query = %q, want $1 placeholder", q.query)
+	}
+	if len(q.args) != 1 || q.args[0] != int64(1) {
+		t.Fatalf("args = %v, want [1]", q.args)
+	}
+}
+
+func TestPostgresINExpansion(t *testing.T) {
+	dbx, _, _ := setupTestWithDriver(t, &stubDB{
+		cols: []string{"id", "name"},
+		rows: [][]driver.Value{{int64(1), "a"}, {int64(2), "b"}, {int64(3), "c"}},
+	}, postgresDriver, "postgresql", "report_db")
+
+	var items []report
+	if err := dbx.NamedSelectContext(context.Background(), &items,
+		"SELECT id, name FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64{1, 2, 3}}); err != nil {
+		t.Fatalf("NamedSelectContext: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %+v", items)
+	}
+
+	q := recordedQuery(t)
+	if q.query != "SELECT id, name FROM t WHERE id IN ($1, $2, $3)" {
+		t.Fatalf("query = %q, want numbered IN placeholders", q.query)
+	}
+	if len(q.args) != 3 || q.args[0] != int64(1) || q.args[2] != int64(3) {
+		t.Fatalf("args = %v, want [1 2 3]", q.args)
+	}
+}
+
+func TestPostgresLiteralQuestionMarks(t *testing.T) {
+	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+
+	_, err := dbx.NamedExecContext(context.Background(),
+		"UPDATE t SET note = :note, body = $$?$$ WHERE note = 'why?'", map[string]any{"note": "a"})
+	if err != nil {
+		t.Fatalf("NamedExecContext: %v", err)
+	}
+
+	q := recordedQuery(t)
+	want := "UPDATE t SET note = $1, body = $$?$$ WHERE note = 'why?'"
+	if q.query != want {
+		t.Fatalf("query = %q, want %q", q.query, want)
+	}
+}
+
+func TestPostgresCommentsAndEscapeStrings(t *testing.T) {
+	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+
+	query := `UPDATE t SET note = :note WHERE body = E'it\'s ?' -- really?` + "\n"
+	if _, err := dbx.NamedExecContext(context.Background(), query, map[string]any{"note": "a"}); err != nil {
+		t.Fatalf("NamedExecContext: %v", err)
+	}
+
+	q := recordedQuery(t)
+	want := `UPDATE t SET note = $1 WHERE body = E'it\'s ?' -- really?` + "\n"
+	if q.query != want {
+		t.Fatalf("query = %q, want %q", q.query, want)
+	}
+}
+
+func TestPostgresCasts(t *testing.T) {
+	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+
+	if _, err := dbx.NamedExecContext(context.Background(),
+		"UPDATE t SET ts = :ts::timestamptz, id = (:id)::bigint WHERE id = :id",
+		map[string]any{"ts": "2024-01-01", "id": int64(7)}); err != nil {
+		t.Fatalf("NamedExecContext: %v", err)
+	}
+
+	q := recordedQuery(t)
+	want := "UPDATE t SET ts = $1::timestamptz, id = ($2)::bigint WHERE id = $3"
+	if q.query != want {
+		t.Fatalf("query = %q, want %q", q.query, want)
+	}
+	if len(q.args) != 3 {
+		t.Fatalf("args = %v, want 3 args", q.args)
+	}
+}
+
+func TestPostgresErrorTelemetry(t *testing.T) {
+	dbx, fm, ex := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+	stubExecErr(t, &pgconn.PgError{
+		Code:    "23505",
+		Message: "duplicate key value violates unique constraint",
+	})
+
+	_, err := dbx.NamedExecContext(context.Background(),
+		"INSERT INTO t (id) VALUES (:id)", map[string]any{"id": int64(1)})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	count, ok := fm.lastCount()
+	if !ok {
+		t.Fatal("no count recorded")
+	}
+	if count.attrs["db.system.name"] != "postgresql" {
+		t.Fatalf("db.system.name = %v, want postgresql", count.attrs["db.system.name"])
+	}
+	if count.attrs["db.response.status.code"] != "23505" {
+		t.Fatalf("status_code = %v, want 23505", count.attrs["db.response.status.code"])
+	}
+	if count.attrs["error.type"] != "duplicate key value violates unique constraint" {
+		t.Fatalf("error.type = %v", count.attrs["error.type"])
+	}
+
+	sp, ok := ex.last()
+	if !ok {
+		t.Fatal("no span recorded")
+	}
+	if sp.Status().Code != codes.Error {
+		t.Fatalf("status = %v, want error", sp.Status().Code)
+	}
+	if got := spanAttrs(sp)["db.response.status.code"]; got != "23505" {
+		t.Fatalf("span status_code = %v, want 23505", got)
+	}
+}
+
+func TestPostgresTransaction(t *testing.T) {
+	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+
+	tx, err := dbx.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := tx.NamedExecContext(context.Background(),
+		"DELETE FROM t WHERE id = :id", map[string]any{"id": int64(1)}); err != nil {
+		t.Fatalf("tx exec: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	q := recordedQuery(t)
+	if q.query != "DELETE FROM t WHERE id = $1" {
+		t.Fatalf("query = %q, want $1 placeholder", q.query)
+	}
+}
+
+func TestMySQLINExpansionWithLiteralQuestionMark(t *testing.T) {
+	dbx, _, _ := setupTest(t, &stubDB{
+		cols: []string{"id", "name"},
+		rows: [][]driver.Value{{int64(1), "a"}, {int64(2), "b"}},
+	})
+
+	var items []report
+	if err := dbx.NamedSelectContext(context.Background(), &items,
+		"SELECT id, name FROM t WHERE note = 'why?' AND id IN (:ids)",
+		map[string]any{"ids": []int64{1, 2}}); err != nil {
+		t.Fatalf("NamedSelectContext: %v", err)
+	}
+
+	q := recordedQuery(t)
+	want := "SELECT id, name FROM t WHERE note = 'why?' AND id IN (?, ?)"
+	if q.query != want {
+		t.Fatalf("query = %q, want %q", q.query, want)
+	}
+	if len(q.args) != 2 {
+		t.Fatalf("args = %v, want 2", q.args)
+	}
+}
+
+func TestINExpansionErrors(t *testing.T) {
+	dbx, fm, ex := setupTest(t, &stubDB{})
+
+	_, err := dbx.NamedExecContext(context.Background(),
+		"DELETE FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64{}})
+	if err == nil || !strings.Contains(err.Error(), "empty slice") {
+		t.Fatalf("error = %v, want empty slice error", err)
+	}
+	if got := numRecordedQueries(t); got != 0 {
+		t.Fatalf("executed %d queries on bind failure, want 0", got)
+	}
+	if n := ex.count(); n != 0 {
+		t.Fatalf("spans = %d, want 0", n)
+	}
+	if nc, nh := fm.nums(); nc != 0 || nh != 0 {
+		t.Fatalf("metrics = %d/%d, want 0/0", nc, nh)
+	}
 }
