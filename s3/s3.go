@@ -50,6 +50,19 @@ const (
 	metricDuration = "s3.client.operation.duration"
 )
 
+var (
+	metricCountInstrument = metrics.Instrument{
+		Name:        metricCount,
+		Unit:        "{operation}",
+		Description: "S3 client operations",
+	}
+	metricDurationInstrument = metrics.Instrument{
+		Name:        metricDuration,
+		Unit:        "s",
+		Description: "S3 client operation duration",
+	}
+)
+
 // IsNotFound returns true if err represents an S3 404/NotFound or NoSuchKey/NoSuchBucket error.
 func IsNotFound(err error) bool {
 	if err == nil {
@@ -444,11 +457,11 @@ func (m meta) tracerClient() trace.Tracer {
 func (m meta) recordMetrics(ctx context.Context, op, bucket, etype string, duration time.Duration) {
 	attrs := m.attrs(op, bucket, etype)
 	if m.metrics != nil {
-		_ = m.metrics.Count(ctx, metricCount, 1, attrs)
-		_ = m.metrics.Histogram(ctx, metricDuration, duration.Seconds(), attrs)
+		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = m.metrics.Record(ctx, metricDurationInstrument, duration.Seconds(), attrs)
 	} else {
-		_ = metrics.Count(ctx, metricCount, 1, attrs)
-		_ = metrics.Histogram(ctx, metricDuration, duration.Seconds(), attrs)
+		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = metrics.Record(ctx, metricDurationInstrument, duration.Seconds(), attrs)
 	}
 }
 

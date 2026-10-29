@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jmoiron/sqlx"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
@@ -36,19 +37,29 @@ type fakeMetrics struct {
 	hists  []metricRec
 }
 
-func (f *fakeMetrics) Count(_ context.Context, name string, value int64, attrs map[string]any) error {
+func (f *fakeMetrics) Add(_ context.Context, instrument metrics.Instrument, value int64, attrs map[string]any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.counts = append(f.counts, metricRec{name, float64(value), normalizeAttrs(attrs)})
+	f.counts = append(f.counts, metricRec{instrument.Name, float64(value), normalizeAttrs(attrs)})
 	return nil
 }
 
-func (f *fakeMetrics) Histogram(_ context.Context, name string, value float64, attrs map[string]any) error {
+func (f *fakeMetrics) Record(_ context.Context, instrument metrics.Instrument, value float64, attrs map[string]any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.hists = append(f.hists, metricRec{name, value, normalizeAttrs(attrs)})
+	f.hists = append(f.hists, metricRec{instrument.Name, value, normalizeAttrs(attrs)})
 	return nil
 }
+
+func (f *fakeMetrics) AddUpDown(context.Context, metrics.Instrument, int64, map[string]any) error {
+	return nil
+}
+
+func (f *fakeMetrics) RecordGauge(context.Context, metrics.Instrument, float64, map[string]any) error {
+	return nil
+}
+
+func (f *fakeMetrics) Provider() metric.MeterProvider { return nil }
 
 func (f *fakeMetrics) Stop(context.Context) error { return nil }
 

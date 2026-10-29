@@ -15,14 +15,9 @@ import (
 
 	"github.com/fikrimohammad/go-dev-sdk/apiserver"
 	"github.com/fikrimohammad/go-dev-sdk/cron"
+	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
-
-type noopMetrics struct{}
-
-func (noopMetrics) Count(context.Context, string, int64, map[string]any) error       { return nil }
-func (noopMetrics) Histogram(context.Context, string, float64, map[string]any) error { return nil }
-func (noopMetrics) Stop(context.Context) error                                       { return nil }
 
 type mockJobRunner struct {
 	jobs        map[string]cron.JobInfo
@@ -243,7 +238,7 @@ func TestServer_NewConstructor(t *testing.T) {
 	provider := sdktrace.NewTracerProvider()
 	defer func() { _ = provider.Shutdown(context.Background()) }()
 	tc := tracer.Wrap(provider)
-	mc := noopMetrics{}
+	mc := metrics.Noop()
 
 	// nil runner
 	if _, err := New(Config{}, nil, mc, tc); err == nil {

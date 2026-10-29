@@ -41,12 +41,12 @@ If a convention defines a span name, attribute, metric name, unit, instrument ty
 ## Metrics
 
 - Use the standard metric name, instrument type, unit, and attributes when a convention defines them. If no standard metric exists, define a custom metric under the application or system namespace, not under an existing semantic convention namespace.
-- `observability/metrics.Count` is a monotonic Counter. Do not use it for values that can decrease.
-- `observability/metrics.Histogram` is a distribution. Do not use it for a current gauge-like value such as pool size, active connections, or queue depth. If a gauge or UpDownCounter is needed, extend the metrics API first; do not simulate one with Count or Histogram.
+- `observability/metrics.Add` is a monotonic Counter. Do not use it for values that can decrease.
+- `observability/metrics.Record` is a distribution. Do not use it for a current gauge-like value such as pool size, active connections, or queue depth; use `observability/metrics.RecordGauge` for instantaneous values and `observability/metrics.AddUpDown` for values that increase and decrease. Do not simulate gauges or up-down counters with counters or histograms.
 - Follow UCUM units: durations in seconds (`s`), utilization as the dimensionless `1`, and counts with singular annotations such as `{request}` or `{message}`. Do not repeat the unit in the metric name.
 - Use hierarchical, dot-separated namespaces. Keep common attributes consistently named, and make aggregations over attributes meaningful.
 - Metric attributes must be low-cardinality and stable. Do not record request IDs, user IDs, session IDs, URLs, query text, timestamps, or other unbounded values as metric attributes by default. Opt-in attributes require an explicit configuration switch, sanitization, and size limits; without that switch they must stay on spans.
-- If an UpDownCounter is added, increments and decrements must use the same attribute values so they land on the same timeseries.
+- If an UpDownCounter is added through `observability/metrics.AddUpDown`, increments and decrements must use the same attribute values so they land on the same timeseries.
 
 ## Names
 

@@ -186,6 +186,28 @@ func Tracer(tc tracer.Client) app.HandlerFunc {
 	}
 }
 
+// HTTP server metric names.
+const (
+	metricHTTPRequestCount    = "http.server.request.count"
+	metricHTTPRequestDuration = "http.server.request.duration"
+)
+
+// HTTP server metric instruments. They are package-level so every call site
+// uses exactly the same name, unit, and description, and so tests can assert
+// the emitted metadata.
+var (
+	metricHTTPRequestCountInstrument = metrics.Instrument{
+		Name:        metricHTTPRequestCount,
+		Unit:        "{request}",
+		Description: "HTTP server requests",
+	}
+	metricHTTPRequestDurationInstrument = metrics.Instrument{
+		Name:        metricHTTPRequestDuration,
+		Unit:        "s",
+		Description: "HTTP server request duration",
+	}
+)
+
 // Metrics returns a middleware that records request count and latency
 // using the provided metrics.Client. Attributes follow OTel HTTP semantic conventions.
 //
@@ -207,8 +229,8 @@ func Metrics(mc metrics.Client) app.HandlerFunc {
 			}
 		}
 
-		_ = mc.Count(ctx, "http.server.request.count", 1, attrs)
-		_ = mc.Histogram(ctx, "http.server.request.duration", time.Since(start).Seconds(), attrs)
+		_ = mc.Add(ctx, metricHTTPRequestCountInstrument, 1, attrs)
+		_ = mc.Record(ctx, metricHTTPRequestDurationInstrument, time.Since(start).Seconds(), attrs)
 	}
 }
 

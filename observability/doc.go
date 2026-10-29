@@ -29,14 +29,15 @@
 //
 //	// Package-level funcs delegate to the installed default:
 //	logs.Info(ctx, "hello", "user_id", 42)
-//	metrics.Histogram(ctx, "http.server.request.duration", 0.05, attrs)
+//	metrics.Record(ctx, metrics.Instrument{Name: "http.server.request.duration", Unit: "s"}, 0.05, attrs)
 //	tc.Tracer("svc").Start(ctx, "operation")
 //
 // # Packages
 //
 //   - logs: routes structured records to stdout/stderr by severity and adds
 //     trace_id/span_id from a valid span context.
-//   - metrics: records counters and histograms over OTLP gRPC.
+//   - metrics: records counters, histograms, up-down counters, and gauges over
+//     OTLP gRPC with instrument units, descriptions, and a stable scope.
 //   - tracer: starts spans over OTLP gRPC. Registering the OTel global
 //     provider and propagator is the composition root's job (see tracer.New).
 //   - attributes: shared key normalization and resource-attribute helpers.
@@ -47,7 +48,7 @@
 // started client without mutating package defaults. SetDefault swaps that
 // client into the package default (an atomic store, lock-free for readers),
 // and Default returns the current default. The package-level funcs (logs.Info,
-// metrics.Count, tracer.Tracer) delegate to Default, so code that does not
+// metrics.Add, metrics.Record, tracer.Tracer) delegate to Default, so code that does not
 // receive an injected client can call the same API. tracer.TraceIDFrom is a
 // pure context helper and does not require a default client.
 //
@@ -59,10 +60,10 @@
 //
 // # Errors
 //
-// The package-level metrics funcs (Count, Histogram, Stop) return error and
-// delegate to the installed client, mirroring the metrics.Client interface;
-// callers should treat their result as a real error. logs.Logger methods and
-// the logs package funcs return nothing, matching the Logger interface.
+// The package-level metrics funcs (Add, Record, AddUpDown, RecordGauge, Stop)
+// return error and delegate to the installed metrics.Client; callers should
+// treat their result as a real error. logs.Logger methods and the logs package
+// funcs return nothing, matching the Logger interface.
 //
 // # Lifecycle
 //
@@ -70,8 +71,7 @@
 // metrics and tracer clients are idempotent under Stop, and the composition
 // root (e.g. app resource.Close) stops the concrete clients it built. The
 // metrics.Client and tracer.Client interfaces are the injected-client
-// contracts used by middleware; tracer.New returns a tracer.Client that also
-// exposes Stop and Provider.
+// contracts used by middleware; both expose Stop and Provider.
 //
 // The appinfo.Info identity is attached to every signal as the OTel semantic
 // convention resource attributes service.name, service.version, and

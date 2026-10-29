@@ -66,7 +66,7 @@
 // instrumented.
 //
 // Tracing and metrics use the package-level defaults of the observability
-// packages ([tracer.Tracer], [metrics.Count], and [metrics.Histogram]) unless
+// packages ([tracer.Tracer], [metrics.Add], and [metrics.Record]) unless
 // overridden with [WithMetrics] or [WithTracer].
 package db
 
@@ -93,6 +93,19 @@ const (
 	// metricCount and metricDuration are the OTel metric names emitted per executed statement.
 	metricCount    = "db.client.operation.count"
 	metricDuration = "db.client.operation.duration"
+)
+
+var (
+	metricCountInstrument = metrics.Instrument{
+		Name:        metricCount,
+		Unit:        "{operation}",
+		Description: "Database client operations",
+	}
+	metricDurationInstrument = metrics.Instrument{
+		Name:        metricDuration,
+		Unit:        "s",
+		Description: "Database client operation duration",
+	}
 )
 
 // sqlOpRE matches the leading SQL verb used for the db.operation.name
@@ -334,11 +347,11 @@ func (m meta) instrument(ctx context.Context, op, query string, fn func(context.
 	span.End()
 
 	if m.metrics != nil {
-		_ = m.metrics.Count(ctx, metricCount, 1, attrs)
-		_ = m.metrics.Histogram(ctx, metricDuration, time.Since(start).Seconds(), attrs)
+		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = m.metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 	} else {
-		_ = metrics.Count(ctx, metricCount, 1, attrs)
-		_ = metrics.Histogram(ctx, metricDuration, time.Since(start).Seconds(), attrs)
+		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
+		_ = metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 	}
 	return err
 }
