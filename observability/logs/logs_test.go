@@ -3,12 +3,17 @@ package logs
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bytedance/mockey"
 	. "github.com/smartystreets/goconvey/convey"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/appinfo"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
@@ -305,5 +310,131 @@ func TestLogger_OmitEmptyIdentity(t *testing.T) {
 			So(text, ShouldNotContainSubstring, "service.version")
 			So(text, ShouldNotContainSubstring, "deployment.environment")
 		})
+	})
+}
+
+func TestLogger_ConfiguredWriters(t *testing.T) {
+	Convey("configured writers receive records by severity", t, func() {
+		var outBuf, errBuf bytes.Buffer
+		l := mustLogger(testInfo(), Config{Writer: &outBuf, ErrorWriter: &errBuf})
+
+		l.Info(context.Background(), "info_msg")
+		l.Warn(context.Background(), "warn_msg")
+		l.Error(context.Background(), "error_msg")
+
+		So(outBuf.String(), ShouldContainSubstring, "info_msg")
+		So(outBuf.String(), ShouldNotContainSubstring, "warn_msg")
+		So(errBuf.String(), ShouldContainSubstring, "warn_msg")
+		So(errBuf.String(), ShouldContainSubstring, "error_msg")
+	})
+}
+
+func TestLogger_TraceCorrelation(t *testing.T) {
+	Convey("records with a span context carry trace_id and span_id", t, func() {
+		var outBuf bytes.Buffer
+		l := mustLogger(testInfo(), Config{Format: FormatJSON, Writer: &outBuf, ErrorWriter: io.Discard})
+
+		provider := sdktrace.NewTracerProvider()
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+		defer span.End()
+
+		l.Info(ctx, "correlated")
+
+		var record map[string]any
+		So(json.Unmarshal(bytes.TrimSpace(outBuf.Bytes()), &record), ShouldBeNil)
+		So(record["trace_id"], ShouldEqual, span.SpanContext().TraceID().String())
+		So(record["span_id"], ShouldEqual, span.SpanContext().SpanID().String())
+	})
+
+	Convey("records without a span context omit correlation keys", t, func() {
+		var outBuf bytes.Buffer
+		l := mustLogger(testInfo(), Config{Format: FormatJSON, Writer: &outBuf, ErrorWriter: io.Discard})
+
+		l.Info(context.Background(), "uncorrelated")
+
+		var record map[string]any
+		So(json.Unmarshal(bytes.TrimSpace(outBuf.Bytes()), &record), ShouldBeNil)
+		_, hasTraceID := record["trace_id"]
+		_, hasSpanID := record["span_id"]
+		So(hasTraceID, ShouldBeFalse)
+		So(hasSpanID, ShouldBeFalse)
+	})
+}
+
+func TestLogger_ExplicitCorrelationWins(t *testing.T) {
+	Convey("explicit trace_id and span_id values are not duplicated", t, func() {
+		var outBuf bytes.Buffer
+		l := mustLogger(testInfo(), Config{Writer: &outBuf, ErrorWriter: io.Discard})
+
+		provider := sdktrace.NewTracerProvider()
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+		defer span.End()
+
+		l.Info(ctx, "explicit", "trace_id", "manual-trace", "span_id", "manual-span")
+
+		text := outBuf.String()
+		So(strings.Count(text, "trace_id="), ShouldEqual, 1)
+		So(strings.Count(text, "span_id="), ShouldEqual, 1)
+		So(text, ShouldContainSubstring, "trace_id=manual-trace")
+		So(text, ShouldContainSubstring, "span_id=manual-span")
+	})
+}
+
+func TestLogger_Concurrent(t *testing.T) {
+	l := mustLogger(testInfo(), Config{Writer: io.Discard, ErrorWriter: io.Discard})
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			l.Info(context.Background(), "info", "user_id", "u1")
+			l.Error(context.Background(), "error", "order_id", "o1")
+		})
+	}
+	wg.Wait()
+}
+
+func TestFacade_SetDefaultNilResets(t *testing.T) {
+	Convey("SetDefault(nil) restores the default logger", t, func() {
+		prev := Default()
+		t.Cleanup(func() { SetDefault(prev) })
+
+		SetDefault(nil)
+		So(Default(), ShouldNotBeNil)
+
+		var errBuf bytes.Buffer
+		mockey.PatchConvey("redirect stderr", func() {
+			mockey.MockValue(&stderr).To(&errBuf)
+			Debug(context.Background(), "after_nil")
+			So(errBuf.String(), ShouldContainSubstring, "after_nil")
+		})
+	})
+}
+
+func TestLogger_GlobalCorrelationWins(t *testing.T) {
+	Convey("GlobalKV correlation values win over span context values", t, func() {
+		var outBuf bytes.Buffer
+		l := mustLogger(testInfo(), Config{
+			Format:      FormatJSON,
+			GlobalKV:    map[string]any{"trace_id": "fixed-trace"},
+			Writer:      &outBuf,
+			ErrorWriter: io.Discard,
+		})
+
+		provider := sdktrace.NewTracerProvider()
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+		defer span.End()
+
+		l.Info(ctx, "global_correlation")
+
+		text := outBuf.String()
+		So(strings.Count(text, `"trace_id"`), ShouldEqual, 1)
+
+		var record map[string]any
+		So(json.Unmarshal(bytes.TrimSpace(outBuf.Bytes()), &record), ShouldBeNil)
+		So(record["trace_id"], ShouldEqual, "fixed-trace")
+		So(record["span_id"], ShouldEqual, span.SpanContext().SpanID().String())
 	})
 }

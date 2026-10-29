@@ -211,3 +211,13 @@ func TestFacade_StopDelegates(t *testing.T) {
 		So(errors.Is(Stop(context.Background()), boom), ShouldBeTrue)
 	})
 }
+
+func TestWrap_NilProvider(t *testing.T) {
+	Convey("Wrap(nil) returns a noop-backed client", t, func() {
+		c := Wrap(nil)
+		So(c, ShouldNotBeNil)
+		_, span := c.Tracer("scope").Start(context.Background(), "op")
+		So(span.SpanContext().IsValid(), ShouldBeFalse)
+		span.End()
+	})
+}
