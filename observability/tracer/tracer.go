@@ -18,7 +18,7 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
@@ -91,14 +91,14 @@ func spanIDFrom(ctx context.Context) string {
 // The exporter pushes traces to the collector in batches. Call Stop on the
 // returned Client when the application exits to flush pending traces.
 //
-// The appinfo.Info identity and Config.GlobalKV are attached to every exported
-// span as OTel resource attributes. Config.Sampler and the batch settings
-// control sampling and export behavior. New returns an error if info has no
-// service name, cfg is invalid, or the exporter cannot be created.
+// The service identity held in identity.Info and Config.GlobalKV are attached
+// to every exported span as OTel resource attributes. Config.Sampler and the
+// batch settings control sampling and export behavior. New returns an error if
+// info has no service name, cfg is invalid, or the exporter cannot be created.
 //
 // New does not touch the OTel global registry. Call [SetGlobal] at the
 // composition root to install both the provider and the W3C propagator.
-func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
+func New(ctx context.Context, info identity.Info, cfg Config) (Client, error) {
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("tracer: %w", err)
 	}
@@ -130,7 +130,7 @@ func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
 
 // newClientWithExporter builds the provider and client around exporter. It is
 // separate from New so tests can supply a fake exporter.
-func newClientWithExporter(ctx context.Context, info appinfo.Info, cfg Config, exporter sdktrace.SpanExporter) (Client, error) {
+func newClientWithExporter(ctx context.Context, info identity.Info, cfg Config, exporter sdktrace.SpanExporter) (Client, error) {
 	provider, err := newProvider(ctx, info, cfg, exporter)
 	if err != nil {
 		_ = exporter.Shutdown(context.Background())
@@ -141,7 +141,7 @@ func newClientWithExporter(ctx context.Context, info appinfo.Info, cfg Config, e
 
 // newProvider builds a tracer provider with the configured resource, sampler,
 // and batch processor.
-func newProvider(ctx context.Context, info appinfo.Info, cfg Config, exporter sdktrace.SpanExporter) (*sdktrace.TracerProvider, error) {
+func newProvider(ctx context.Context, info identity.Info, cfg Config, exporter sdktrace.SpanExporter) (*sdktrace.TracerProvider, error) {
 	res, err := resource.New(ctx, resource.WithAttributes(
 		attributes.ConvertMapsToKVs(cfg.GlobalKV, attributes.ConvertAppInfoToMap(info))...,
 	))

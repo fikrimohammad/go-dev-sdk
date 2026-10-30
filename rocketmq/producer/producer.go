@@ -15,7 +15,7 @@ import (
 	"github.com/apache/rocketmq-client-go/v2/producer"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
@@ -94,11 +94,12 @@ type Producer struct {
 var _ Client = (*Producer)(nil)
 
 // New returns an empty, ready-to-use Producer. The service identity is taken
-// from info (its Name seeds the producer group names). Metrics and tracing use
-// the package-level defaults unless overridden via WithMetrics/WithTracer.
-func New(info appinfo.Info, opts ...Option) (*Producer, error) {
-	if info.Name == "" {
-		return nil, errors.New("appinfo name is empty")
+// from info (its Name seeds the producer group names). A missing service name
+// is rejected with identity.ErrName. Metrics and tracing use the package-level
+// defaults unless overridden via WithMetrics/WithTracer.
+func New(info identity.Info, opts ...Option) (*Producer, error) {
+	if err := info.Validate(); err != nil {
+		return nil, fmt.Errorf("producer: %w", err)
 	}
 
 	var o options

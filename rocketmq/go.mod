@@ -4,8 +4,8 @@ go 1.26.5
 
 require (
 	github.com/apache/rocketmq-client-go/v2 v2.1.3-0.20260112025018-99c433634e09
-	github.com/fikrimohammad/go-dev-sdk/appinfo v1.0.0
 	github.com/fikrimohammad/go-dev-sdk/errs/v2 v2.0.0
+	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0
 	github.com/fikrimohammad/go-dev-sdk/observability v1.0.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/metric v1.45.0
@@ -55,7 +55,7 @@ require (
 	stathat.com/c/consistent v1.0.0 // indirect
 )
 
-replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
+replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
 
 replace github.com/fikrimohammad/go-dev-sdk/errs/v2 => ../errs
 

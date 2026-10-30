@@ -14,12 +14,12 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
-func testInfo() appinfo.Info {
-	return appinfo.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
+func testInfo() identity.Info {
+	return identity.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
 }
 
 // fakeMetrics implements Client for facade tests.
@@ -324,9 +324,9 @@ func TestWrap(t *testing.T) {
 
 func TestNewMeterProvider_Resource(t *testing.T) {
 	Convey("newMeterProvider attaches identity and honors scope", t, func() {
-		cfg := Config{Scope: "custom.scope", GlobalKV: map[string]any{"deployment.environment": "staging"}}
+		cfg := Config{Scope: "custom.scope", GlobalKV: map[string]any{"deployment.environment.name": "staging"}}
 		cfg.setDefaults()
-		info := appinfo.Info{Name: "testapp", Version: "1.0.0"}
+		info := identity.Info{Name: "testapp", Version: "1.0.0", Environment: "production"}
 
 		reader := sdkmetric.NewManualReader()
 		provider, err := newMeterProvider(context.Background(), info, cfg, reader)
@@ -344,7 +344,7 @@ func TestNewMeterProvider_Resource(t *testing.T) {
 		}
 		So(attrs["service.name"], ShouldEqual, "testapp")
 		So(attrs["service.version"], ShouldEqual, "1.0.0")
-		So(attrs["deployment.environment"], ShouldEqual, "staging")
+		So(attrs["deployment.environment.name"], ShouldEqual, "production")
 		So(rm.ScopeMetrics[0].Scope.Name, ShouldEqual, "custom.scope")
 	})
 }
@@ -428,7 +428,7 @@ func TestNoopMetrics(t *testing.T) {
 
 func TestNew_Validation(t *testing.T) {
 	Convey("New rejects an empty app name", t, func() {
-		_, err := New(context.Background(), appinfo.Info{}, Config{})
+		_, err := New(context.Background(), identity.Info{}, Config{})
 		So(errors.Is(err, attributes.ErrMissingServiceName), ShouldBeTrue)
 	})
 

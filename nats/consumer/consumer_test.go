@@ -8,7 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 )
 
 func TestNew(t *testing.T) {
@@ -32,7 +32,7 @@ func TestNew(t *testing.T) {
 		{
 			name:    "whitespace app name",
 			appName: "  ",
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name:    "app name with dots",
@@ -44,13 +44,16 @@ func TestNew(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			c, err := New(appinfo.Info{Name: tt.appName})
+			c, err := New(identity.Info{Name: tt.appName})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if tt.appName == "test.app" && !errors.Is(err, ErrInvalidAppName) {
 				t.Errorf("New() error = %v, want %v", err, ErrInvalidAppName)
+			}
+			if (tt.appName == "" || tt.appName == "  ") && !errors.Is(err, identity.ErrName) {
+				t.Errorf("New() error = %v, want %v", err, identity.ErrName)
 			}
 			if !tt.wantErr && c == nil {
 				t.Error("New() returned nil consumer without error")

@@ -16,12 +16,12 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
-func testInfo() appinfo.Info {
-	return appinfo.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
+func testInfo() identity.Info {
+	return identity.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
 }
 
 // fakeClient builds a *client backed by a noop provider and a configurable
@@ -135,7 +135,7 @@ func TestTracer_Attrs(t *testing.T) {
 
 func TestNew_Validation(t *testing.T) {
 	Convey("New rejects an empty service name", t, func() {
-		_, err := New(context.Background(), appinfo.Info{}, Config{})
+		_, err := New(context.Background(), identity.Info{}, Config{})
 		So(errors.Is(err, attributes.ErrMissingServiceName), ShouldBeTrue)
 	})
 
@@ -268,10 +268,10 @@ func (f *fakeSpanExporter) snapshot() []sdktrace.ReadOnlySpan {
 
 func TestNewClientWithExporter_Resource(t *testing.T) {
 	Convey("builds a provider with resource identity, scope, and exporter shutdown", t, func() {
-		cfg := Config{GlobalKV: map[string]any{"deployment.environment": "staging"}}
+		cfg := Config{GlobalKV: map[string]any{"deployment.environment.name": "staging"}}
 		cfg.setDefaults()
 		exporter := &fakeSpanExporter{}
-		info := appinfo.Info{Name: "svc", Version: "1.0.0"}
+		info := identity.Info{Name: "svc", Version: "1.0.0", Environment: "production"}
 
 		c, err := newClientWithExporter(context.Background(), info, cfg, exporter)
 		So(err, ShouldBeNil)
@@ -293,7 +293,7 @@ func TestNewClientWithExporter_Resource(t *testing.T) {
 		}
 		So(attrs["service.name"], ShouldEqual, "svc")
 		So(attrs["service.version"], ShouldEqual, "1.0.0")
-		So(attrs["deployment.environment"], ShouldEqual, "staging")
+		So(attrs["deployment.environment.name"], ShouldEqual, "production")
 
 		So(c.Stop(ctx), ShouldBeNil)
 		So(exporter.shutdown.Load(), ShouldEqual, 1)

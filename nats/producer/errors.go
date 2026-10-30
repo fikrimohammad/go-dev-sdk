@@ -14,5 +14,5 @@ var (
 	ErrTopicRequired     = errors.New("producer: topic is required")
 	ErrInvalidTopic      = errors.New("producer: topic must not contain dots")
 	ErrInvalidTag        = errors.New("producer: tag must not contain dots")
-	ErrInvalidAppName    = errors.New("producer: appinfo name must not contain dots")
+	ErrInvalidAppName    = errors.New("producer: service name must not contain dots")
 )

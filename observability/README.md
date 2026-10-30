@@ -21,8 +21,9 @@ package-level functions delegate to the installed default.
   provider and the W3C TraceContext/Baggage propagator in one call; `Attrs`,
   `TraceIDFrom`, and `SpanIDFrom` are shared helpers.
 - **attributes** — shared key normalization (`order_id` → `order.id`) and
-  resource-attribute helpers, plus `service.*` / `deployment.environment`
-  identity from `appinfo`. Keys that already contain a dot, and the standard
+  resource-attribute helpers, plus the `service.name`, `service.version`, and
+  `deployment.environment.name` identity attributes resolved by the `identity`
+  package. Keys that already contain a dot, and the standard
   `trace_id` / `span_id` correlation keys, keep their spelling.
 - **Safe defaults** — before any `SetDefault`, logs write debug text to stderr
   and metrics/tracer are no-op implementations, so package-level calls are
@@ -69,7 +70,7 @@ go get github.com/fikrimohammad/go-dev-sdk/observability
 ### 1. Resolve the service identity
 
 ```go
-info := appinfo.Default() // APP_NAME / APP_VERSION / APP_ENV
+info := identity.Default() // APP_NAME / APP_VERSION / APP_ENV
 ```
 
 `info.Name` must be non-empty. `Version` and `Environment` are optional; empty
@@ -183,9 +184,9 @@ defer tc.Stop(ctx)
 ## Telemetry conventions
 
 - Every signal carries the service identity as resource attributes
-  (`service.name`, `service.version`, `deployment.environment`). A non-empty
+  (`service.name`, `service.version`, `deployment.environment.name`). A non-empty
   `service.name` is required; empty `service.version` and
-  `deployment.environment` values are omitted.
+  `deployment.environment.name` values are omitted.
 - Developer-style attribute keys are normalized to OTel semantic-convention
   style (`order_id` → `order.id`). Keys that already contain a dot (such as
   `http.response.status_code`) and the correlation keys `trace_id`, `span_id`,

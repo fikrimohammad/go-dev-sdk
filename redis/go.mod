@@ -14,7 +14,7 @@ require (
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/fikrimohammad/go-dev-sdk/appinfo v1.0.0 // indirect
+	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -37,6 +37,6 @@ require (
 
 replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
 
-replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
+replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
 
 replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs

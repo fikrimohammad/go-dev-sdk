@@ -68,7 +68,7 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
+replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
 
 replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
 

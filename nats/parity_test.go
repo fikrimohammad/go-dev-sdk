@@ -15,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/nats/consumer"
 	"github.com/fikrimohammad/go-dev-sdk/nats/producer"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
@@ -55,13 +55,13 @@ func startTestNATSServer(t *testing.T) *natsserver.Server {
 }
 
 // TestRegistrationDotRejection tests that the SDK strictly rejects dots
-// across all fields (Topic, Group, Tag, and appinfo.Name).
+// across all fields (Topic, Group, Tag, and identity.Info.Name).
 func TestRegistrationDotRejection(t *testing.T) {
 	ns := startTestNATSServer(t)
 	serverURL := ns.ClientURL()
 
 	// 1. Producer registration rejects Topic containing dots
-	p, err := producer.New(appinfo.Info{Name: "order_producer"})
+	p, err := producer.New(identity.Info{Name: "order_producer"})
 	if err != nil {
 		t.Fatalf("producer.New: %v", err)
 	}
@@ -85,14 +85,14 @@ func TestRegistrationDotRejection(t *testing.T) {
 		t.Errorf("p.PublishSync(tag with dots) = %v, want %v", err, producer.ErrInvalidTag)
 	}
 
-	// 3. Consumer creation rejects appinfo.Name containing dots
-	_, err = consumer.New(appinfo.Info{Name: "oec.pay.billing"})
+	// 3. Consumer creation rejects identity.Info.Name containing dots
+	_, err = consumer.New(identity.Info{Name: "oec.pay.billing"})
 	if !errors.Is(err, consumer.ErrInvalidAppName) {
 		t.Errorf("consumer.New(appName with dots) = %v, want %v", err, consumer.ErrInvalidAppName)
 	}
 
 	// 4. Consumer registration rejects Topic containing dots
-	c, err := consumer.New(appinfo.Info{Name: "oec_pay_billing"})
+	c, err := consumer.New(identity.Info{Name: "oec_pay_billing"})
 	if err != nil {
 		t.Fatalf("consumer.New: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestMultiConsumerParity(t *testing.T) {
 	))
 
 	// 1. Create Producer
-	p, err := producer.New(appinfo.Info{Name: "oec_order_producer"}, producer.WithTracer(tracer.Wrap(tp)))
+	p, err := producer.New(identity.Info{Name: "oec_order_producer"}, producer.WithTracer(tracer.Wrap(tp)))
 	if err != nil {
 		t.Fatalf("producer.New: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestMultiConsumerParity(t *testing.T) {
 	defer func() { _ = p.Shutdown() }()
 
 	// 2. Create Billing Consumer Group (oec_pay_billing_oec_order_event_order_created)
-	cBilling, err := consumer.New(appinfo.Info{Name: billingApp}, consumer.WithTracer(tracer.Wrap(tp)))
+	cBilling, err := consumer.New(identity.Info{Name: billingApp}, consumer.WithTracer(tracer.Wrap(tp)))
 	if err != nil {
 		t.Fatalf("consumer.New (billing): %v", err)
 	}
@@ -220,7 +220,7 @@ func TestMultiConsumerParity(t *testing.T) {
 	}
 
 	// 3. Create Promo Consumer Group (oec_promo_consumer_oec_order_event_order_created)
-	cPromo, err := consumer.New(appinfo.Info{Name: promoApp}, consumer.WithTracer(tracer.Wrap(tp)))
+	cPromo, err := consumer.New(identity.Info{Name: promoApp}, consumer.WithTracer(tracer.Wrap(tp)))
 	if err != nil {
 		t.Fatalf("consumer.New (promo): %v", err)
 	}
@@ -353,7 +353,7 @@ func TestConsumerRetryRedelivery(t *testing.T) {
 		tag       = "order_retry"
 	)
 
-	p, err := producer.New(appinfo.Info{Name: "order_producer"})
+	p, err := producer.New(identity.Info{Name: "order_producer"})
 	if err != nil {
 		t.Fatalf("producer.New: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestConsumerRetryRedelivery(t *testing.T) {
 	}
 	defer func() { _ = p.Shutdown() }()
 
-	c, err := consumer.New(appinfo.Info{Name: "order_worker"})
+	c, err := consumer.New(identity.Info{Name: "order_worker"})
 	if err != nil {
 		t.Fatalf("consumer.New: %v", err)
 	}
@@ -430,7 +430,7 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 		numMsgs   = 5
 	)
 
-	p, err := producer.New(appinfo.Info{Name: "concurrent_prod"})
+	p, err := producer.New(identity.Info{Name: "concurrent_prod"})
 	if err != nil {
 		t.Fatalf("producer.New: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 	}
 	defer func() { _ = p.Shutdown() }()
 
-	c, err := consumer.New(appinfo.Info{Name: "concurrent_app"})
+	c, err := consumer.New(identity.Info{Name: "concurrent_app"})
 	if err != nil {
 		t.Fatalf("consumer.New: %v", err)
 	}

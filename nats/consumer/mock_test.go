@@ -7,11 +7,11 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 )
 
 // testAppInfo is the service identity used across the consumer tests.
-var testAppInfo = appinfo.Info{Name: "test-app"}
+var testAppInfo = identity.Info{Name: "test-app"}
 
 // mockConsumer implements jsConsumer for testing.
 type mockConsumer struct {

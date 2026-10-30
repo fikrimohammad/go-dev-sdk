@@ -4,7 +4,6 @@
 package attributes
 
 import (
-	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -15,11 +14,12 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 )
 
-// ErrMissingServiceName indicates that an appinfo.Info has no service name.
-var ErrMissingServiceName = errors.New("service name is required")
+// ErrMissingServiceName indicates that a identity.Info has no service name. It
+// is the same value as identity.ErrName, so errors.Is matches either sentinel.
+var ErrMissingServiceName = identity.ErrName
 
 // maxInt64Value is the largest value representable as an int64 attribute.
 const maxInt64Value = uint64(1<<63 - 1)
@@ -98,12 +98,10 @@ func IsValidKey(key string) bool {
 }
 
 // ValidateAppInfo reports whether info identifies a service. A non-empty
-// service name is required; version and environment are optional.
-func ValidateAppInfo(info appinfo.Info) error {
-	if strings.TrimSpace(info.Name) == "" {
-		return ErrMissingServiceName
-	}
-	return nil
+// service name is required; version and environment are optional. It is a thin
+// adapter over [identity.Info.Validate].
+func ValidateAppInfo(info identity.Info) error {
+	return info.Validate()
 }
 
 // ConvertMapsToKVs merges maps and converts the result to OTel attributes.
@@ -219,17 +217,15 @@ func ConvertMapsToKVs(ms ...map[string]any) []attribute.KeyValue {
 }
 
 // ConvertAppInfoToMap returns the service identity as a map suitable for
-// composition with [ConvertMapsToKVs]. The service name is always included;
-// version and environment are included only when non-empty. Passing the
-// result last gives the identity attributes precedence over colliding earlier
-// keys.
-func ConvertAppInfoToMap(info appinfo.Info) map[string]any {
-	m := map[string]any{"service.name": info.Name}
-	if info.Version != "" {
-		m["service.version"] = info.Version
-	}
-	if info.Environment != "" {
-		m["deployment.environment"] = info.Environment
+// composition with [ConvertMapsToKVs]. Values are trimmed; the service name is
+// always included while an empty version or environment is omitted. Passing
+// the result last gives the identity attributes precedence over colliding
+// earlier keys.
+func ConvertAppInfoToMap(info identity.Info) map[string]any {
+	attributes := info.Attributes()
+	m := make(map[string]any, len(attributes))
+	for key, value := range attributes {
+		m[key] = value
 	}
 	return m
 }

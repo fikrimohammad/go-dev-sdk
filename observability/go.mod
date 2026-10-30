@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/bytedance/mockey v1.4.6
-	github.com/fikrimohammad/go-dev-sdk/appinfo v1.0.0
+	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0
 	github.com/smartystreets/goconvey v1.8.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.45.0
@@ -38,4 +38,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
+replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity

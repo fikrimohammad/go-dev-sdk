@@ -16,7 +16,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
@@ -294,11 +294,11 @@ func WrapWithScope(provider metric.MeterProvider, scope string) Client {
 // The exporter pushes metrics to the collector periodically. Call Stop on the
 // returned client when the application exits to flush pending metrics.
 //
-// The appinfo.Info identity is attached to every exported metric as the OTel
-// semantic convention resource attributes service.name, service.version, and
-// deployment.environment. New returns an error if info has no service name,
-// cfg is invalid, or the exporter cannot be created.
-func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
+// The service identity held in identity.Info is attached to every exported
+// metric as the OTel semantic convention resource attributes service.name,
+// service.version, and deployment.environment.name. New returns an error if
+// info has no service name, cfg is invalid, or the exporter cannot be created.
+func New(ctx context.Context, info identity.Info, cfg Config) (Client, error) {
 	ctx = contextOrBackground(ctx)
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
@@ -329,7 +329,7 @@ func New(ctx context.Context, info appinfo.Info, cfg Config) (Client, error) {
 
 // newClientWithExporter builds the provider and client around exporter. It is
 // separate from New so tests can supply a fake exporter.
-func newClientWithExporter(ctx context.Context, info appinfo.Info, cfg Config, exporter sdkmetric.Exporter) (Client, error) {
+func newClientWithExporter(ctx context.Context, info identity.Info, cfg Config, exporter sdkmetric.Exporter) (Client, error) {
 	provider, err := newMeterProvider(ctx, info, cfg,
 		sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(cfg.ExportInterval)))
 	if err != nil {
@@ -341,7 +341,7 @@ func newClientWithExporter(ctx context.Context, info appinfo.Info, cfg Config, e
 
 // newMeterProvider builds a meter provider with the configured resource and
 // histogram view. It is separated from New so tests can supply a manual reader.
-func newMeterProvider(ctx context.Context, info appinfo.Info, cfg Config, reader sdkmetric.Reader) (*sdkmetric.MeterProvider, error) {
+func newMeterProvider(ctx context.Context, info identity.Info, cfg Config, reader sdkmetric.Reader) (*sdkmetric.MeterProvider, error) {
 	res, err := resource.New(ctx, resource.WithAttributes(
 		attributes.ConvertMapsToKVs(cfg.GlobalKV, attributes.ConvertAppInfoToMap(info))...,
 	))

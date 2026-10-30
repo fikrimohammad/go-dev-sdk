@@ -6,7 +6,7 @@ import "errors"
 var (
 	ErrConsumerExists   = errors.New("consumer: already registered for this topic and group")
 	ErrConsumerNotFound = errors.New("consumer: not registered for this topic and group")
-	ErrInvalidAppName   = errors.New("consumer: appinfo name must not contain dots")
+	ErrInvalidAppName   = errors.New("consumer: service name must not contain dots")
 )
 
 // Config-related sentinel errors. Callers can match them with errors.Is.

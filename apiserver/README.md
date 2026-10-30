@@ -34,7 +34,7 @@ go get github.com/fikrimohammad/go-dev-sdk/apiserver
 ### 1. Set up observability clients
 
 ```go
-info := appinfo.Default()
+info := identity.Default()
 
 tc, _ := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317"})
 tracer.SetDefault(tc)

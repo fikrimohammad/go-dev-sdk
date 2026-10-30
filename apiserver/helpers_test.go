@@ -13,7 +13,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
@@ -198,7 +198,7 @@ func initTestLogger(t *testing.T) *logReader {
 	if err != nil {
 		t.Fatalf("create stderr capture file: %v", err)
 	}
-	log, err := logs.New(appinfo.Info{Name: "test"}, logs.Config{
+	log, err := logs.New(identity.Info{Name: "test"}, logs.Config{
 		Format:      "text",
 		Writer:      stdoutFile,
 		ErrorWriter: stderrFile,

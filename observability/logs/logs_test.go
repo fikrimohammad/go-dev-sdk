@@ -15,12 +15,12 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
-func testInfo() appinfo.Info {
-	return appinfo.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
+func testInfo() identity.Info {
+	return identity.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
 }
 
 // fakeLogger implements Logger and records nothing.
@@ -32,7 +32,7 @@ func (*fakeLogger) Warn(context.Context, string, ...any)  {}
 func (*fakeLogger) Error(context.Context, string, ...any) {}
 
 // mustLogger builds a Logger, panicking on error (test configs are valid).
-func mustLogger(info appinfo.Info, cfg Config) Logger {
+func mustLogger(info identity.Info, cfg Config) Logger {
 	l, err := New(info, cfg)
 	if err != nil {
 		panic(err)
@@ -166,7 +166,7 @@ func TestLogger_NormalizeArgs(t *testing.T) {
 
 func TestNew_InvalidInfo(t *testing.T) {
 	Convey("New requires a service name", t, func() {
-		_, err := New(appinfo.Info{}, Config{})
+		_, err := New(identity.Info{}, Config{})
 		So(errors.Is(err, attributes.ErrMissingServiceName), ShouldBeTrue)
 	})
 }
@@ -178,7 +178,7 @@ func TestLogger_GlobalKV(t *testing.T) {
 			mockey.MockValue(&stdout).To(&outBuf)
 			mockey.MockValue(&stderr).To(&errBuf)
 
-			l := mustLogger(appinfo.Info{Name: "svc", Version: "1.0", Environment: "prod"},
+			l := mustLogger(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"},
 				Config{GlobalKV: map[string]any{"order_id": "x", "env": "test"}})
 			l.Info(context.Background(), "with_global")
 			l.Warn(context.Background(), "warn_global")
@@ -188,7 +188,7 @@ func TestLogger_GlobalKV(t *testing.T) {
 				So(buf, ShouldContainSubstring, "env=test")
 				So(buf, ShouldContainSubstring, "service.name=svc")
 				So(buf, ShouldContainSubstring, "service.version=1.0")
-				So(buf, ShouldContainSubstring, "deployment.environment=prod")
+				So(buf, ShouldContainSubstring, "deployment.environment.name=prod")
 			}
 		})
 	})
@@ -198,7 +198,7 @@ func TestLogger_GlobalKV(t *testing.T) {
 		mockey.PatchConvey("redirect stdout", func() {
 			mockey.MockValue(&stdout).To(&outBuf)
 
-			l := mustLogger(appinfo.Info{Name: "svc", Version: "1.0", Environment: "prod"},
+			l := mustLogger(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"},
 				Config{GlobalKV: map[string]any{"service.name": "spoofed", "service.version": "0.0.0"}})
 			l.Info(context.Background(), "identity_wins")
 
@@ -302,13 +302,13 @@ func TestLogger_OmitEmptyIdentity(t *testing.T) {
 		mockey.PatchConvey("redirect stdout", func() {
 			mockey.MockValue(&stdout).To(&outBuf)
 
-			l := mustLogger(appinfo.Info{Name: "svc"}, Config{})
+			l := mustLogger(identity.Info{Name: "svc"}, Config{})
 			l.Info(context.Background(), "identity")
 
 			text := outBuf.String()
 			So(text, ShouldContainSubstring, "service.name=svc")
 			So(text, ShouldNotContainSubstring, "service.version")
-			So(text, ShouldNotContainSubstring, "deployment.environment")
+			So(text, ShouldNotContainSubstring, "deployment.environment.name")
 		})
 	})
 }

@@ -42,7 +42,7 @@ go get github.com/fikrimohammad/go-dev-sdk/rocketmq/consumer
 1. **Create** with the service identity:
 
 ```go
-p, err := producer.New(appinfo.Default())
+p, err := producer.New(identity.Default())
 if err != nil { /* handle */ }
 ```
 
@@ -93,7 +93,7 @@ if err := p.Shutdown(); err != nil { /* handle */ }
 1. **Create** with the service identity:
 
 ```go
-c, err := consumer.New(appinfo.Default())
+c, err := consumer.New(identity.Default())
 if err != nil { /* handle */ }
 ```
 

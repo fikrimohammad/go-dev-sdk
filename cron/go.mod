@@ -4,7 +4,7 @@ go 1.26.5
 
 replace github.com/fikrimohammad/go-dev-sdk/apiserver => ../apiserver
 
-replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
+replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
 
 replace github.com/fikrimohammad/go-dev-sdk/errs/v2 => ../errs
 
@@ -29,8 +29,8 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/gopkg v0.2.0 // indirect
 	github.com/cloudwego/netpoll v0.7.5 // indirect
-	github.com/fikrimohammad/go-dev-sdk/appinfo v1.0.0 // indirect
 	github.com/fikrimohammad/go-dev-sdk/errs/v2 v2.0.0 // indirect
+	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0 // indirect
 	github.com/fsnotify/fsnotify v1.5.4 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

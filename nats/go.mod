@@ -2,15 +2,15 @@ module github.com/fikrimohammad/go-dev-sdk/nats
 
 go 1.26.5
 
-replace github.com/fikrimohammad/go-dev-sdk/appinfo => ../appinfo
+replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
 
 replace github.com/fikrimohammad/go-dev-sdk/errs/v2 => ../errs
 
 replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
 
 require (
-	github.com/fikrimohammad/go-dev-sdk/appinfo v1.0.0
 	github.com/fikrimohammad/go-dev-sdk/errs/v2 v2.0.0-00010101000000-000000000000
+	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0
 	github.com/fikrimohammad/go-dev-sdk/observability v0.0.0-00010101000000-000000000000
 	github.com/nats-io/nats-server/v2 v2.15.0
 	github.com/nats-io/nats.go v1.54.0

@@ -9,7 +9,7 @@ import (
 
 	"github.com/apache/rocketmq-client-go/v2/primitive"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 )
 
 func TestNew(t *testing.T) {
@@ -33,17 +33,20 @@ func TestNew(t *testing.T) {
 		{
 			name:    "whitespace app name",
 			appName: "  ",
-			wantErr: false,
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			p, err := New(appinfo.Info{Name: tt.appName})
+			p, err := New(identity.Info{Name: tt.appName})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
 				return
+			}
+			if (tt.appName == "" || tt.appName == "  ") && !errors.Is(err, identity.ErrName) {
+				t.Errorf("New() error = %v, want %v", err, identity.ErrName)
 			}
 			if !tt.wantErr && p == nil {
 				t.Error("New() returned nil producer without error")

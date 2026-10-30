@@ -5,11 +5,11 @@ import (
 
 	"github.com/apache/rocketmq-client-go/v2/primitive"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 )
 
 // testAppInfo is the service identity used across the producer tests.
-var testAppInfo = appinfo.Info{Name: "test-app"}
+var testAppInfo = identity.Info{Name: "test-app"}
 
 // mockProducer implements mqProducer for testing.
 type mockProducer struct {

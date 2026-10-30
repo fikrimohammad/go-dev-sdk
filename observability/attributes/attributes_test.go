@@ -9,7 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 )
 
 type myStringer string
@@ -87,10 +87,10 @@ func TestIsValidKey(t *testing.T) {
 
 func TestValidateAppInfo(t *testing.T) {
 	Convey("ValidateAppInfo requires a non-empty service name", t, func() {
-		So(ValidateAppInfo(appinfo.Info{Name: "svc"}), ShouldBeNil)
-		So(ValidateAppInfo(appinfo.Info{Name: "my service"}), ShouldBeNil)
-		So(errors.Is(ValidateAppInfo(appinfo.Info{}), ErrMissingServiceName), ShouldBeTrue)
-		So(errors.Is(ValidateAppInfo(appinfo.Info{Name: "   "}), ErrMissingServiceName), ShouldBeTrue)
+		So(ValidateAppInfo(identity.Info{Name: "svc"}), ShouldBeNil)
+		So(ValidateAppInfo(identity.Info{Name: "my service"}), ShouldBeNil)
+		So(errors.Is(ValidateAppInfo(identity.Info{}), ErrMissingServiceName), ShouldBeTrue)
+		So(errors.Is(ValidateAppInfo(identity.Info{Name: "   "}), ErrMissingServiceName), ShouldBeTrue)
 	})
 }
 
@@ -268,7 +268,7 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 	Convey("later maps override earlier ones", t, func() {
 		kvs := ConvertMapsToKVs(
 			map[string]any{"order_id": "1", "env": "custom"},
-			ConvertAppInfoToMap(appinfo.Info{Name: "svc", Version: "1.0", Environment: "prod"}),
+			ConvertAppInfoToMap(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"}),
 		)
 		m := make(map[string]string)
 		for _, kv := range kvs {
@@ -278,13 +278,13 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 		So(m["env"], ShouldEqual, "custom")
 		So(m["service.name"], ShouldEqual, "svc")
 		So(m["service.version"], ShouldEqual, "1.0")
-		So(m["deployment.environment"], ShouldEqual, "prod")
+		So(m["deployment.environment.name"], ShouldEqual, "prod")
 	})
 
 	Convey("a later map's value overrides an earlier colliding key", t, func() {
 		kvs := ConvertMapsToKVs(
 			map[string]any{"service.name": "spoofed"},
-			ConvertAppInfoToMap(appinfo.Info{Name: "svc", Version: "1.0", Environment: "prod"}),
+			ConvertAppInfoToMap(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"}),
 		)
 		m := make(map[string]string)
 		for _, kv := range kvs {
@@ -292,7 +292,7 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 		}
 		So(m["service.name"], ShouldEqual, "svc")
 		So(m["service.version"], ShouldEqual, "1.0")
-		So(m["deployment.environment"], ShouldEqual, "prod")
+		So(m["deployment.environment.name"], ShouldEqual, "prod")
 	})
 
 	Convey("keys normalizing to the same value collapse deterministically", t, func() {
@@ -308,17 +308,17 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 
 func TestConvertAppInfoToMap(t *testing.T) {
 	Convey("returns the full service identity", t, func() {
-		m := ConvertAppInfoToMap(appinfo.Info{Name: "svc", Version: "1.0", Environment: "prod"})
+		m := ConvertAppInfoToMap(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"})
 		So(m["service.name"], ShouldEqual, "svc")
 		So(m["service.version"], ShouldEqual, "1.0")
-		So(m["deployment.environment"], ShouldEqual, "prod")
+		So(m["deployment.environment.name"], ShouldEqual, "prod")
 	})
 
 	Convey("omits empty optional identity fields", t, func() {
-		m := ConvertAppInfoToMap(appinfo.Info{Name: "svc"})
+		m := ConvertAppInfoToMap(identity.Info{Name: "svc"})
 		So(m["service.name"], ShouldEqual, "svc")
 		_, hasVersion := m["service.version"]
-		_, hasEnvironment := m["deployment.environment"]
+		_, hasEnvironment := m["deployment.environment.name"]
 		So(hasVersion, ShouldBeFalse)
 		So(hasEnvironment, ShouldBeFalse)
 	})

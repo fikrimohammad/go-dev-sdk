@@ -14,7 +14,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 )
 
@@ -201,7 +201,7 @@ func (l *slogLogger) Error(ctx context.Context, msg string, args ...any) {
 // package stderr stream when nil). The returned Logger resolves the package
 // streams lazily, so output follows redirection even after construction. New
 // returns an error if info has no service name or cfg is invalid.
-func New(info appinfo.Info, cfg Config) (Logger, error) {
+func New(info identity.Info, cfg Config) (Logger, error) {
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("logs: %w", err)
 	}
@@ -268,9 +268,9 @@ func normalizeArgs(args []any) []any {
 
 // logAttrs merges the configured GlobalKV with the service identity via the
 // shared attribute helpers. Identity attributes (service.name, service.version,
-// deployment.environment) always win over colliding GlobalKV keys because the
+// deployment.environment.name) always win over colliding GlobalKV keys because the
 // identity map is passed last.
-func logAttrs(kv map[string]any, info appinfo.Info) []slog.Attr {
+func logAttrs(kv map[string]any, info identity.Info) []slog.Attr {
 	kvs := attributes.ConvertMapsToKVs(kv, attributes.ConvertAppInfoToMap(info))
 	attrs := make([]slog.Attr, 0, len(kvs))
 	for _, kv := range kvs {

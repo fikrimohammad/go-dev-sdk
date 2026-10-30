@@ -4,12 +4,12 @@ import (
 	"context"
 	"io"
 
-	"github.com/fikrimohammad/go-dev-sdk/appinfo"
+	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 )
 
 func ExampleNew() {
-	logger, err := logs.New(appinfo.Info{Name: "orders"}, logs.Config{
+	logger, err := logs.New(identity.Info{Name: "orders"}, logs.Config{
 		Format:      logs.FormatJSON,
 		Writer:      io.Discard,
 		ErrorWriter: io.Discard,
