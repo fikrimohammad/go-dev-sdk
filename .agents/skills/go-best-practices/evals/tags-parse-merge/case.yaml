@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: tags-parse-merge
+expected_outcome: |
+  Merge and Set never alias caller slices (ingress and egress copies), Parse has a fuzz test, examples run as tests, and lint is clean.

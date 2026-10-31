@@ -19,9 +19,11 @@ perform unrelated repo-wide rewrites.
 - Integration tests live in `integration_test.go` and must call `t.Skip` when
   their required environment variable is unset, so `go test ./...` remains
   hermetic.
-- Use modern Go idioms available in each module's `go.mod` version. The
-  `modernize` linter is enabled in `.golangci.yml`; keep `golangci-lint run`
-  clean for each module.
+- Use modern Go idioms available in each module's `go.mod` version, and
+  follow the [Google Go Style Guide](https://google.github.io/styleguide/go/).
+  `.golangci.yml` (golangci-lint >= v2.6) enforces its mechanical rules plus
+  `modernize`; new and changed code must pass
+  `golangci-lint run --new-from-merge-base=main ./...` for each module.
 - Every package and every exported declaration or struct field follows
   [Go Doc Comments](https://go.dev/doc/comment). Package comments start with
   `Package <name> ...`.
@@ -40,18 +42,16 @@ touches more than one area, load each relevant skill.
 
 | Area | Skill | Load when |
 | --- | --- | --- |
-| Tests | `go-test-conventions` | Adding or changing tests, test files, table-driven cases, mocks, or integration tests |
-| Documentation | `go-doc-comments` | Writing or reviewing package comments, exported API docs, or Go doc formatting |
 | Telemetry | `opentelemetry-semconv` | Adding or changing spans, metrics, attributes, units, or telemetry names |
+| Go code, tests, docs | `go-best-practices` | Writing, changing, refactoring, or reviewing any Go code, test files (placement, tables, mocks, integration tests), or doc comments |
 
 If a skill cannot be loaded, follow the invariants above and the linked
 specifications.
 
 Skill files:
 
-- [go-test-conventions](.agents/skills/go-test-conventions/SKILL.md)
-- [go-doc-comments](.agents/skills/go-doc-comments/SKILL.md)
 - [opentelemetry-semconv](.agents/skills/opentelemetry-semconv/SKILL.md)
+- [go-best-practices](.agents/skills/go-best-practices/SKILL.md)
 
 ## Verification
 
@@ -61,9 +61,14 @@ Run from inside the module you changed:
 gofmt -l .
 go vet ./...
 go test -count=1 -gcflags="all=-N -l" ./...
-golangci-lint run ./...
+golangci-lint run --new-from-merge-base=main ./...
+GOWORK=off go run ../.agents/skills/go-best-practices/scripts/gostyle.go .
 go mod tidy -diff
 ```
+
+Existing code predates the style-guide lint rules, so lint only what changed
+since `main` (CI uses `only-new-issues`). Fix `gostyle` findings in code you
+wrote or touched.
 
 Integration tests are opt-in:
 
@@ -84,5 +89,6 @@ DB_POSTGRES_DSN='postgres://app:secret@127.0.0.1:5432/report_db?sslmode=disable'
 - [ ] New or changed exported declarations and fields have Go doc comments.
 - [ ] New or changed telemetry follows the semantic conventions in the
       `opentelemetry-semconv` skill.
-- [ ] The verification commands above pass, including `modernize` through
-      `golangci-lint run ./...`.
+- [ ] New or changed Go code follows the `go-best-practices` skill.
+- [ ] The verification commands above pass, including `modernize` and the
+      style-guide rules through `golangci-lint run --new-from-merge-base=main ./...`.

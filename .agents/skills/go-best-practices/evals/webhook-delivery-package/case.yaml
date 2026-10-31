@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: webhook-delivery-package
+expected_outcome: |
+  A compiling, tested webhook package whose code follows the Google Go Style Guide: structured errors callers can check with errors.Is/As, context-aware backoff, idiomatic names, no unnecessary interfaces, stdlib tests with got/want messages.

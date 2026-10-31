@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: concurrent-price-fetch
+expected_outcome: |
+  A synchronous, context-first concurrent fetch with bounded parallelism whose goroutines are all joined, that cancels remaining work on first error, uses idiomatic naming and error wrapping, and has stdlib tests using httptest without t.Fatal in handler goroutines.

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: refactor-inventory-service
+expected_outcome: |
+  The inventory package is refactored to follow the Google Go Style Guide (naming, receivers, errors, context, goroutine lifetime, crypto/rand, concrete return types, test messages) with tests passing and CHANGES.md explaining the changes.
+context:
+  scaffold_script: place-files.sh

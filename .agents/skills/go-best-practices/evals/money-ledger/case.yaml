@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: money-ledger
+expected_outcome: |
+  Effective Go idioms hold without being asked for: usable zero value, compile-time interface checks, no exported embedding, origin-prefixed checkable errors, race-free ledger, clean lint.

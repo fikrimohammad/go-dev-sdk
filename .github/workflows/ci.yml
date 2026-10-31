@@ -14,7 +14,7 @@ permissions:
 
 env:
   GO_VERSION: "1.26.5"
-  GOLANGCI_VERSION: v2.12.2
+  GOLANGCI_VERSION: v2.15.0
 
 jobs:
   modules:
@@ -64,6 +64,8 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_VERSION }}
           working-directory: ${{ matrix.module }}
+          # Existing code predates the style-guide rules; fail only on new issues.
+          only-new-issues: true
 
       - name: Vet
         run: go vet ./...

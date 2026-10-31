@@ -1,35 +1,194 @@
-# golangci-lint configuration (v2 schema).
-# Applies to every module in the workspace: lint jobs run `golangci-lint run`
-# from each module directory and pick this up from the repo root.
+# golangci-lint configuration (v2 schema; requires golangci-lint >= v2.6 for
+# modernize, CI pins v2.15.0). Lint jobs run `golangci-lint run` from each
+# module directory and pick this up from the repo root.
+#
+# The linters enforce the mechanical parts of the Google Go Style Guide
+# (https://google.github.io/styleguide/go/). Each entry names the section it
+# implements (guide#..., decisions#..., best-practices#...). Every rule has one
+# owner, so a violation is reported once. Design rules that no linter can check
+# live in the go-best-practices skill.
+#
+# Existing code predates these rules. CI reports only new issues
+# (only-new-issues); locally run `golangci-lint run --new-from-merge-base=main ./...`.
 
 version: "2"
 
 linters:
-  # The standard, fast set, plus modernize to keep code on idioms available to
-  # each module's Go version. Stricter linters (errorlint, gocritic, ...) are
-  # deliberately left out because the SDK's error-handling code uses
-  # exact-identity semantics.
+  default: none
   enable:
-    - errcheck
-    - govet
+    # Correctness baseline.
+    - errcheck # decisions#handle-errors
+    - govet # copylocks (decisions#copying), testinggoroutine (best-practices#t-fatal-goroutine), composites (decisions#literal-field-names)
     - ineffassign
-    # modernize recommends language and standard-library idioms available to
-    # the module's declared Go version.
-    - modernize
-    - staticcheck
+    - staticcheck # ST1003 MixedCaps/initialisms, ST1005 error strings, ST1006/ST1016 receivers, ST1012 ErrFoo, ST1017 yoda, S1023 switch break
     - unused
+    - modernize # decisions#use-any and language/stdlib idioms for each module's Go version
+
+    # Naming, errors, language.
+    - revive # rule list below
+    - gocritic # enabled-checks below
+    - errname # decisions#errors: ErrFoo sentinels, FooError types
+    - nakedret # decisions#named-result-parameters
+    - recvcheck # decisions#receiver-type: all pointer or all value receivers
+    - godot # decisions#comment-sentences
+
+    # Interfaces and API shape.
+    - iface # decisions#interfaces: duplicate interface declarations
+    - ireturn # decisions#interfaces: accept interfaces, return concrete types
+    - interfacebloat # best-practices#designing-effective-interfaces
+
+    # Context.
+    - containedctx # decisions#contexts: no context in structs
+    - contextcheck # decisions#contexts: don't start a root context mid call chain
+
+    # Tests.
+    - thelper # decisions#mark-test-helpers
+    - usetesting # decisions#contexts: t.Context() in tests
+    - depguard # decisions#assert, decisions#use-package-testing
+    - forbidigo # decisions#types-of-equality, decisions#flags, decisions#contexts
+
+    - gosec # decisions#crypto-rand (G404) and overflowing integer conversions (G115)
+    - nolintlint # decisions#handle-errors: a suppression explains why
+
+  settings:
+    staticcheck:
+      # QF* quick fixes are not style rules. ST1020-ST1022 duplicate revive's
+      # exported rule, which also owns the stutter check.
+      checks: ["all", "-QF*", "-ST1020", "-ST1021", "-ST1022"]
+
+    revive:
+      rules:
+        - name: package-naming # decisions#package-names: no util/common/helper
+        - name: exported # decisions#repetitive-with-package (stutter) and doc comments
+          arguments: ["sayRepetitiveInsteadOfStutters"]
+        - name: unexported-return # exported funcs must not return unexported types
+        - name: import-shadowing # best-practices#shadowing
+        - name: redefines-builtin-id
+        - name: import-alias-naming # decisions#import-renaming
+          arguments: ["^[a-z][a-z0-9]*$"]
+        - name: redundant-import-alias
+        - name: blank-imports # decisions#import-blank
+        - name: error-return # decisions#returning-errors: error is last
+        - name: indent-error-flow # decisions#indent-error-flow
+        - name: superfluous-else
+        - name: deep-exit # best-practices#program-init: exit only from main/init
+        - name: context-as-argument # decisions#contexts: ctx first, before *testing.T too
+        - name: enforce-slice-style # decisions#nil-slices
+          arguments: ["nil"]
+        - name: confusing-results # decisions#named-result-parameters
+        - name: modifies-value-receiver # decisions#receiver-type
+        - name: string-format
+          arguments:
+            # best-practices#error-extra-info: name the action, no stop words.
+            - ["fmt.Errorf[0]", "!/(?i)(failed to|unable to|could not|couldn't|error occurred)/", "drop stop words; name the action that failed (\"load config: %w\")"]
+            # best-practices#error-percent-w: %w last, or first only for a sentinel category.
+            - ["fmt.Errorf[0]", "!/^.+%w.+$/", "place %w at the end (\"op: %w\"), or first for sentinel categorization"]
+            # decisions#got-before-want
+            - ["t.Errorf[0],t.Fatalf[0],t.Error[0],t.Fatal[0]", "!/(?i)\\b(expected|actual)\\b/", "use got/want wording: \"Func(%v) = %v, want %v\""]
+            # decisions#subtest-names: '/' breaks -run filters.
+            - ["t.Run[0]", "!/\\//", "subtest names must not contain '/'"]
+
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - ptrToRefParam # decisions#pass-values: no *map, *chan, *interface params
+        - sprintfQuotedString # decisions#use-percent-q
+        - captLocal # guide#mixed-caps: parameters are unexported names
+        - exitAfterDefer # os.Exit skips defers; keep cleanup in run()
+        - deferInLoop # deferred calls pile up until the function returns
+
+    nakedret:
+      max-func-lines: 10 # naked returns only in small functions
+
+    iface:
+      # "unused" is left out: exported SDK contracts (the interface is the
+      # product) are legitimately unused inside their own package. "opaque"
+      # duplicates ireturn.
+      enable: [identical]
+
+    ireturn:
+      # Third-party protocol interfaces ("the interface is the product") are fine to return.
+      allow: [anon, error, empty, stdlib, generic, go.opentelemetry.io/otel/]
+
+    depguard:
+      rules:
+        tests:
+          files: ["$test"]
+          deny:
+            - pkg: github.com/stretchr/testify
+              desc: use package testing with plain comparisons or cmp.Diff (decisions#assert)
+            - pkg: github.com/smartystreets/goconvey
+              desc: use package testing with t.Run subtests (decisions#use-package-testing)
+            - pkg: github.com/onsi/gomega
+              desc: use package testing (decisions#assert)
+            - pkg: gotest.tools
+              desc: use package testing (decisions#assert)
+
+    forbidigo:
+      forbid:
+        - pattern: ^reflect\.DeepEqual$
+          msg: compare with cmp.Diff/cmp.Equal, ==, slices.Equal, or maps.Equal (decisions#types-of-equality)
+        - pattern: ^flag\.(Bool|BoolVar|BoolFunc|Duration|DurationVar|Float64|Float64Var|Func|Int|Int64|Int64Var|IntVar|String|StringVar|TextVar|Uint|Uint64|Uint64Var|UintVar|Var)$
+          msg: define flags only in package main (decisions#flags)
+        - pattern: ^context\.(Background|TODO)$
+          msg: take ctx from the caller; detach with context.WithoutCancel (decisions#contexts)
+
+    gosec:
+      # G404: math/rand for keys and tokens (decisions#crypto-rand).
+      # G115: integer conversions that silently truncate or overflow.
+      includes: [G404, G115]
+
+    godot:
+      scope: declarations
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
   exclusions:
     rules:
       # The SDK tests exercise helpers that intentionally ignore returned
       # values; errcheck would flag those in _test.go files.
       - path: _test\.go
-        linters:
-          - errcheck
+        linters: [errcheck]
+      # reflect.DeepEqual is a test-only rule.
+      - path-except: _test\.go
+        linters: [forbidigo]
+        text: reflect\.DeepEqual
+      # Flags and root contexts belong to main packages and tests.
+      - path: (^|/)(cmd/|main\.go$)|_test\.go
+        linters: [forbidigo]
+        text: flag\.|context\.(Background|TODO)
 
 formatters:
   enable:
     - gofmt
+    - goimports # decisions#import-grouping: standard library first
+  settings:
+    gofmt:
+      simplify: true # decisions#literal-repeated-type-names (gofmt -s)
 
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+  # Report every finding; by default only the first issue per line is shown,
+  # which hides real violations behind doc-comment findings.
+  uniq-by-line: false
+
+# Optional strict tier (judgment-heavy, expect nolint with a reason):
+#   gochecknoglobals  best-practices#globals
+#   errorlint         best-practices#error-structure; the SDK's error-handling
+#                     code uses exact-identity semantics.
+#
+# Deliberately NOT enabled because they contradict the guide:
+#   lll            guide#line-length: no fixed line length
+#   varnamelen     decisions#variable-names: short names in small scopes
+#   exhaustruct    decisions#literal-zero-value-fields: omit zero-value fields
+#   wrapcheck      best-practices#error-extra-info: don't wrap without new information
+#   err113         decisions#non-decisions: errors.New vs fmt.Errorf is free
+#   nonamedreturns decisions#named-result-parameters: named results are sometimes right
+#   prealloc       best-practices#vardeclsize: size hints only with evidence
+#   mnd            decisions#constant-names: constants need a role, not a value
+#   testpackage    decisions#test-same-package: same-package tests are fine
+#   testifylint, ginkgolinter: assertion libraries are not used
+#   wsl, nlreturn, whitespace: formatting beyond gofmt is not in the guide

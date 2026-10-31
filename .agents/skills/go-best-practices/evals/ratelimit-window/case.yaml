@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: ratelimit-window
+expected_outcome: |
+  Window-reset tests use synctest instead of real sleeps, concurrent Allow is race-free and exact, the zero value does not panic, and lint is clean.
