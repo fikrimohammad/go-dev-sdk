@@ -53,12 +53,6 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
-// Nil is an alias for redis.Nil, returned when a key does not exist.
-const Nil = redis.Nil //nolint:errname // mirrors go-redis's redis.Nil so callers keep its familiar name
-
-// TxFailedErr is an alias for redis.TxFailedErr, returned when a WATCH transaction fails.
-var TxFailedErr = redis.TxFailedErr //nolint:errname // mirrors go-redis's redis.TxFailedErr
-
 // Script is an alias for redis.Script for managing reusable Lua scripts with automatic EVALSHA fallback.
 type Script = redis.Script
 

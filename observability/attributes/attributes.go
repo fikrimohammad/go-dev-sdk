@@ -17,10 +17,6 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/identity"
 )
 
-// ErrMissingServiceName indicates that a identity.Info has no service name. It
-// is the same value as identity.ErrName, so errors.Is matches either sentinel.
-var ErrMissingServiceName = identity.ErrName
-
 // maxInt64Value is the largest value representable as an int64 attribute.
 const maxInt64Value = uint64(1<<63 - 1)
 

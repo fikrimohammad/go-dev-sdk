@@ -111,7 +111,7 @@ API is final.
 - [x] T21: R1 observability logs/metrics/tracer: export SetDefaults/Validate (wave 1)
 - [x] T22: R1 rest/client, rest/server, cron/engine: export, and Join in Validate (wave 1)
 - [x] T23: R4 cron, db, redis: move interfaces.go into <pkg>.go (wave 1)
-- [ ] T24: R3 errors.go in errgroup, identity, attributes, logs, metrics, rest/client, redis, errs (wave 2)
+- [x] T24: R3 errors.go in errgroup, identity, attributes, logs, metrics, rest/client, redis, errs (wave 2)
 - [ ] T25: R2 runnable examples: errs, errgroup, attributes, cron, cron/engine, plus a compile-only observability root example (wave 3)
 - [ ] T26: R2 compile-only examples: db, redis, s3, nats/consumer, nats/producer (wave 3)
 

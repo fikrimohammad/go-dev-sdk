@@ -16,13 +16,6 @@ const (
 	defaultLogLevel  = "debug"
 )
 
-// Config validation errors.
-var (
-	ErrInvalidLogFormat = errors.New("logs: format must be \"text\" or \"json\"")
-	ErrInvalidLogLevel  = errors.New(
-		"logs: level must be \"debug\", \"info\", \"warn\", or \"error\"")
-)
-
 // Config describes the logger configuration.
 type Config struct {
 	// Format controls whether records use text or JSON encoding.

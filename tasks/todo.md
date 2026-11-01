@@ -520,11 +520,11 @@ Delete the interfaces.go files. Declarations, docs, and behavior don't change.
 - errs: rename `error.go` → `errors.go` and `error_test.go` → `errors_test.go`.
 
 **Acceptance criteria:**
-- [ ] Spec criterion 10: outside confloader, no exported error declaration lives anywhere but `errors.go`.
-- [ ] No behavior change, and `go doc` lists the same identifiers.
+- [x] Spec criterion 10: outside confloader, no exported error declaration lives anywhere but `errors.go`.
+- [x] No behavior change, and `go doc` lists the same identifiers.
 
 **Verification:**
-- [ ] Module checks pass in every touched module (four of them strict).
+- [x] Module checks pass in every touched module (four of them strict).
 
 **Dependencies:** T21, T22, T23
 **Files likely touched:** the `errors.go`/`errors_test.go` files listed above, plus the files the declarations move out of

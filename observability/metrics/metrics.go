@@ -4,7 +4,6 @@ package metrics
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -23,14 +22,6 @@ import (
 )
 
 var (
-	// ErrStopped indicates that the client no longer accepts measurements.
-	ErrStopped = errors.New("metrics: client is stopped")
-	// ErrInvalidMetricName indicates that a metric name is empty or invalid.
-	ErrInvalidMetricName = errors.New("metrics: invalid metric name")
-	// ErrInstrumentConflict indicates that a metric name was reused with
-	// different metadata or a different instrument kind.
-	ErrInstrumentConflict = errors.New("metrics: instrument conflict")
-
 	metricNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,254}$`)
 )
 
