@@ -47,14 +47,15 @@ GitHub Actions workflows live in `.github/workflows/`:
   of `mockey`.
 - **`coverage-report.yml`** — on PR. Runs tests with coverage per module and
   posts a per-module coverage table as a PR comment.
-- **`release.yml`** — on push to main. Tags each module independently when
-  commits touched it, following Conventional Commits: `feat!:` / `BREAKING
-  CHANGE:` → major, `feat:` → minor, otherwise patch. Modules without commits
-  since their last tag are skipped.
+- **`release.yml`** — manual only (`workflow_dispatch`); nothing is tagged on
+  push. Tags one module on main with the version you give:
+  `gh workflow run release.yml -f module=observability -f version=v0.2.0`. It
+  refuses a major that doesn't match the module path and any version that
+  already exists as a tag or in proxy.golang.org.
 
 CI does not rely on `go.work` (it is gitignored); each module builds standalone
 via its `replace` directives.
 
 ## Versioning
 
-Modules are tagged independently (`errs/v1.0.0`, `observability/v1.0.0`, ...). Cross-module dependencies use `require` + `replace` directives pointing at sibling directories during development.
+Modules are tagged independently (`observability/v0.2.0`, ...), by hand, with `release.yml`. All modules are in development (v0), so any release may break the API. Cross-module dependencies use `require` + `replace` directives pointing at sibling directories during development.
