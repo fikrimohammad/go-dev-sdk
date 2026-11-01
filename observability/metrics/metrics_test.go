@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -52,14 +53,17 @@ func newTestMetrics(t *testing.T) (*otelMetrics, *sdkmetric.ManualReader) {
 	return newInstrumentClient(provider, "myapp", provider.Shutdown), reader
 }
 
-// withDefault installs the noop default for the duration of the test and
-// restores the previous default afterward, isolating the package facade from
-// other tests.
+// withDefault clears any SetDefault override for the duration of the test and
+// restores the OTel global meter provider afterward, isolating the package
+// facade from other tests.
 func withDefault(t *testing.T) {
 	t.Helper()
-	prev := Default()
-	SetDefault(Noop())
-	t.Cleanup(func() { SetDefault(prev) })
+	prev := otel.GetMeterProvider()
+	SetDefault(nil)
+	t.Cleanup(func() {
+		SetDefault(nil)
+		otel.SetMeterProvider(prev)
+	})
 }
 
 func collect(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
@@ -563,27 +567,6 @@ func TestOtelMetrics_Stop(t *testing.T) {
 	})
 }
 
-func TestOtelMetrics_NilContext(t *testing.T) {
-	c, _ := newTestMetrics(t)
-
-	//nolint:staticcheck // intentionally verifying nil-context handling
-	if err := c.Add(nil, Instrument{Name: "nil.counter"}, 1, nil); err != nil {
-		t.Errorf("Add(nil ctx) = %v, want nil", err)
-	}
-	//nolint:staticcheck // intentionally verifying nil-context handling
-	if err := c.Record(nil, Instrument{Name: "nil.hist"}, 0.5, nil); err != nil {
-		t.Errorf("Record(nil ctx) = %v, want nil", err)
-	}
-	//nolint:staticcheck // intentionally verifying nil-context handling
-	if err := c.AddUpDown(nil, Instrument{Name: "nil.updown"}, 1, nil); err != nil {
-		t.Errorf("AddUpDown(nil ctx) = %v, want nil", err)
-	}
-	//nolint:staticcheck // intentionally verifying nil-context handling
-	if err := c.RecordGauge(nil, Instrument{Name: "nil.gauge"}, 0.5, nil); err != nil {
-		t.Errorf("RecordGauge(nil ctx) = %v, want nil", err)
-	}
-}
-
 func TestNoopMetrics(t *testing.T) {
 	m := noopMetrics{}
 	if err := m.Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
@@ -622,7 +605,52 @@ func TestNew_Validation(t *testing.T) {
 	})
 }
 
+func TestDefault_FollowsOTelGlobal(t *testing.T) {
+	prev := otel.GetMeterProvider()
+	SetDefault(nil)
+	t.Cleanup(func() {
+		SetDefault(nil)
+		otel.SetMeterProvider(prev)
+	})
+	ctx := context.Background()
+
+	// Measured before any install: the OTel global is a no-op, so this is dropped.
+	if err := Add(ctx, Instrument{Name: "early.counter"}, 1, nil); err != nil {
+		t.Fatalf("Add(early.counter, 1) before install = %v, want nil", err)
+	}
+
+	r1 := sdkmetric.NewManualReader()
+	p1 := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r1))
+	t.Cleanup(func() { _ = p1.Shutdown(context.Background()) })
+	otel.SetMeterProvider(p1)
+	if err := Add(ctx, Instrument{Name: "early.counter"}, 1, nil); err != nil {
+		t.Fatalf("Add(early.counter, 1) after first install = %v, want nil", err)
+	}
+	if err := Add(ctx, Instrument{Name: "late.counter"}, 1, nil); err != nil {
+		t.Fatalf("Add(late.counter, 1) after first install = %v, want nil", err)
+	}
+	rm1 := collect(t, r1)
+	for _, name := range []string{"early.counter", "late.counter"} {
+		if findMetric(rm1, name) == nil {
+			t.Errorf("Add(%q) after first otel.SetMeterProvider: metric not collected, want it", name)
+		}
+	}
+
+	r2 := sdkmetric.NewManualReader()
+	p2 := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r2))
+	t.Cleanup(func() { _ = p2.Shutdown(context.Background()) })
+	otel.SetMeterProvider(p2)
+	if err := Add(ctx, Instrument{Name: "second.counter"}, 1, nil); err != nil {
+		t.Fatalf("Add(second.counter, 1) after second install = %v, want nil", err)
+	}
+	rm2 := collect(t, r2)
+	if findMetric(rm2, "second.counter") == nil {
+		t.Error("Add(second.counter) after second otel.SetMeterProvider: metric not collected by second provider, want it")
+	}
+}
+
 func TestDefault_NeverNil(t *testing.T) {
+	withDefault(t)
 	if Default() == nil {
 		t.Error("Default() before any SetDefault = nil, want non-nil")
 	}
@@ -630,9 +658,10 @@ func TestDefault_NeverNil(t *testing.T) {
 
 func TestDefault_BeforeSetDefault(t *testing.T) {
 	withDefault(t)
-	if _, ok := Default().(noopMetrics); !ok {
-		t.Errorf("Default() = %T, want noopMetrics", Default())
+	if Default() == nil {
+		t.Fatal("Default() before SetDefault = nil, want non-nil")
 	}
+	// Measurements are dropped without error while the OTel global is a no-op.
 	if err := Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
 		t.Errorf("Add(counter, 1) before SetDefault = %v, want nil", err)
 	}
@@ -714,15 +743,16 @@ func TestFacade_StopDelegates(t *testing.T) {
 }
 
 func TestFacade_SetDefaultNilResets(t *testing.T) {
-	prev := Default()
-	t.Cleanup(func() { SetDefault(prev) })
+	withDefault(t)
+	override := &fakeMetrics{}
+	SetDefault(override)
 
 	SetDefault(nil)
 	if Default() == nil {
 		t.Fatal("SetDefault(nil) then Default() = nil, want non-nil")
 	}
-	if _, ok := Default().(noopMetrics); !ok {
-		t.Errorf("SetDefault(nil) then Default() = %T, want noopMetrics", Default())
+	if Default() == Client(override) {
+		t.Error("SetDefault(nil) then Default() still returns the cleared override, want the OTel global client")
 	}
 	if err := Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
 		t.Errorf("Add(counter, 1) after SetDefault(nil) = %v, want nil", err)

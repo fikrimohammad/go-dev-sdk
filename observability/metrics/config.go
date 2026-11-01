@@ -34,9 +34,8 @@ type Config struct {
 	// Scope is the OTel instrumentation scope name for created instruments.
 	// Empty uses DefaultInstrumentationScope.
 	Scope string `yaml:"scope" json:"scope"`
-	// Insecure disables TLS for the exporter connection. Unset defaults to
-	// insecure, preserving the historical default.
-	Insecure *bool `yaml:"insecure" json:"insecure"`
+	// Insecure disables TLS for the exporter connection. The zero value uses TLS.
+	Insecure bool `yaml:"insecure" json:"insecure"`
 	// Headers are extra headers sent with OTLP exports.
 	Headers map[string]string `yaml:"headers" json:"headers"`
 	// GlobalKV contains resource attributes attached to exported metrics.
@@ -88,10 +87,4 @@ func (c *Config) validate() error {
 		errs = append(errs, fmt.Errorf("metrics: histogram_max_scale must be between -10 and 20"))
 	}
 	return errors.Join(errs...)
-}
-
-// isInsecure reports whether the exporter connection skips TLS. Unset defaults
-// to insecure, preserving the historical default.
-func (c Config) isInsecure() bool {
-	return c.Insecure == nil || *c.Insecure
 }

@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"maps"
 	"strings"
 	"testing"
@@ -111,21 +112,35 @@ func TestConfig_Validate(t *testing.T) {
 	})
 }
 
-func TestConfig_IsInsecure(t *testing.T) {
+func TestConfig(t *testing.T) {
+	t.Run("zero-value Config uses TLS", func(t *testing.T) {
+		if got := (Config{}).Insecure; got {
+			t.Errorf("Config{}.Insecure = %v, want false", got)
+		}
+	})
+
 	tests := []struct {
-		name string
-		cfg  Config
-		want bool
+		name     string
+		insecure bool
 	}{
-		{name: "isInsecure defaults to insecure", cfg: Config{}, want: true},
-		{name: "isInsecure honors an explicit false", cfg: Config{Insecure: new(false)}, want: false},
-		{name: "isInsecure honors an explicit true", cfg: Config{Insecure: new(true)}, want: true},
+		{name: "Insecure false uses TLS", insecure: false},
+		{name: "Insecure true uses plaintext", insecure: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.cfg.isInsecure(); got != tt.want {
-				t.Errorf("isInsecure(%+v) = %t, want %t", tt.cfg, got, tt.want)
+			// New dials lazily, so a short timeout and an unreachable endpoint
+			// still build a client; this checks that both settings are accepted.
+			c, err := New(context.Background(), testInfo(), Config{
+				Endpoint: "127.0.0.1:1",
+				Timeout:  100 * time.Millisecond,
+				Insecure: tt.insecure,
+			})
+			if err != nil {
+				t.Fatalf("New(Insecure=%t) error = %v, want nil", tt.insecure, err)
 			}
+			// Stop may fail to flush to the unreachable endpoint; the test only
+			// checks construction.
+			_ = c.Stop(context.Background())
 		})
 	}
 }
