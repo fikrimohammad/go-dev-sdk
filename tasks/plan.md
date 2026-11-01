@@ -76,7 +76,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T3: identity: ErrName prefix (I1), strict
 - [x] T4: errs: Is, LogValue, SlogAttr fixes, test first (E1–E3)
 - [x] T5: errs: package doc, AsType, test wording, strict (E4, X8, X9)
-- [ ] T6: errgroup: PanicError, no naked returns, no nil-ctx fallback, test first (G2, X7)
+- [x] T6: errgroup: PanicError, no naked returns, no nil-ctx fallback, test first (G2, X7)
 - [ ] T7: errgroup: const default, docs, nolint, test wording, strict (G1, G3, G4, X9)
 
 ### Checkpoint A: small modules strict

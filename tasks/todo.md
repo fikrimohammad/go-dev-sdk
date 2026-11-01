@@ -125,13 +125,13 @@ Add `errs` to the strict list.
 fallback in `New`.
 
 **Acceptance criteria:**
-- [ ] *(regression)* Panic cases in `TestGroup_Go`: Wait returns an error that `errors.As`
+- [x] *(regression)* Panic cases in `TestGroup_Go`: Wait returns an error that `errors.As`
       matches as `*PanicError`, with the original Value and a non-empty Stack; an error
       panic value is reachable with `errors.Is`.
-- [ ] No `fmt.Errorf` assembles stack text.
+- [x] No `fmt.Errorf` assembles stack text.
 
 **Verification:**
-- [ ] The tests fail before and pass after; errgroup module checks pass; coverage stays 100%.
+- [x] The tests fail before and pass after; errgroup module checks pass; coverage stays 100%.
 
 **Dependencies:** T2
 **Files likely touched:** `errgroup/errgroup.go`, `errgroup/errgroup_test.go`

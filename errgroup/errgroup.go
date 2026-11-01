@@ -3,8 +3,8 @@
 //
 // Compared to the upstream errgroup, this package:
 //   - Enforces a maxConcurrency limit via functional options.
-//   - Recovers from panics inside tasks and converts them into errors,
-//     preserving the original error type (via %w) and the panic stack trace.
+//   - Recovers from panics inside tasks and reports them as a *PanicError
+//     carrying the panic value and stack trace.
 //   - Skips scheduling tasks whose parent context is already canceled.
 //   - Supports child groups (SubGroup) that inherit the parent's context
 //     and default concurrency limit.
@@ -17,6 +17,27 @@ import (
 
 	"golang.org/x/sync/errgroup"
 )
+
+// PanicError is returned by Wait when a task panics. Value is the value passed to
+// panic, and Stack is the goroutine stack at the point of the panic.
+type PanicError struct {
+	// Value is the value passed to panic.
+	Value any
+
+	// Stack is the goroutine stack captured at the point of the panic.
+	Stack []byte
+}
+
+// Error reports the panic value.
+func (e *PanicError) Error() string {
+	return "errgroup: task panicked: " + fmt.Sprint(e.Value)
+}
+
+// Unwrap returns Value when it is an error, so errors.Is and errors.As reach it; otherwise nil.
+func (e *PanicError) Unwrap() error {
+	err, _ := e.Value.(error)
+	return err
+}
 
 // Group is a concurrency-limited, panic-safe wrapper over errgroup.Group.
 //
@@ -41,8 +62,7 @@ type Group struct {
 // New returns a Group whose internal context is derived from ctx and cancelled
 // on the first task error, the first recovered panic, or when Wait returns.
 //
-// A nil ctx is treated as context.Background(); callers are encouraged to pass
-// context.Background() explicitly rather than relying on this fallback.
+// ctx must be non-nil.
 //
 // Options are applied left-to-right; see WithMaxConcurrency for the primary
 // knob. If maxConcurrency <= 0, no concurrency limit is enforced.
@@ -51,10 +71,6 @@ func New(ctx context.Context, opts ...Option) *Group {
 	for _, opt := range opts {
 		opt(o)
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	eg, egCtx := errgroup.WithContext(ctx)
 	if o.maxConcurrency > 0 {
 		// SetLimit(0) would block *all* new goroutines — treat 0 as "unlimited"
@@ -74,9 +90,9 @@ func New(ctx context.Context, opts ...Option) *Group {
 // If the group's context is already canceled when f would start, f is not
 // invoked and the cancellation error is reported to the group instead.
 //
-// Panics inside f are recovered and returned as an error wrapped with a
-// captured stack trace. When the panic value is itself an error, it is
-// wrapped with %w so callers can use errors.Is / errors.As against it.
+// Panics inside f are recovered and reported as a *PanicError carrying the
+// panic value and a captured stack trace. When the panic value is itself an
+// error, errors.Is and errors.As reach it through PanicError.Unwrap.
 //
 // Only the first non-nil error observed by the group is retained; Wait
 // returns that error and cancels the group's context.
@@ -128,36 +144,22 @@ func (g *Group) SubGroup(opts ...Option) *Group {
 //  1. A pre-flight check on the group's context — tasks scheduled after the
 //     group is already canceled return the cancellation error immediately
 //     without invoking fn.
-//  2. Panic recovery — panics are turned into wrapped errors carrying the
-//     captured debug.Stack(). When the panic value is an error, %w is used
-//     so callers can still errors.Is / errors.As it.
+//  2. Panic recovery — panics are reported as a *PanicError carrying the
+//     panic value and debug.Stack(). The error is unwrapped by errors.Is and
+//     errors.As when the panic value is an error.
 //
 // The returned closure matches errgroup.Group.Go's expected signature.
 func (g *Group) adaptTask(fn func(ctx context.Context) error) func() error {
 	return func() (err error) {
 		defer func() {
-			if e := recover(); e != nil {
-				if pe, ok := e.(error); ok {
-					err = fmt.Errorf("panic recovered: %w\n%s", pe, debug.Stack())
-				} else {
-					err = fmt.Errorf("panic recovered: %v\n%s", e, debug.Stack())
-				}
+			if v := recover(); v != nil {
+				err = &PanicError{Value: v, Stack: debug.Stack()}
 			}
 		}()
-
-		// Fast path: if the group is already cancelled, do not even invoke fn.
-		// This keeps queued-behind-SetLimit tasks from doing pointless work
-		// after a sibling has already failed.
+		// Skip queued work once a sibling has failed or the parent is cancelled.
 		if ctxErr := g.ctx.Err(); ctxErr != nil {
-			err = ctxErr
-			return
+			return ctxErr
 		}
-
-		if fnErr := fn(g.ctx); fnErr != nil {
-			err = fnErr
-			return
-		}
-
-		return
+		return fn(g.ctx)
 	}
 }

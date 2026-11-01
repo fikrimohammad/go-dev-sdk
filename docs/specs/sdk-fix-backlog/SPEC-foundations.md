@@ -205,8 +205,8 @@ func (g *Group) adaptTask(fn func(ctx context.Context) error) func() error {
 			}
 		}()
 		// Skip queued work once a sibling has failed or the parent is cancelled.
-		if err := g.ctx.Err(); err != nil {
-			return err
+		if ctxErr := g.ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 		return fn(g.ctx)
 	}
