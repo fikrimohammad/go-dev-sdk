@@ -69,6 +69,10 @@ jobs:
           # fail only on new issues. Add a module in the commit that makes it clean;
           # never remove one.
           only-new-issues: ${{ !contains(fromJSON(env.STRICT_LINT_MODULES), matrix.module) }}
+          # The restored lint cache served stale results: on an unchanged commit it
+          # reported two nolintlint findings that an uncached run doesn't. A full
+          # uncached run of a module takes seconds, so results stay deterministic.
+          skip-cache: true
 
       - name: Vet
         run: go vet ./...
