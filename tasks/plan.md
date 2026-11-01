@@ -96,7 +96,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 ### Checkpoint C: new behavior in place, callers still compile
 ### Phase 4: migrate callers, then delete
 - [x] T15: db and redis tests and docs off SetDefault
-- [ ] T16: s3 tests and docs, nats docs off SetDefault
+- [x] T16: s3 tests and docs, nats docs off SetDefault
 - [x] T17: rest/server tests and docs off SetDefault
 - [x] T18: rest/client tests and docs off SetDefault
 - [ ] T19: delete SetDefault and the package Stop, rewrite observability/doc.go, observability strict

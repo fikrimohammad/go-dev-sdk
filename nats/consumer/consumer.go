@@ -185,13 +185,13 @@ type options struct {
 }
 
 // WithMetrics injects a metrics client for the instrumented messages. A nil
-// client falls back to the package-level default (metrics.SetDefault).
+// client falls back to the OTel global meter provider (otel.SetMeterProvider).
 func WithMetrics(m metrics.Client) Option {
 	return func(o *options) { o.metrics = m }
 }
 
 // WithTracer injects a tracer client for the instrumented messages. A nil
-// client falls back to the package-level default (tracer.SetDefault).
+// client falls back to the OTel global tracer provider (otel.SetTracerProvider).
 func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }

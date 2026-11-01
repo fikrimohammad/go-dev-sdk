@@ -338,10 +338,10 @@ change from "(metrics.SetDefault)" to "the OTel global meter/tracer provider".
 SetDefault in its tests).
 
 **Acceptance criteria:**
-- [ ] No `SetDefault` mention left in `s3` or `nats`.
+- [x] No `SetDefault` mention left in `s3` or `nats`.
 
 **Verification:**
-- [ ] Module checks pass in `s3` and `nats`.
+- [x] Module checks pass in `s3` and `nats`.
 
 **Dependencies:** T12, T13
 **Files likely touched:** `s3/s3_test.go`, `s3/s3.go`, `nats/consumer/consumer.go`, `nats/producer/producer.go`

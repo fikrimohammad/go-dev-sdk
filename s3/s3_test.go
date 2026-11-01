@@ -21,9 +21,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/middleware"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
@@ -374,10 +379,7 @@ func (s *stubPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectI
 func setup(api s3API, tm transferManager, presigner presigner) (*client, *fakeMetrics, *recordingExporter) {
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	tracer.SetDefault(tracer.Wrap(tp))
-
 	fm := &fakeMetrics{}
-	metrics.SetDefault(fm)
 
 	return &client{
 		s3API:     api,
@@ -388,6 +390,8 @@ func setup(api s3API, tm transferManager, presigner presigner) (*client, *fakeMe
 			serverAddr:           "localhost",
 			serverPort:           9000,
 			presignDefaultExpiry: 15 * time.Minute,
+			metrics:              fm,
+			tracer:               tracer.Wrap(tp),
 		},
 	}, fm, ex
 }
@@ -1185,6 +1189,84 @@ func TestInstrumentationMiddleware_HandleInitialize_Error(t *testing.T) {
 	attrs := spanAttrs(span)
 	if attrs["error.type"] != "BucketNotEmpty" {
 		t.Fatalf("error.type = %v, want BucketNotEmpty", attrs["error.type"])
+	}
+}
+
+// --- test: OTel global fallback ----------------------------------------------------
+
+func TestMiddleware_FallsBackToOTelGlobal(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevMP := otel.GetMeterProvider()
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		ctx := context.WithoutCancel(t.Context())
+		_ = tp.Shutdown(ctx)
+		_ = mp.Shutdown(ctx)
+		if otel.GetTracerProvider() != prevTP {
+			otel.SetTracerProvider(prevTP)
+		}
+		if otel.GetMeterProvider() != prevMP {
+			otel.SetMeterProvider(prevMP)
+		}
+	})
+
+	// No injected metrics or tracer: the middleware must use the OTel globals.
+	mw := &instrumentationMiddleware{meta: meta{region: "us-east-1"}}
+	ctx := middleware.WithOperationName(t.Context(), "PutObject")
+	bucketName := "global-bucket"
+	in := middleware.InitializeInput{Parameters: &s3.PutObjectInput{Bucket: &bucketName}}
+	next := middleware.InitializeHandlerFunc(func(_ context.Context, _ middleware.InitializeInput) (middleware.InitializeOutput, middleware.Metadata, error) {
+		return middleware.InitializeOutput{}, middleware.Metadata{}, nil
+	})
+
+	if _, _, err := mw.HandleInitialize(ctx, in, next); err != nil {
+		t.Fatalf("HandleInitialize: %v", err)
+	}
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+	if spans[0].Name() != "PutObject" || spans[0].SpanKind() != trace.SpanKindClient {
+		t.Errorf("span = %q kind %v, want PutObject client span", spans[0].Name(), spans[0].SpanKind())
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var hist metricdata.Histogram[float64]
+	var found bool
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != metricDuration {
+				continue
+			}
+			h, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("%s data = %T, want Histogram[float64]", metricDuration, m.Data)
+			}
+			hist, found = h, true
+		}
+	}
+	if !found {
+		t.Fatalf("metric %q not collected from the OTel global meter provider", metricDuration)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("%s data points = %d, want 1", metricDuration, len(hist.DataPoints))
+	}
+	dp := hist.DataPoints[0]
+	if dp.Count != 1 {
+		t.Errorf("%s count = %d, want 1", metricDuration, dp.Count)
+	}
+	if v, ok := dp.Attributes.Value(attribute.Key("rpc.method")); !ok || v.AsString() != "PutObject" {
+		t.Errorf("%s rpc.method = %v, want PutObject", metricDuration, v.AsString())
 	}
 }
 
