@@ -253,16 +253,16 @@ identity. `SetDefault(nil)` clears the override. `Config.Insecure` becomes `bool
 `contextOrBackground`.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestDefault_FollowsOTelGlobal`: `metrics.Add` after
+- [x] *(regression)* `TestDefault_FollowsOTelGlobal`: `metrics.Add` after
       `otel.SetMeterProvider(manual reader)` is collected, including an instrument first
       used before the install, and after a second `otel.SetMeterProvider`, new measurements
       reach the second provider. The test restores the global in `t.Cleanup`.
-- [ ] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure; `Insecure: true` does.
-- [ ] No nil-ctx substitution is left in `metrics`.
+- [x] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure; `Insecure: true` does.
+- [x] No nil-ctx substitution is left in `metrics`.
 
 **Verification:**
-- [ ] The tests fail before and pass after; observability checks pass; coverage ≥ 90.0%.
-- [ ] Module checks pass in the callers (db, redis, s3, nats, cron, rest).
+- [x] The tests fail before and pass after; observability checks pass; coverage ≥ 90.0%.
+- [x] Module checks pass in the callers (db, redis, s3, nats, cron, rest).
 
 **Dependencies:** T10
 **Files likely touched:** `observability/metrics/metrics.go`, `observability/metrics/config.go`, `observability/metrics/metrics_test.go`, `observability/metrics/config_test.go`
@@ -273,14 +273,14 @@ identity. `SetDefault(nil)` clears the override. `Config.Insecure` becomes `bool
 **Description:** The same as T12 for `tracer`, plus removing the doc references to `Init`.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestDefault_FollowsOTelGlobal`: a span from `tracer.Tracer("x")` is
+- [x] *(regression)* `TestDefault_FollowsOTelGlobal`: a span from `tracer.Tracer("x")` is
       recorded after `otel.SetTracerProvider(recorder)`, and after a second install it
       reaches the second recorder.
-- [ ] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure.
-- [ ] `go doc -all ./tracer` has no `Init`, and no nil-ctx substitution is left.
+- [x] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure.
+- [x] `go doc -all ./tracer` has no `Init`, and no nil-ctx substitution is left.
 
 **Verification:**
-- [ ] The tests fail before and pass after; coverage ≥ 83.0%; callers' module checks pass.
+- [x] The tests fail before and pass after; coverage ≥ 83.0%; callers' module checks pass.
 
 **Dependencies:** T11
 **Files likely touched:** `observability/tracer/tracer.go`, `observability/tracer/config.go`, `observability/tracer/tracer_test.go`, `observability/tracer/config_test.go`
@@ -351,7 +351,9 @@ SetDefault in its tests).
 
 **Description:** `installDefaultTelemetry` installs OTel globals (a span recorder plus a
 manual reader) and asserts through them. `example_test.go` uses `tracer.SetGlobal(tc)`
-and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated.
+and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated. Its
+`metrics.New`/`tracer.New` calls target a plaintext local collector, so they set
+`Insecure: true` (TLS is the default since T12/T13).
 
 **Acceptance criteria:**
 - [ ] No `SetDefault` for metrics/tracer in `rest/server`.
@@ -383,7 +385,9 @@ and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated.
 
 **Description:** Delete `metrics.SetDefault`, `metrics.Stop`, `tracer.SetDefault`, and
 `tracer.Stop`, along with their tests. `Default()` returns the init-time
-`Wrap(otel.Get*Provider())`. Rewrite `observability/doc.go` for the OTel-global model.
+`Wrap(otel.Get*Provider())`. Rewrite `observability/doc.go` for the OTel-global model. Its example configs
+and `observability/README.md` (the `Insecure | true (nil)` rows, about lines 164/176) document
+the new TLS default and set `Insecure: true` for a plaintext local collector.
 Fix the remaining full-tree findings (contextcheck, forbidigo, recvcheck, ireturn now
 allowed). Add `observability` to the strict list.
 

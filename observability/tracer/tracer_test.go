@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
@@ -33,14 +34,17 @@ func fakeClient(shutdown func(context.Context) error) *client {
 	}
 }
 
-// withDefault installs the noop default for the duration of the test and
-// restores the previous default afterward, isolating the package facade from
-// other tests.
+// withDefault clears any SetDefault override for the duration of the test and
+// restores the OTel global tracer provider afterward, isolating the package
+// facade from other tests.
 func withDefault(t *testing.T) {
 	t.Helper()
-	prev := Default()
-	SetDefault(Noop())
-	t.Cleanup(func() { SetDefault(prev) })
+	prev := otel.GetTracerProvider()
+	SetDefault(nil)
+	t.Cleanup(func() {
+		SetDefault(nil)
+		otel.SetTracerProvider(prev)
+	})
 }
 
 func TestClient_StartSpan(t *testing.T) {
@@ -182,6 +186,39 @@ func TestNew_Validation(t *testing.T) {
 func TestDefault_NeverNil(t *testing.T) {
 	if Default() == nil {
 		t.Error("Default() before any SetDefault = nil, want non-nil")
+	}
+}
+
+func TestDefault_FollowsOTelGlobal(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	t.Cleanup(func() {
+		SetDefault(nil)
+		otel.SetTracerProvider(prev)
+	})
+
+	first := tracetest.NewSpanRecorder()
+	p1 := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(first))
+	t.Cleanup(func() { _ = p1.Shutdown(context.Background()) })
+	otel.SetTracerProvider(p1)
+
+	_, span := Tracer("x").Start(context.Background(), "op")
+	span.End()
+	if got := len(first.Ended()); got != 1 {
+		t.Errorf("after otel.SetTracerProvider(first), Tracer(x) ended spans in first = %d, want 1", got)
+	}
+
+	second := tracetest.NewSpanRecorder()
+	p2 := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(second))
+	t.Cleanup(func() { _ = p2.Shutdown(context.Background()) })
+	otel.SetTracerProvider(p2)
+
+	_, span = Tracer("x").Start(context.Background(), "op")
+	span.End()
+	if got := len(second.Ended()); got != 1 {
+		t.Errorf("after second otel.SetTracerProvider, Tracer(x) ended spans in second = %d, want 1", got)
+	}
+	if got := len(first.Ended()); got != 1 {
+		t.Errorf("after second otel.SetTracerProvider, first recorder ended spans = %d, want still 1", got)
 	}
 }
 

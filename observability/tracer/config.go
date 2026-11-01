@@ -22,9 +22,8 @@ type Config struct {
 	Endpoint string `yaml:"endpoint" json:"endpoint"`
 	// ExportTimeout limits each OTLP export.
 	ExportTimeout time.Duration `yaml:"export_timeout" json:"export_timeout"`
-	// Insecure disables TLS for the exporter connection. Unset defaults to
-	// insecure, preserving the historical default.
-	Insecure *bool `yaml:"insecure" json:"insecure"`
+	// Insecure disables TLS for the exporter connection. The zero value uses TLS.
+	Insecure bool `yaml:"insecure" json:"insecure"`
 	// Headers are extra headers sent with OTLP exports.
 	Headers map[string]string `yaml:"headers" json:"headers"`
 	// GlobalKV contains resource attributes attached to exported spans.
@@ -77,10 +76,4 @@ func (c *Config) validate() error {
 		errs = append(errs, fmt.Errorf("tracer: max_export_batch_size must not exceed max_queue_size"))
 	}
 	return errors.Join(errs...)
-}
-
-// isInsecure reports whether the exporter connection skips TLS. Unset defaults
-// to insecure, preserving the historical default.
-func (c Config) isInsecure() bool {
-	return c.Insecure == nil || *c.Insecure
 }

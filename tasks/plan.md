@@ -89,8 +89,8 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Checkpoint B: goconvey gone, coverage held
 ### Phase 3: observability behavior
-- [ ] T12: metrics: Default follows the OTel global, Insecure bool, no nil-ctx fallback (X10, O1, X7)
-- [ ] T13: tracer: the same, plus the doc fix (X10, O1, O3, X7)
+- [x] T12: metrics: Default follows the OTel global, Insecure bool, no nil-ctx fallback (X10, O1, X7)
+- [x] T13: tracer: the same, plus the doc fix (X10, O1, O3, X7)
 - [ ] T14: logs: delete SetStreams and the stream vars (O2)
 
 ### Checkpoint C: new behavior in place, callers still compile

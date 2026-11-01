@@ -1,6 +1,7 @@
 package tracer
 
 import (
+	"context"
 	"maps"
 	"testing"
 	"time"
@@ -101,20 +102,29 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
-func TestConfig_IsInsecure(t *testing.T) {
-	t.Run("isInsecure defaults to true", func(t *testing.T) {
-		if got := (Config{}).isInsecure(); !got {
-			t.Errorf("Config{}.isInsecure() = %v, want true", got)
+func TestConfig(t *testing.T) {
+	t.Run("the zero-value Config uses TLS", func(t *testing.T) {
+		if got := (Config{}).Insecure; got {
+			t.Errorf("Config{}.Insecure = %v, want false", got)
 		}
 	})
 
-	t.Run("isInsecure honors an explicit flag", func(t *testing.T) {
-		no, yes := false, true
-		if got := (Config{Insecure: &no}).isInsecure(); got {
-			t.Errorf("Config{Insecure: false}.isInsecure() = %v, want false", got)
-		}
-		if got := (Config{Insecure: &yes}).isInsecure(); !got {
-			t.Errorf("Config{Insecure: true}.isInsecure() = %v, want true", got)
-		}
-	})
+	tests := []struct {
+		name     string
+		insecure bool
+	}{
+		{name: "TLS exporter is created", insecure: false},
+		{name: "plaintext exporter is created", insecure: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := New(context.Background(), testInfo(), Config{Insecure: tt.insecure})
+			if err != nil {
+				t.Fatalf("New(Insecure=%v) error = %v, want nil", tt.insecure, err)
+			}
+			if err := c.Stop(context.Background()); err != nil {
+				t.Errorf("Stop() = %v, want nil", err)
+			}
+		})
+	}
 }
