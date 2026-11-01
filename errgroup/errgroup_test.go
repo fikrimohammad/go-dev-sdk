@@ -264,7 +264,7 @@ func TestGroup_Go_SkipsAfterCancellation(t *testing.T) {
 		t.Fatalf("Wait() = %v, want context.Canceled", err)
 	}
 	if invoked.Load() {
-		t.Fatal("task body should not have been invoked after cancellation")
+		t.Fatalf("Go() task body invoked = %v, want false after cancellation", invoked.Load())
 	}
 }
 
@@ -325,7 +325,7 @@ func TestSubGroup_ErrorDoesNotCancelParent(t *testing.T) {
 
 	// Parent must still be alive.
 	if err := parent.Context().Err(); err != nil {
-		t.Fatalf("parent context should not be cancelled by child failure, got %v", err)
+		t.Fatalf("Context().Err() after child failure = %v, want nil", err)
 	}
 
 	// Parent can still run new work.
@@ -377,7 +377,7 @@ func TestSubGroup_ParentCancellationCancelsChild(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Nil context / defaults
+// Defaults
 // ---------------------------------------------------------------------------
 
 func TestNew_ZeroMaxConcurrencyMeansUnlimited(t *testing.T) {

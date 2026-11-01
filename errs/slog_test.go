@@ -24,16 +24,16 @@ func TestLogValue_BasicFields(t *testing.T) {
 		t.Errorf("message = %q, want %q", m["message"].String(), "job not found")
 	}
 	if _, ok := m["debug"]; ok {
-		t.Error("debug should not be present")
+		t.Errorf("LogValue() debug = %v, want absent", m["debug"])
 	}
 	if _, ok := m["meta"]; ok {
-		t.Error("meta should not be present")
+		t.Errorf("LogValue() meta = %v, want absent", m["meta"])
 	}
 	if _, ok := m["cause"]; ok {
-		t.Error("cause should not be present")
+		t.Errorf("LogValue() cause = %v, want absent", m["cause"])
 	}
 	if _, ok := m["stack"]; ok {
-		t.Error("stack should not be present")
+		t.Errorf("LogValue() stack = %v, want absent", m["stack"])
 	}
 }
 
@@ -56,10 +56,10 @@ func TestLogValue_AllFields(t *testing.T) {
 		t.Errorf("debug = %q, want %q", m["debug"].String(), "query returned 0 rows")
 	}
 	if _, ok := m["meta"]; !ok {
-		t.Error("meta should be present")
+		t.Error("LogValue() meta = absent, want present")
 	}
 	if _, ok := m["stack"]; !ok {
-		t.Error("stack should be present")
+		t.Error("LogValue() stack = absent, want present")
 	}
 }
 
@@ -86,7 +86,7 @@ func TestLogValue_WithNestedCause(t *testing.T) {
 
 	causeVal := m["cause"]
 	if causeVal.Kind() != slog.KindGroup {
-		t.Fatalf("cause should be a group, got kind %v", causeVal.Kind())
+		t.Fatalf("LogValue() cause kind = %v, want %v", causeVal.Kind(), slog.KindGroup)
 	}
 
 	innerGroup := causeVal.Group()
@@ -207,15 +207,21 @@ func TestError_LogValue(t *testing.T) {
 			}
 			errObj, ok := logEntry["err"].(map[string]any)
 			if !ok {
-				t.Fatalf("LogValue(%q) err = %v, want map[string]any", tt.name, logEntry["err"])
+				t.Fatalf("LogValue() err = %v, want map[string]any", logEntry["err"])
 			}
 
 			if got := errObj["debug"]; got != tt.wantDebug {
-				t.Errorf("LogValue(%q) debug = %v, want %v", tt.name, got, tt.wantDebug)
+				t.Errorf("LogValue() debug = %v, want %v", got, tt.wantDebug)
 			}
-			got, _ := errObj["meta"].(map[string]any)
-			if !maps.Equal(got, tt.wantMeta) {
-				t.Errorf("LogValue(%q) meta = %v, want %v", tt.name, got, tt.wantMeta)
+			if tt.wantMeta == nil {
+				if _, present := errObj["meta"]; present {
+					t.Errorf("LogValue() meta = %v, want absent", errObj["meta"])
+				}
+			} else {
+				got, _ := errObj["meta"].(map[string]any)
+				if !maps.Equal(got, tt.wantMeta) {
+					t.Errorf("LogValue() meta = %v, want %v", got, tt.wantMeta)
+				}
 			}
 		})
 	}

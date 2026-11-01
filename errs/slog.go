@@ -43,6 +43,9 @@ func (e *Error) LogValue() slog.Value {
 // SlogAttr returns an slog Attr that logs err using LogValue() for structured output.
 // It finds the first *Error in err's chain, so wrapped errors keep the structured
 // output. Errors without an *Error in their chain are logged with slog.Any.
+// Only the found *Error's own fields are logged, so text added by outer
+// wrappers, such as "handler: " in fmt.Errorf("handler: %w", e), is not
+// included; put that context in the log message instead.
 // Usage: slog.Error("msg", errs.SlogAttr(err)).
 func SlogAttr(err error) slog.Attr {
 	if e, ok := errors.AsType[*Error](err); ok {

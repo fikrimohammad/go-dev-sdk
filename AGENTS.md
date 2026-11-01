@@ -23,7 +23,8 @@ perform unrelated repo-wide rewrites.
   follow the [Google Go Style Guide](https://google.github.io/styleguide/go/).
   `.golangci.yml` (golangci-lint >= v2.6) enforces its mechanical rules plus
   `modernize`; new and changed code must pass
-  `golangci-lint run --new-from-merge-base=main ./...` for each module.
+  `golangci-lint run --new-from-merge-base=main ./...` for each module (the
+  full tree, `golangci-lint run ./...`, for modules in `STRICT_LINT_MODULES`).
 - Client packages may export an interface describing their caller-facing
   surface (so users can generate mocks, e.g. with gomock), and constructors may
   return it. This overrides the go-best-practices "return concrete types" rule
@@ -71,8 +72,8 @@ go mod tidy -diff
 ```
 
 Existing code predates the style-guide lint rules, so lint only what changed
-since `main` (CI uses `only-new-issues` outside the strict list below). Fix `gostyle` findings in code you
-wrote or touched.
+since `main` (CI uses `only-new-issues` outside the strict list below). Fix
+`gostyle` findings in code you wrote or touched.
 
 Modules listed in `STRICT_LINT_MODULES` in `.github/workflows/ci.yml` must pass
 `golangci-lint run ./...` on the full tree, not only new issues. Add a module to
@@ -99,4 +100,6 @@ DB_POSTGRES_DSN='postgres://app:secret@127.0.0.1:5432/report_db?sslmode=disable'
       `opentelemetry-semconv` skill.
 - [ ] New or changed Go code follows the `go-best-practices` skill.
 - [ ] The verification commands above pass, including `modernize` and the
-      style-guide rules through `golangci-lint run --new-from-merge-base=main ./...`.
+      style-guide rules through
+      `golangci-lint run --new-from-merge-base=main ./...` (the full tree,
+      `golangci-lint run ./...`, for modules in `STRICT_LINT_MODULES`).

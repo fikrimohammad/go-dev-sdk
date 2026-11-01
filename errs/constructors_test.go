@@ -18,7 +18,7 @@ func TestNew(t *testing.T) {
 		t.Errorf("Cause() = %v, want nil", err.Cause())
 	}
 	if len(err.stack) == 0 {
-		t.Error("stack should be captured")
+		t.Errorf("New() stack len = %d, want > 0", len(err.stack))
 	}
 }
 
@@ -36,7 +36,7 @@ func TestWrap(t *testing.T) {
 		t.Errorf("Cause() = %v, want %v", err.Cause(), cause)
 	}
 	if len(err.stack) == 0 {
-		t.Error("stack should be captured")
+		t.Errorf("Wrap() stack len = %d, want > 0", len(err.stack))
 	}
 }
 
@@ -51,7 +51,7 @@ func TestAsError_WithError(t *testing.T) {
 
 	got := AsError(original)
 	if got != original {
-		t.Error("AsError should return the same *Error from chain")
+		t.Errorf("AsError(%v) = %v, want %v", original, got, original)
 	}
 }
 
@@ -66,6 +66,6 @@ func TestAsError_PlainError(t *testing.T) {
 		t.Errorf("Message() = %q, want %q", got.Message(), "some error")
 	}
 	if got.Cause() != plain {
-		t.Error("Cause should be the original error")
+		t.Errorf("AsError(%v).Cause() = %v, want %v", plain, got.Cause(), plain)
 	}
 }

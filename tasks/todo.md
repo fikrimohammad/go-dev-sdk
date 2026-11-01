@@ -7,6 +7,10 @@ Plan: [plan.md](plan.md). Spec: [SPEC-foundations](../docs/specs/sdk-fix-backlog
 lint (full `golangci-lint run ./...` for strict modules; `--new-from-merge-base=main`
 otherwise), gostyle, and `go mod tidy -diff`.
 
+**Test-wording check** (added after the Checkpoint A review: lint misses the
+"X should Y" style). In every module a task touches, this must print nothing:
+`grep -rnE 't\.(Errorf|Fatalf|Error|Fatal)\(.*\b(should|expected|actual|Expected|Actual)\b' --include=*_test.go .`
+
 **TDD rule:** for every test marked *(regression)*, run it before the fix and record that
 it fails, then implement.
 
@@ -155,8 +159,8 @@ messages. Add `errgroup` to the strict list.
 **Estimated scope:** S
 
 ### Checkpoint A: small modules strict
-- [ ] identity, errs, errgroup, and rest are strict, and CI is green on the draft PR.
-- [ ] Module checks pass in every go.work module (confloader included).
+- [x] identity, errs, errgroup, and rest are strict, and CI is green on the draft PR.
+- [x] Module checks pass in every go.work module (confloader included).
 
 ---
 
