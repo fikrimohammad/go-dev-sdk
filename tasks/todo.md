@@ -220,11 +220,13 @@ package `testing`.
 `noop` import alias, and run `go mod tidy` so goconvey leaves `observability/go.mod`.
 
 **Acceptance criteria:**
-- [ ] `grep -rn goconvey .` (excluding vendor) finds nothing; coverage ≥ 83.0%.
-- [ ] `go mod tidy -diff` is clean.
+- [x] No `.go` file imports goconvey (`grep -rn goconvey --include=*.go .`, excluding vendor, finds nothing); coverage ≥ 83.0%.
+- [x] `go mod tidy -diff` is clean. goconvey stays in go.mod only as `// indirect`: mockey
+      requires it, and mockey is used only to swap the stream vars T14 deletes. Removing
+      it from go.mod moved to T14.
 
 **Verification:**
-- [ ] Module checks pass in `observability`.
+- [x] Module checks pass in `observability`.
 
 **Dependencies:** T8, T9, T10
 **Files likely touched:** `observability/tracer/tracer_test.go`, `observability/tracer/config_test.go`, `observability/go.mod`, `observability/go.sum`
@@ -286,6 +288,8 @@ redirected streams pass `Config.Writer` / `ErrorWriter` instead.
 
 **Acceptance criteria:**
 - [ ] `grep -rn 'SetStreams\|streamWriter' .` finds nothing.
+- [ ] With the stream vars gone, the logs tests no longer use mockey, so `go mod tidy`
+      removes mockey and goconvey from `observability/go.mod` (moved here from T11).
 - [ ] Logs still route debug/info to Writer and warn/error to ErrorWriter (existing tests).
 
 **Verification:**

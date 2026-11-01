@@ -84,7 +84,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T8: attributes tests
 - [x] T9: logs tests
 - [x] T10: metrics tests
-- [ ] T11: tracer tests; remove goconvey from go.mod
+- [x] T11: tracer tests; remove goconvey from go.mod
 
 ### Checkpoint B: goconvey gone, coverage held
 ### Phase 3: observability behavior
