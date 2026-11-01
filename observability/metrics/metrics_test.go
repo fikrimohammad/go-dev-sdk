@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
-
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -74,128 +72,196 @@ func collect(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMe
 }
 
 func TestOtelMetrics_Add_Basic(t *testing.T) {
-	Convey("Add records a counter with normalized attributes", t, func() {
+	t.Run("Add records a counter with normalized attributes", func(t *testing.T) {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Add(ctx, Instrument{Name: "requests"}, 1, map[string]any{"order_id": "1"}), ShouldBeNil)
+		if err := c.Add(ctx, Instrument{Name: "requests"}, 1, map[string]any{"order_id": "1"}); err != nil {
+			t.Fatalf("Add(requests, 1, order_id=1) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
 		m := findMetric(rm, "requests")
-		So(m, ShouldNotBeNil)
+		if m == nil {
+			t.Fatal(`findMetric(requests) = nil, want metric`)
+		}
 
 		sum, ok := m.Data.(metricdata.Sum[int64])
-		So(ok, ShouldBeTrue)
-		So(len(sum.DataPoints), ShouldEqual, 1)
-		So(sum.DataPoints[0].Value, ShouldEqual, int64(1))
+		if !ok {
+			t.Fatalf("requests data = %T, want metricdata.Sum[int64]", m.Data)
+		}
+		if got := len(sum.DataPoints); got != 1 {
+			t.Fatalf("requests data points = %d, want 1", got)
+		}
+		if got := sum.DataPoints[0].Value; got != 1 {
+			t.Errorf("requests value = %d, want 1", got)
+		}
 
 		seen := map[string]string{}
 		for _, kv := range sum.DataPoints[0].Attributes.ToSlice() {
 			seen[string(kv.Key)] = kv.Value.AsString()
 		}
-		So(seen["order.id"], ShouldEqual, "1")
+		if got := seen["order.id"]; got != "1" {
+			t.Errorf("requests attribute order.id = %q, want %q", got, "1")
+		}
 	})
 }
 
 func TestOtelMetrics_Add_Accumulates(t *testing.T) {
-	Convey("repeated Add calls accumulate with identical attributes", t, func() {
+	t.Run("repeated Add calls accumulate with identical attributes", func(t *testing.T) {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Add(ctx, Instrument{Name: "requests"}, 3, nil), ShouldBeNil)
-		So(c.Add(ctx, Instrument{Name: "requests"}, 2, nil), ShouldBeNil)
+		if err := c.Add(ctx, Instrument{Name: "requests"}, 3, nil); err != nil {
+			t.Fatalf("Add(requests, 3) = %v, want nil", err)
+		}
+		if err := c.Add(ctx, Instrument{Name: "requests"}, 2, nil); err != nil {
+			t.Fatalf("Add(requests, 2) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
 		m := findMetric(rm, "requests")
-		So(m, ShouldNotBeNil)
+		if m == nil {
+			t.Fatal(`findMetric(requests) = nil, want metric`)
+		}
 
 		sum, ok := m.Data.(metricdata.Sum[int64])
-		So(ok, ShouldBeTrue)
-		So(sum.DataPoints[0].Value, ShouldEqual, int64(5))
+		if !ok {
+			t.Fatalf("requests data = %T, want metricdata.Sum[int64]", m.Data)
+		}
+		if got := sum.DataPoints[0].Value; got != 5 {
+			t.Errorf("requests value = %d, want 5", got)
+		}
 	})
 }
 
 func TestOtelMetrics_Record(t *testing.T) {
-	Convey("Record records histogram values", t, func() {
+	t.Run("Record records histogram values", func(t *testing.T) {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Record(ctx, Instrument{Name: "latency"}, 0.1, map[string]any{"path": "/api"}), ShouldBeNil)
-		So(c.Record(ctx, Instrument{Name: "latency"}, 0.3, map[string]any{"path": "/api"}), ShouldBeNil)
+		if err := c.Record(ctx, Instrument{Name: "latency"}, 0.1, map[string]any{"path": "/api"}); err != nil {
+			t.Fatalf("Record(latency, 0.1) = %v, want nil", err)
+		}
+		if err := c.Record(ctx, Instrument{Name: "latency"}, 0.3, map[string]any{"path": "/api"}); err != nil {
+			t.Fatalf("Record(latency, 0.3) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
 		m := findMetric(rm, "latency")
-		So(m, ShouldNotBeNil)
+		if m == nil {
+			t.Fatal(`findMetric(latency) = nil, want metric`)
+		}
 
 		hist, ok := m.Data.(metricdata.Histogram[float64])
-		So(ok, ShouldBeTrue)
-		So(len(hist.DataPoints), ShouldEqual, 1)
-		So(hist.DataPoints[0].Count, ShouldEqual, 2)
+		if !ok {
+			t.Fatalf("latency data = %T, want metricdata.Histogram[float64]", m.Data)
+		}
+		if got := len(hist.DataPoints); got != 1 {
+			t.Fatalf("latency data points = %d, want 1", got)
+		}
+		if got := hist.DataPoints[0].Count; got != 2 {
+			t.Errorf("latency count = %d, want 2", got)
+		}
 	})
 }
 
 func TestOtelMetrics_InstrumentMetadata(t *testing.T) {
-	Convey("instrument unit and description are exported", t, func() {
+	t.Run("instrument unit and description are exported", func(t *testing.T) {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Record(ctx,
+		if err := c.Record(ctx,
 			Instrument{Name: "http.server.request.duration", Unit: "s", Description: "request duration"},
 			0.25,
 			map[string]any{"http.route": "/users/:id"},
-		), ShouldBeNil)
+		); err != nil {
+			t.Fatalf("Record(http.server.request.duration, 0.25) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
 		m := findMetric(rm, "http.server.request.duration")
-		So(m, ShouldNotBeNil)
-		So(m.Unit, ShouldEqual, "s")
-		So(m.Description, ShouldEqual, "request duration")
-		So(rm.ScopeMetrics[0].Scope.Name, ShouldEqual, "myapp")
+		if m == nil {
+			t.Fatal(`findMetric(http.server.request.duration) = nil, want metric`)
+		}
+		if m.Unit != "s" {
+			t.Errorf("unit = %q, want %q", m.Unit, "s")
+		}
+		if m.Description != "request duration" {
+			t.Errorf("description = %q, want %q", m.Description, "request duration")
+		}
+		if got := rm.ScopeMetrics[0].Scope.Name; got != "myapp" {
+			t.Errorf("scope name = %q, want %q", got, "myapp")
+		}
 	})
 }
 
 func TestOtelMetrics_GaugeAndUpDown(t *testing.T) {
-	Convey("gauge and up-down counter instruments use the correct data model", t, func() {
+	t.Run("gauge and up-down counter instruments use the correct data model", func(t *testing.T) {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.AddUpDown(ctx, Instrument{Name: "queue.depth", Unit: "{item}"}, 5, nil), ShouldBeNil)
-		So(c.RecordGauge(ctx, Instrument{Name: "pool.utilization", Unit: "1"}, 0.5, nil), ShouldBeNil)
+		if err := c.AddUpDown(ctx, Instrument{Name: "queue.depth", Unit: "{item}"}, 5, nil); err != nil {
+			t.Fatalf("AddUpDown(queue.depth, 5) = %v, want nil", err)
+		}
+		if err := c.RecordGauge(ctx, Instrument{Name: "pool.utilization", Unit: "1"}, 0.5, nil); err != nil {
+			t.Fatalf("RecordGauge(pool.utilization, 0.5) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
 		upDown := findMetric(rm, "queue.depth")
-		So(upDown, ShouldNotBeNil)
+		if upDown == nil {
+			t.Fatal(`findMetric(queue.depth) = nil, want metric`)
+		}
 		sum, ok := upDown.Data.(metricdata.Sum[int64])
-		So(ok, ShouldBeTrue)
-		So(sum.IsMonotonic, ShouldBeFalse)
-		So(sum.DataPoints[0].Value, ShouldEqual, int64(5))
+		if !ok {
+			t.Fatalf("queue.depth data = %T, want metricdata.Sum[int64]", upDown.Data)
+		}
+		if sum.IsMonotonic {
+			t.Error("queue.depth IsMonotonic = true, want false")
+		}
+		if got := sum.DataPoints[0].Value; got != 5 {
+			t.Errorf("queue.depth value = %d, want 5", got)
+		}
 
 		gaugeMetric := findMetric(rm, "pool.utilization")
-		So(gaugeMetric, ShouldNotBeNil)
+		if gaugeMetric == nil {
+			t.Fatal(`findMetric(pool.utilization) = nil, want metric`)
+		}
 		gauge, ok := gaugeMetric.Data.(metricdata.Gauge[float64])
-		So(ok, ShouldBeTrue)
-		So(gauge.DataPoints[0].Value, ShouldEqual, 0.5)
+		if !ok {
+			t.Fatalf("pool.utilization data = %T, want metricdata.Gauge[float64]", gaugeMetric.Data)
+		}
+		if got := gauge.DataPoints[0].Value; got != 0.5 {
+			t.Errorf("pool.utilization value = %v, want 0.5", got)
+		}
 	})
 }
 
 func TestOtelMetrics_InvalidName(t *testing.T) {
-	Convey("invalid metric names return ErrInvalidMetricName and record nothing", t, func() {
+	t.Run("invalid metric names return ErrInvalidMetricName and record nothing", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
 		ctx := context.Background()
 
 		for _, name := range []string{"", "!!!", "1bad", "bad name", "bad/name", strings.Repeat("a", 256)} {
-			So(errors.Is(c.Add(ctx, Instrument{Name: name}, 1, nil), ErrInvalidMetricName), ShouldBeTrue)
-			So(errors.Is(c.Record(ctx, Instrument{Name: name}, 0.5, nil), ErrInvalidMetricName), ShouldBeTrue)
+			if err := c.Add(ctx, Instrument{Name: name}, 1, nil); !errors.Is(err, ErrInvalidMetricName) {
+				t.Errorf("Add(%q) = %v, want ErrInvalidMetricName", name, err)
+			}
+			if err := c.Record(ctx, Instrument{Name: name}, 0.5, nil); !errors.Is(err, ErrInvalidMetricName) {
+				t.Errorf("Record(%q) = %v, want ErrInvalidMetricName", name, err)
+			}
 		}
 
 		count := 0
 		c.instruments.Range(func(_, _ any) bool { count++; return true })
-		So(count, ShouldEqual, 0)
+		if count != 0 {
+			t.Errorf("cached instruments = %d, want 0", count)
+		}
 	})
 }
 
 func TestInstrumentNameValidation(t *testing.T) {
-	Convey("validateInstrument accepts OTel names and rejects invalid ones", t, func() {
+	t.Run("validateInstrument accepts OTel names", func(t *testing.T) {
 		for _, name := range []string{
 			"simple",
 			"with-dash",
@@ -205,9 +271,17 @@ func TestInstrumentNameValidation(t *testing.T) {
 			"db.response.status_code",
 		} {
 			got, err := validateInstrument(Instrument{Name: name})
-			So(err, ShouldBeNil)
-			So(got, ShouldEqual, name)
+			if err != nil {
+				t.Errorf("validateInstrument(%q) error = %v, want nil", name, err)
+				continue
+			}
+			if got != name {
+				t.Errorf("validateInstrument(%q) = %q, want %q", name, got, name)
+			}
 		}
+	})
+
+	t.Run("validateInstrument rejects invalid names", func(t *testing.T) {
 		for _, name := range []string{
 			"",
 			"1bad",
@@ -217,143 +291,217 @@ func TestInstrumentNameValidation(t *testing.T) {
 			"CamelCase",
 			"_leading",
 		} {
-			_, err := validateInstrument(Instrument{Name: name})
-			So(errors.Is(err, ErrInvalidMetricName), ShouldBeTrue)
+			if _, err := validateInstrument(Instrument{Name: name}); !errors.Is(err, ErrInvalidMetricName) {
+				t.Errorf("validateInstrument(%q) error = %v, want ErrInvalidMetricName", name, err)
+			}
 		}
 	})
 }
 
 func TestOtelMetrics_Caching(t *testing.T) {
-	Convey("instruments are cached after first use", t, func() {
+	t.Run("instruments are cached after first use", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Add(ctx, Instrument{Name: "requests"}, 1, nil), ShouldBeNil)
-		So(c.Add(ctx, Instrument{Name: "requests"}, 1, nil), ShouldBeNil)
-		So(c.Record(ctx, Instrument{Name: "latency"}, 0.1, nil), ShouldBeNil)
-		So(c.Record(ctx, Instrument{Name: "latency"}, 0.2, nil), ShouldBeNil)
+		if err := c.Add(ctx, Instrument{Name: "requests"}, 1, nil); err != nil {
+			t.Fatalf("Add(requests, 1) = %v, want nil", err)
+		}
+		if err := c.Add(ctx, Instrument{Name: "requests"}, 1, nil); err != nil {
+			t.Fatalf("Add(requests, 1) = %v, want nil", err)
+		}
+		if err := c.Record(ctx, Instrument{Name: "latency"}, 0.1, nil); err != nil {
+			t.Fatalf("Record(latency, 0.1) = %v, want nil", err)
+		}
+		if err := c.Record(ctx, Instrument{Name: "latency"}, 0.2, nil); err != nil {
+			t.Fatalf("Record(latency, 0.2) = %v, want nil", err)
+		}
 
 		v, ok := c.instruments.Load("requests")
-		So(ok, ShouldBeTrue)
+		if !ok {
+			t.Fatal(`instruments.Load(requests) ok = false, want true`)
+		}
 		entry := v.(*instrumentEntry)
-		So(entry.kind, ShouldEqual, kindCounter)
-		So(entry.counter, ShouldNotBeNil)
+		if entry.kind != kindCounter {
+			t.Errorf("requests kind = %v, want %v", entry.kind, kindCounter)
+		}
+		if entry.counter == nil {
+			t.Error("requests counter = nil, want non-nil")
+		}
 
 		v, ok = c.instruments.Load("latency")
-		So(ok, ShouldBeTrue)
+		if !ok {
+			t.Fatal(`instruments.Load(latency) ok = false, want true`)
+		}
 		entry = v.(*instrumentEntry)
-		So(entry.kind, ShouldEqual, kindHistogram)
-		So(entry.histogram, ShouldNotBeNil)
+		if entry.kind != kindHistogram {
+			t.Errorf("latency kind = %v, want %v", entry.kind, kindHistogram)
+		}
+		if entry.histogram == nil {
+			t.Error("latency histogram = nil, want non-nil")
+		}
 	})
 }
 
 func TestOtelMetrics_InstrumentConflict(t *testing.T) {
-	Convey("reusing a name with different metadata is rejected", t, func() {
+	t.Run("reusing a name with different metadata is rejected", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Add(ctx, Instrument{Name: "requests", Unit: "1"}, 1, nil), ShouldBeNil)
-		So(errors.Is(c.Add(ctx, Instrument{Name: "requests", Unit: "s"}, 1, nil), ErrInstrumentConflict), ShouldBeTrue)
-		So(errors.Is(c.Record(ctx, Instrument{Name: "requests"}, 0.5, nil), ErrInstrumentConflict), ShouldBeTrue)
+		if err := c.Add(ctx, Instrument{Name: "requests", Unit: "1"}, 1, nil); err != nil {
+			t.Fatalf("Add(requests, unit=1) = %v, want nil", err)
+		}
+		if err := c.Add(ctx, Instrument{Name: "requests", Unit: "s"}, 1, nil); !errors.Is(err, ErrInstrumentConflict) {
+			t.Errorf("Add(requests, unit=s) = %v, want ErrInstrumentConflict", err)
+		}
+		if err := c.Record(ctx, Instrument{Name: "requests"}, 0.5, nil); !errors.Is(err, ErrInstrumentConflict) {
+			t.Errorf("Record(requests) = %v, want ErrInstrumentConflict", err)
+		}
 	})
-
 }
 
 func TestOtelMetrics_DistinctNames(t *testing.T) {
-	Convey("names that were previously sanitized remain distinct", t, func() {
+	t.Run("names that were previously sanitized remain distinct", func(t *testing.T) {
 		c, reader := newTestMetrics(t)
 		ctx := context.Background()
 
-		So(c.Add(ctx, Instrument{Name: "foo-bar"}, 1, nil), ShouldBeNil)
-		So(c.Add(ctx, Instrument{Name: "foo_bar"}, 2, nil), ShouldBeNil)
-		So(c.Add(ctx, Instrument{Name: "foo.bar"}, 3, nil), ShouldBeNil)
+		if err := c.Add(ctx, Instrument{Name: "foo-bar"}, 1, nil); err != nil {
+			t.Fatalf("Add(foo-bar, 1) = %v, want nil", err)
+		}
+		if err := c.Add(ctx, Instrument{Name: "foo_bar"}, 2, nil); err != nil {
+			t.Fatalf("Add(foo_bar, 2) = %v, want nil", err)
+		}
+		if err := c.Add(ctx, Instrument{Name: "foo.bar"}, 3, nil); err != nil {
+			t.Fatalf("Add(foo.bar, 3) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
 		for _, name := range []string{"foo-bar", "foo_bar", "foo.bar"} {
-			So(findMetric(rm, name), ShouldNotBeNil)
+			if findMetric(rm, name) == nil {
+				t.Errorf("findMetric(%q) = nil, want metric", name)
+			}
 		}
 	})
 }
 
 func TestOtelMetrics_Provider(t *testing.T) {
-	Convey("Provider exposes the backing meter provider", t, func() {
+	t.Run("Provider exposes the backing meter provider", func(t *testing.T) {
 		provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewManualReader()))
 		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
 		c := newInstrumentClient(provider, "scope", provider.Shutdown)
-		So(c.Provider(), ShouldEqual, provider)
+		if got := c.Provider(); got != provider {
+			t.Errorf("Provider() = %v, want %v", got, provider)
+		}
 	})
 }
 
 func TestWrap(t *testing.T) {
-	Convey("Wrap uses a custom provider and the default scope", t, func() {
+	t.Run("Wrap uses a custom provider and the default scope", func(t *testing.T) {
 		reader := sdkmetric.NewManualReader()
 		provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
 		c := Wrap(provider)
-		So(c.Provider(), ShouldEqual, provider)
-		So(c.Add(context.Background(), Instrument{Name: "wrapped.count"}, 1, nil), ShouldBeNil)
+		if got := c.Provider(); got != provider {
+			t.Errorf("Wrap(provider).Provider() = %v, want %v", got, provider)
+		}
+		if err := c.Add(context.Background(), Instrument{Name: "wrapped.count"}, 1, nil); err != nil {
+			t.Fatalf("Add(wrapped.count, 1) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
-		So(findMetric(rm, "wrapped.count"), ShouldNotBeNil)
-		So(rm.ScopeMetrics[0].Scope.Name, ShouldEqual, DefaultInstrumentationScope)
-		So(c.Stop(context.Background()), ShouldBeNil)
+		if findMetric(rm, "wrapped.count") == nil {
+			t.Error(`findMetric(wrapped.count) = nil, want metric`)
+		}
+		if got := rm.ScopeMetrics[0].Scope.Name; got != DefaultInstrumentationScope {
+			t.Errorf("scope name = %q, want %q", got, DefaultInstrumentationScope)
+		}
+		if err := c.Stop(context.Background()); err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
 	})
 
-	Convey("WrapWithScope uses the requested scope", t, func() {
+	t.Run("WrapWithScope uses the requested scope", func(t *testing.T) {
 		reader := sdkmetric.NewManualReader()
 		provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
 		c := WrapWithScope(provider, "custom.scope")
-		So(c.Record(context.Background(), Instrument{Name: "wrapped.histogram"}, 0.5, nil), ShouldBeNil)
+		if err := c.Record(context.Background(), Instrument{Name: "wrapped.histogram"}, 0.5, nil); err != nil {
+			t.Fatalf("Record(wrapped.histogram, 0.5) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
-		So(rm.ScopeMetrics[0].Scope.Name, ShouldEqual, "custom.scope")
+		if got := rm.ScopeMetrics[0].Scope.Name; got != "custom.scope" {
+			t.Errorf("scope name = %q, want %q", got, "custom.scope")
+		}
 	})
 
-	Convey("Wrap(nil) is safe", t, func() {
+	t.Run("Wrap(nil) is safe", func(t *testing.T) {
 		c := Wrap(nil)
-		So(c, ShouldNotBeNil)
-		So(c.Provider(), ShouldNotBeNil)
-		So(c.Add(context.Background(), Instrument{Name: "noop.count"}, 1, nil), ShouldBeNil)
-		So(c.Stop(context.Background()), ShouldBeNil)
+		if c == nil {
+			t.Fatal("Wrap(nil) = nil, want non-nil")
+		}
+		if c.Provider() == nil {
+			t.Error("Wrap(nil).Provider() = nil, want non-nil")
+		}
+		if err := c.Add(context.Background(), Instrument{Name: "noop.count"}, 1, nil); err != nil {
+			t.Errorf("Add(noop.count, 1) = %v, want nil", err)
+		}
+		if err := c.Stop(context.Background()); err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
 	})
 }
 
 func TestNewMeterProvider_Resource(t *testing.T) {
-	Convey("newMeterProvider attaches identity and honors scope", t, func() {
+	t.Run("newMeterProvider attaches identity and honors scope", func(t *testing.T) {
 		cfg := Config{Scope: "custom.scope", GlobalKV: map[string]any{"deployment.environment.name": "staging"}}
 		cfg.setDefaults()
 		info := identity.Info{Name: "testapp", Version: "1.0.0", Environment: "production"}
 
 		reader := sdkmetric.NewManualReader()
 		provider, err := newMeterProvider(context.Background(), info, cfg, reader)
-		So(err, ShouldBeNil)
+		if err != nil {
+			t.Fatalf("newMeterProvider() error = %v, want nil", err)
+		}
 		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
 		c := newInstrumentClient(provider, cfg.Scope, provider.Shutdown)
-		So(c.Add(context.Background(), Instrument{Name: "resource.count", Unit: "{request}"}, 1, nil), ShouldBeNil)
+		if err := c.Add(context.Background(), Instrument{Name: "resource.count", Unit: "{request}"}, 1, nil); err != nil {
+			t.Fatalf("Add(resource.count, 1) = %v, want nil", err)
+		}
 
 		rm := collect(t, reader)
-		So(rm.Resource, ShouldNotBeNil)
+		if rm.Resource == nil {
+			t.Fatal("collected Resource = nil, want non-nil")
+		}
 		attrs := map[string]string{}
 		for _, kv := range rm.Resource.Attributes() {
 			attrs[string(kv.Key)] = kv.Value.AsString()
 		}
-		So(attrs["service.name"], ShouldEqual, "testapp")
-		So(attrs["service.version"], ShouldEqual, "1.0.0")
-		So(attrs["deployment.environment.name"], ShouldEqual, "production")
-		So(rm.ScopeMetrics[0].Scope.Name, ShouldEqual, "custom.scope")
+		wantAttrs := map[string]string{
+			"service.name":                "testapp",
+			"service.version":             "1.0.0",
+			"deployment.environment.name": "production",
+		}
+		for key, want := range wantAttrs {
+			if got := attrs[key]; got != want {
+				t.Errorf("resource attribute %s = %q, want %q", key, got, want)
+			}
+		}
+		if got := rm.ScopeMetrics[0].Scope.Name; got != "custom.scope" {
+			t.Errorf("scope name = %q, want %q", got, "custom.scope")
+		}
 	})
 }
 
 func TestOtelMetrics_Concurrent(t *testing.T) {
-	Convey("all instrument methods are concurrent-safe", t, func() {
+	t.Run("all instrument methods are concurrent-safe", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
 		ctx := context.Background()
 
+		// Passing means no panic or data race under -race; there is no value to assert.
 		var wg sync.WaitGroup
 		for range 50 {
 			wg.Go(func() {
@@ -364,125 +512,196 @@ func TestOtelMetrics_Concurrent(t *testing.T) {
 			})
 		}
 		wg.Wait()
-		So(true, ShouldBeTrue)
 	})
 }
 
 func TestOtelMetrics_Stop(t *testing.T) {
-	Convey("Stop is idempotent and shuts the provider exactly once", t, func() {
+	t.Run("Stop is idempotent and shuts the provider exactly once", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
 		var shut atomic.Int32
 		orig := c.shutdown
 		c.shutdown = func(ctx context.Context) error { shut.Add(1); return orig(ctx) }
 
-		So(c.Stop(context.Background()), ShouldBeNil)
-		So(c.Stop(context.Background()), ShouldBeNil)
-		So(shut.Load(), ShouldEqual, 1)
+		if err := c.Stop(context.Background()); err != nil {
+			t.Errorf("first Stop() = %v, want nil", err)
+		}
+		if err := c.Stop(context.Background()); err != nil {
+			t.Errorf("second Stop() = %v, want nil", err)
+		}
+		if got := shut.Load(); got != 1 {
+			t.Errorf("shutdown calls = %d, want 1", got)
+		}
 	})
 
-	Convey("Stop rejects subsequent measurements with ErrStopped", t, func() {
+	t.Run("Stop rejects subsequent measurements with ErrStopped", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
-		So(c.Stop(context.Background()), ShouldBeNil)
-		So(errors.Is(c.Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ErrStopped), ShouldBeTrue)
-		So(errors.Is(c.Record(context.Background(), Instrument{Name: "hist"}, 1, nil), ErrStopped), ShouldBeTrue)
-		So(errors.Is(c.AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil), ErrStopped), ShouldBeTrue)
-		So(errors.Is(c.RecordGauge(context.Background(), Instrument{Name: "gauge"}, 1, nil), ErrStopped), ShouldBeTrue)
+		if err := c.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop() = %v, want nil", err)
+		}
+		if err := c.Add(context.Background(), Instrument{Name: "counter"}, 1, nil); !errors.Is(err, ErrStopped) {
+			t.Errorf("Add() = %v, want ErrStopped", err)
+		}
+		if err := c.Record(context.Background(), Instrument{Name: "hist"}, 1, nil); !errors.Is(err, ErrStopped) {
+			t.Errorf("Record() = %v, want ErrStopped", err)
+		}
+		if err := c.AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil); !errors.Is(err, ErrStopped) {
+			t.Errorf("AddUpDown() = %v, want ErrStopped", err)
+		}
+		if err := c.RecordGauge(context.Background(), Instrument{Name: "gauge"}, 1, nil); !errors.Is(err, ErrStopped) {
+			t.Errorf("RecordGauge() = %v, want ErrStopped", err)
+		}
 	})
 
-	Convey("Stop returns the same shutdown error on repeated calls", t, func() {
+	t.Run("Stop returns the same shutdown error on repeated calls", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
 		boom := errors.New("shutdown failed")
 		c.shutdown = func(context.Context) error { return boom }
 
-		So(errors.Is(c.Stop(context.Background()), boom), ShouldBeTrue)
-		So(errors.Is(c.Stop(context.Background()), boom), ShouldBeTrue)
+		if err := c.Stop(context.Background()); !errors.Is(err, boom) {
+			t.Errorf("first Stop() = %v, want %v", err, boom)
+		}
+		if err := c.Stop(context.Background()); !errors.Is(err, boom) {
+			t.Errorf("second Stop() = %v, want %v", err, boom)
+		}
 	})
 }
 
 func TestOtelMetrics_NilContext(t *testing.T) {
-	Convey("nil contexts are tolerated by instrument methods", t, func() {
+	t.Run("nil contexts are tolerated by instrument methods", func(t *testing.T) {
 		c, _ := newTestMetrics(t)
 
 		//nolint:staticcheck // intentionally verifying nil-context handling
-		So(c.Add(nil, Instrument{Name: "nil.counter"}, 1, nil), ShouldBeNil)
+		if err := c.Add(nil, Instrument{Name: "nil.counter"}, 1, nil); err != nil {
+			t.Errorf("Add(nil ctx) = %v, want nil", err)
+		}
 		//nolint:staticcheck // intentionally verifying nil-context handling
-		So(c.Record(nil, Instrument{Name: "nil.hist"}, 0.5, nil), ShouldBeNil)
+		if err := c.Record(nil, Instrument{Name: "nil.hist"}, 0.5, nil); err != nil {
+			t.Errorf("Record(nil ctx) = %v, want nil", err)
+		}
 		//nolint:staticcheck // intentionally verifying nil-context handling
-		So(c.AddUpDown(nil, Instrument{Name: "nil.updown"}, 1, nil), ShouldBeNil)
+		if err := c.AddUpDown(nil, Instrument{Name: "nil.updown"}, 1, nil); err != nil {
+			t.Errorf("AddUpDown(nil ctx) = %v, want nil", err)
+		}
 		//nolint:staticcheck // intentionally verifying nil-context handling
-		So(c.RecordGauge(nil, Instrument{Name: "nil.gauge"}, 0.5, nil), ShouldBeNil)
+		if err := c.RecordGauge(nil, Instrument{Name: "nil.gauge"}, 0.5, nil); err != nil {
+			t.Errorf("RecordGauge(nil ctx) = %v, want nil", err)
+		}
 	})
 }
 
 func TestNoopMetrics(t *testing.T) {
-	Convey("noop metrics discard silently", t, func() {
+	t.Run("noop metrics discard silently", func(t *testing.T) {
 		m := noopMetrics{}
-		So(m.Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ShouldBeNil)
-		So(m.Record(context.Background(), Instrument{Name: "hist"}, 0.5, nil), ShouldBeNil)
-		So(m.AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil), ShouldBeNil)
-		So(m.RecordGauge(context.Background(), Instrument{Name: "gauge"}, 0.5, nil), ShouldBeNil)
-		So(m.Provider(), ShouldNotBeNil)
-		So(m.Stop(context.Background()), ShouldBeNil)
+		if err := m.Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
+			t.Errorf("Add() = %v, want nil", err)
+		}
+		if err := m.Record(context.Background(), Instrument{Name: "hist"}, 0.5, nil); err != nil {
+			t.Errorf("Record() = %v, want nil", err)
+		}
+		if err := m.AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil); err != nil {
+			t.Errorf("AddUpDown() = %v, want nil", err)
+		}
+		if err := m.RecordGauge(context.Background(), Instrument{Name: "gauge"}, 0.5, nil); err != nil {
+			t.Errorf("RecordGauge() = %v, want nil", err)
+		}
+		if m.Provider() == nil {
+			t.Error("Provider() = nil, want non-nil")
+		}
+		if err := m.Stop(context.Background()); err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
 	})
 }
 
 func TestNew_Validation(t *testing.T) {
-	Convey("New rejects an empty app name", t, func() {
+	t.Run("New rejects an empty app name", func(t *testing.T) {
 		_, err := New(context.Background(), identity.Info{}, Config{})
-		So(errors.Is(err, attributes.ErrMissingServiceName), ShouldBeTrue)
+		if !errors.Is(err, attributes.ErrMissingServiceName) {
+			t.Errorf("New(empty info) = %v, want ErrMissingServiceName", err)
+		}
 	})
 
-	Convey("New rejects an invalid config", t, func() {
+	t.Run("New rejects an invalid config", func(t *testing.T) {
 		_, err := New(context.Background(), testInfo(), Config{Timeout: -1})
-		So(err, ShouldNotBeNil)
+		if err == nil {
+			t.Error("New(negative timeout) = nil, want error")
+		}
 	})
 }
 
 func TestDefault_NeverNil(t *testing.T) {
-	Convey("Default returns a non-nil client before any SetDefault", t, func() {
-		So(Default(), ShouldNotBeNil)
+	t.Run("Default returns a non-nil client before any SetDefault", func(t *testing.T) {
+		if Default() == nil {
+			t.Error("Default() = nil, want non-nil")
+		}
 	})
 }
 
 func TestDefault_BeforeSetDefault(t *testing.T) {
-	Convey("before SetDefault the package funcs are noop", t, func() {
+	t.Run("before SetDefault the package funcs are noop", func(t *testing.T) {
 		withDefault(t)
-		So(Default(), ShouldHaveSameTypeAs, noopMetrics{})
-		So(Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ShouldBeNil)
-		So(Record(context.Background(), Instrument{Name: "hist"}, 0.5, nil), ShouldBeNil)
-		So(AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil), ShouldBeNil)
-		So(RecordGauge(context.Background(), Instrument{Name: "gauge"}, 0.5, nil), ShouldBeNil)
-		So(Stop(context.Background()), ShouldBeNil)
+		if _, ok := Default().(noopMetrics); !ok {
+			t.Errorf("Default() = %T, want noopMetrics", Default())
+		}
+		if err := Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
+			t.Errorf("Add() = %v, want nil", err)
+		}
+		if err := Record(context.Background(), Instrument{Name: "hist"}, 0.5, nil); err != nil {
+			t.Errorf("Record() = %v, want nil", err)
+		}
+		if err := AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil); err != nil {
+			t.Errorf("AddUpDown() = %v, want nil", err)
+		}
+		if err := RecordGauge(context.Background(), Instrument{Name: "gauge"}, 0.5, nil); err != nil {
+			t.Errorf("RecordGauge() = %v, want nil", err)
+		}
+		if err := Stop(context.Background()); err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
 	})
 }
 
 func TestFacade_SetDefault(t *testing.T) {
-	Convey("SetDefault routes the package funcs through the installed client", t, func() {
+	t.Run("SetDefault routes the package funcs through the installed client", func(t *testing.T) {
 		withDefault(t)
 		c, _ := newTestMetrics(t)
 		SetDefault(c)
-		So(Default(), ShouldEqual, c)
+		if got := Default(); got != c {
+			t.Fatalf("Default() = %v, want %v", got, c)
+		}
 
-		So(Add(context.Background(), Instrument{Name: "instrument.counter", Unit: "1"}, 1, nil), ShouldBeNil)
-		So(Record(context.Background(), Instrument{Name: "instrument.hist", Unit: "s"}, 0.5, nil), ShouldBeNil)
-		So(AddUpDown(context.Background(), Instrument{Name: "instrument.updown"}, 1, nil), ShouldBeNil)
-		So(RecordGauge(context.Background(), Instrument{Name: "instrument.gauge"}, 0.5, nil), ShouldBeNil)
+		if err := Add(context.Background(), Instrument{Name: "instrument.counter", Unit: "1"}, 1, nil); err != nil {
+			t.Errorf("Add() = %v, want nil", err)
+		}
+		if err := Record(context.Background(), Instrument{Name: "instrument.hist", Unit: "s"}, 0.5, nil); err != nil {
+			t.Errorf("Record() = %v, want nil", err)
+		}
+		if err := AddUpDown(context.Background(), Instrument{Name: "instrument.updown"}, 1, nil); err != nil {
+			t.Errorf("AddUpDown() = %v, want nil", err)
+		}
+		if err := RecordGauge(context.Background(), Instrument{Name: "instrument.gauge"}, 0.5, nil); err != nil {
+			t.Errorf("RecordGauge() = %v, want nil", err)
+		}
 	})
 }
 
 func TestFacade_LastWins(t *testing.T) {
-	Convey("repeated SetDefault calls replace the default", t, func() {
+	t.Run("repeated SetDefault calls replace the default", func(t *testing.T) {
 		withDefault(t)
 		first, second := &fakeMetrics{}, &fakeMetrics{}
 		SetDefault(first)
-		So(Default(), ShouldEqual, first)
+		if got := Default(); got != first {
+			t.Errorf("after first SetDefault, Default() = %v, want first", got)
+		}
 		SetDefault(second)
-		So(Default(), ShouldEqual, second)
+		if got := Default(); got != second {
+			t.Errorf("after second SetDefault, Default() = %v, want second", got)
+		}
 	})
 }
 
 func TestFacade_StopDelegates(t *testing.T) {
-	Convey("Stop delegates to the installed client", t, func() {
+	t.Run("Stop delegates to the installed client", func(t *testing.T) {
 		withDefault(t)
 		var shut atomic.Int32
 		fakeMe := &fakeMetrics{onStop: func(context.Context) error {
@@ -491,27 +710,39 @@ func TestFacade_StopDelegates(t *testing.T) {
 		}}
 		SetDefault(fakeMe)
 
-		So(Stop(context.Background()), ShouldBeNil)
-		So(shut.Load(), ShouldEqual, 1)
+		if err := Stop(context.Background()); err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
+		if got := shut.Load(); got != 1 {
+			t.Errorf("installed client Stop calls = %d, want 1", got)
+		}
 	})
 
-	Convey("Stop propagates the installed client's error", t, func() {
+	t.Run("Stop propagates the installed client's error", func(t *testing.T) {
 		withDefault(t)
 		boom := errors.New("shutdown failed")
 		SetDefault(&fakeMetrics{onStop: func(context.Context) error { return boom }})
-		So(errors.Is(Stop(context.Background()), boom), ShouldBeTrue)
+		if err := Stop(context.Background()); !errors.Is(err, boom) {
+			t.Errorf("Stop() = %v, want %v", err, boom)
+		}
 	})
 }
 
 func TestFacade_SetDefaultNilResets(t *testing.T) {
-	Convey("SetDefault(nil) restores the noop client", t, func() {
+	t.Run("SetDefault(nil) restores the noop client", func(t *testing.T) {
 		prev := Default()
 		t.Cleanup(func() { SetDefault(prev) })
 
 		SetDefault(nil)
-		So(Default(), ShouldNotBeNil)
-		So(Default(), ShouldHaveSameTypeAs, noopMetrics{})
-		So(Add(context.Background(), Instrument{Name: "counter"}, 1, nil), ShouldBeNil)
+		if Default() == nil {
+			t.Fatal("Default() after SetDefault(nil) = nil, want non-nil")
+		}
+		if _, ok := Default().(noopMetrics); !ok {
+			t.Errorf("Default() after SetDefault(nil) = %T, want noopMetrics", Default())
+		}
+		if err := Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
+			t.Errorf("Add() = %v, want nil", err)
+		}
 	})
 }
 
@@ -537,16 +768,24 @@ func (f *fakeExporter) Shutdown(context.Context) error {
 }
 
 func TestNewClientWithExporter(t *testing.T) {
-	Convey("builds a provider and shuts down its exporter", t, func() {
+	t.Run("builds a provider and shuts down its exporter", func(t *testing.T) {
 		cfg := Config{}
 		cfg.setDefaults()
 		exporter := &fakeExporter{}
 
 		c, err := newClientWithExporter(context.Background(), testInfo(), cfg, exporter)
-		So(err, ShouldBeNil)
-		So(c.Add(context.Background(), Instrument{Name: "exporter.count"}, 1, nil), ShouldBeNil)
-		So(c.Stop(context.Background()), ShouldBeNil)
-		So(exporter.shutdown.Load(), ShouldEqual, 1)
+		if err != nil {
+			t.Fatalf("newClientWithExporter() error = %v, want nil", err)
+		}
+		if err := c.Add(context.Background(), Instrument{Name: "exporter.count"}, 1, nil); err != nil {
+			t.Errorf("Add(exporter.count, 1) = %v, want nil", err)
+		}
+		if err := c.Stop(context.Background()); err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
+		if got := exporter.shutdown.Load(); got != 1 {
+			t.Errorf("exporter shutdown calls = %d, want 1", got)
+		}
 	})
 }
 

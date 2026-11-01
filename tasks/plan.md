@@ -83,7 +83,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 ### Phase 2: goconvey → package testing (no behavior change)
 - [x] T8: attributes tests
 - [ ] T9: logs tests
-- [ ] T10: metrics tests
+- [x] T10: metrics tests
 - [ ] T11: tracer tests; remove goconvey from go.mod
 
 ### Checkpoint B: goconvey gone, coverage held

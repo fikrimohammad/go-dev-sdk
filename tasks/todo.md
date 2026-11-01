@@ -205,10 +205,10 @@ package `testing`.
 **Description:** Convert `metrics_test.go` (592 lines) and `config_test.go`.
 
 **Acceptance criteria:**
-- [ ] No goconvey import in `metrics`; coverage ≥ 90.0%.
+- [x] No goconvey import in `metrics`; coverage ≥ 90.0%.
 
 **Verification:**
-- [ ] `go test -count=3 -shuffle=on -cover ./metrics/...` passes.
+- [x] `go test -count=3 -shuffle=on -cover ./metrics/...` passes.
 
 **Dependencies:** T2
 **Files likely touched:** `observability/metrics/metrics_test.go`, `observability/metrics/config_test.go`
