@@ -15,7 +15,7 @@ permissions:
 env:
   GO_VERSION: "1.26.5"
   GOLANGCI_VERSION: v2.15.0
-  STRICT_LINT_MODULES: '["errs","identity","rest"]'
+  STRICT_LINT_MODULES: '["errgroup","errs","identity","rest"]'
 
 jobs:
   modules:

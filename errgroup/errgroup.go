@@ -52,7 +52,7 @@ type Group struct {
 	// ctx is the group's cancellation-linked context, derived from the ctx
 	// passed to New via errgroup.WithContext. It is cancelled on the first
 	// task error, the first recovered panic, or when Wait returns.
-	ctx context.Context
+	ctx context.Context //nolint:containedctx // tasks receive the group ctx, as in upstream errgroup
 
 	// maxConcurrency is the configured limit propagated to child groups
 	// via SubGroup. A value <= 0 means "no limit".

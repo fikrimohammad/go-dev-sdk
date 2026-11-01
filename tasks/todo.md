@@ -144,11 +144,11 @@ fallback in `New`.
 messages. Add `errgroup` to the strict list.
 
 **Acceptance criteria:**
-- [ ] `DefaultMaxConcurrency` is a `const`, and every exported identifier is documented.
-- [ ] 0 full-tree lint and gostyle findings, and `errgroup` is strict.
+- [x] `DefaultMaxConcurrency` is a `const`, and every exported identifier is documented.
+- [x] 0 full-tree lint and gostyle findings, and `errgroup` is strict.
 
 **Verification:**
-- [ ] Module checks (strict) pass in `errgroup`; coverage is 100%.
+- [x] Module checks (strict) pass in `errgroup`; coverage is 100%.
 
 **Dependencies:** T6
 **Files likely touched:** `errgroup/option.go`, `errgroup/errgroup.go`, `errgroup/*_test.go`, `.github/workflows/ci.yml`
