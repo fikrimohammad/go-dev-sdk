@@ -62,39 +62,21 @@ func TestLogger_LevelRouting_Text(t *testing.T) {
 		l.Error(context.Background(), "error_msg")
 	})
 
-	contains := []struct {
-		name   string
-		got    string
-		substr string
-	}{
-		{"debug is written to stdout", outBuf.String(), "debug_msg"},
-		{"info is written to stdout", outBuf.String(), "info_msg"},
-		{"key value pair is written to stdout", outBuf.String(), "key=val"},
-		{"warn is written to stderr", errBuf.String(), "warn_msg"},
-		{"error is written to stderr", errBuf.String(), "error_msg"},
+	stdoutText, stderrText := outBuf.String(), errBuf.String()
+	for _, want := range []string{"debug_msg", "info_msg", "key=val"} {
+		if !strings.Contains(stdoutText, want) {
+			t.Errorf("Debug/Info stdout = %q, want substring %q", stdoutText, want)
+		}
 	}
-	for _, tt := range contains {
-		t.Run(tt.name, func(t *testing.T) {
-			if !strings.Contains(tt.got, tt.substr) {
-				t.Errorf("output = %q, want to contain %q", tt.got, tt.substr)
-			}
-		})
+	for _, want := range []string{"warn_msg", "error_msg"} {
+		if !strings.Contains(stderrText, want) {
+			t.Errorf("Warn/Error stderr = %q, want substring %q", stderrText, want)
+		}
 	}
-
-	absent := []struct {
-		name   string
-		got    string
-		substr string
-	}{
-		{"warn is not written to stdout", outBuf.String(), "warn_msg"},
-		{"error is not written to stdout", outBuf.String(), "error_msg"},
-	}
-	for _, tt := range absent {
-		t.Run(tt.name, func(t *testing.T) {
-			if strings.Contains(tt.got, tt.substr) {
-				t.Errorf("output = %q, want not to contain %q", tt.got, tt.substr)
-			}
-		})
+	for _, unwanted := range []string{"warn_msg", "error_msg"} {
+		if strings.Contains(stdoutText, unwanted) {
+			t.Errorf("Warn/Error stdout = %q, want no substring %q", stdoutText, unwanted)
+		}
 	}
 }
 
@@ -109,22 +91,16 @@ func TestLogger_LevelRouting_JSON(t *testing.T) {
 		l.Error(context.Background(), "error_json")
 	})
 
-	tests := []struct {
-		name   string
-		got    string
-		substr string
-	}{
-		{"info level is written to stdout", outBuf.String(), `"level":"INFO"`},
-		{"info message is written to stdout", outBuf.String(), `"msg":"info_json"`},
-		{"error level is written to stderr", errBuf.String(), `"level":"ERROR"`},
-		{"error message is written to stderr", errBuf.String(), `"msg":"error_json"`},
+	stdoutText, stderrText := outBuf.String(), errBuf.String()
+	for _, want := range []string{`"level":"INFO"`, `"msg":"info_json"`} {
+		if !strings.Contains(stdoutText, want) {
+			t.Errorf("Info stdout = %q, want substring %q", stdoutText, want)
+		}
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if !strings.Contains(tt.got, tt.substr) {
-				t.Errorf("output = %q, want to contain %q", tt.got, tt.substr)
-			}
-		})
+	for _, want := range []string{`"level":"ERROR"`, `"msg":"error_json"`} {
+		if !strings.Contains(stderrText, want) {
+			t.Errorf("Error stderr = %q, want substring %q", stderrText, want)
+		}
 	}
 }
 
@@ -142,19 +118,19 @@ func TestLogger_LevelFilter(t *testing.T) {
 	})
 
 	if got := outBuf.String() + errBuf.String(); strings.Contains(got, "filtered") {
-		t.Errorf("output = %q, want no records below warn", got)
+		t.Errorf("Debug/Info with Level=warn output = %q, want no record below warn", got)
 	}
 	tests := []struct {
 		name   string
 		substr string
 	}{
-		{"warn is kept on stderr", "kept warn"},
-		{"error is kept on stderr", "kept error"},
+		{name: "warn is kept on stderr", substr: "kept warn"},
+		{name: "error is kept on stderr", substr: "kept error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := errBuf.String(); !strings.Contains(got, tt.substr) {
-				t.Errorf("stderr = %q, want to contain %q", got, tt.substr)
+				t.Errorf("Warn/Error stderr = %q, want substring %q", got, tt.substr)
 			}
 		})
 	}
@@ -174,18 +150,21 @@ func TestLogger_NormalizeArgs(t *testing.T) {
 		text := outBuf.String()
 		for _, want := range []string{"order.id=123", "shop.id=456", "user.id=u1"} {
 			if !strings.Contains(text, want) {
-				t.Errorf("output = %q, want to contain %q", text, want)
+				t.Errorf("l.Info(...) output = %q, want substring %q", text, want)
 			}
 		}
 		for _, notWant := range []string{"order_id", "user_id"} {
 			if strings.Contains(text, notWant) {
-				t.Errorf("output = %q, want not to contain %q", text, notWant)
+				t.Errorf("l.Info(...) output = %q, want no substring %q", text, notWant)
 			}
 		}
 	})
 
 	t.Run("handles mixed pairs and attrs", func(t *testing.T) {
 		out := normalizeArgs([]any{"order_id", 1, slog.String("user_id", "u1")})
+		if len(out) != 3 {
+			t.Fatalf("normalizeArgs(order_id, 1, user_id attr) len = %d, want 3", len(out))
+		}
 		if out[0] != "order.id" {
 			t.Errorf("normalizeArgs(mixed)[0] = %v, want %q", out[0], "order.id")
 		}
@@ -217,7 +196,7 @@ func TestLogger_NormalizeArgs(t *testing.T) {
 		text := outBuf.String()
 		for _, want := range []string{"trace_id=trace", "span_id=span", "http.response.status_code=200"} {
 			if !strings.Contains(text, want) {
-				t.Errorf("output = %q, want to contain %q", text, want)
+				t.Errorf("l.Info(...) output = %q, want substring %q", text, want)
 			}
 		}
 	})
@@ -260,7 +239,7 @@ func TestLogger_GlobalKV(t *testing.T) {
 		for _, s := range streams {
 			for _, want := range wants {
 				if !strings.Contains(s.text, want) {
-					t.Errorf("%s = %q, want to contain %q", s.name, s.text, want)
+					t.Errorf("l.Info(with_global)/l.Warn(warn_global) %s = %q, want substring %q", s.name, s.text, want)
 				}
 			}
 		}
@@ -279,12 +258,12 @@ func TestLogger_GlobalKV(t *testing.T) {
 		text := outBuf.String()
 		for _, notWant := range []string{"spoofed", "0.0.0"} {
 			if strings.Contains(text, notWant) {
-				t.Errorf("output = %q, want not to contain %q", text, notWant)
+				t.Errorf("l.Info(...) output = %q, want no substring %q", text, notWant)
 			}
 		}
 		for _, want := range []string{"service.name=svc", "service.version=1.0"} {
 			if !strings.Contains(text, want) {
-				t.Errorf("output = %q, want to contain %q", text, want)
+				t.Errorf("l.Info(...) output = %q, want substring %q", text, want)
 			}
 		}
 	})
@@ -300,7 +279,7 @@ func TestLogger_NilContext(t *testing.T) {
 	})
 
 	if got := outBuf.String(); !strings.Contains(got, "nil_ctx_ok") {
-		t.Errorf("output = %q, want to contain %q", got, "nil_ctx_ok")
+		t.Errorf("l.Info(nil, nil_ctx_ok) output = %q, want substring %q", got, "nil_ctx_ok")
 	}
 }
 
@@ -316,7 +295,7 @@ func TestLogger_DefaultLogger(t *testing.T) {
 	got := errBuf.String()
 	for _, want := range []string{"default_msg", "level=INFO"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("stderr = %q, want to contain %q", got, want)
+			t.Errorf("newDefaultLogger().Info(default_msg, k, v) stderr = %q, want substring %q", got, want)
 		}
 	}
 }
@@ -336,7 +315,7 @@ func TestDefault_BeforeSetDefault(t *testing.T) {
 	})
 
 	if got := errBuf.String(); !strings.Contains(got, "pre_set_msg") {
-		t.Errorf("stderr = %q, want to contain %q", got, "pre_set_msg")
+		t.Errorf("Info(pre_set_msg) stderr = %q, want substring %q", got, "pre_set_msg")
 	}
 }
 
@@ -379,7 +358,7 @@ func TestFacade_NewAndSetDefault(t *testing.T) {
 	})
 
 	if got := outBuf.String(); !strings.Contains(got, "installed_msg") {
-		t.Errorf("stdout = %q, want to contain %q", got, "installed_msg")
+		t.Errorf("Info(installed_msg) stdout = %q, want substring %q", got, "installed_msg")
 	}
 }
 
@@ -394,11 +373,11 @@ func TestLogger_OmitEmptyIdentity(t *testing.T) {
 
 	text := outBuf.String()
 	if !strings.Contains(text, "service.name=svc") {
-		t.Errorf("output = %q, want to contain %q", text, "service.name=svc")
+		t.Errorf("l.Info(identity) output = %q, want substring %q", text, "service.name=svc")
 	}
 	for _, notWant := range []string{"service.version", "deployment.environment.name"} {
 		if strings.Contains(text, notWant) {
-			t.Errorf("output = %q, want not to contain %q", text, notWant)
+			t.Errorf("l.Info(...) output = %q, want no substring %q", text, notWant)
 		}
 	}
 }
@@ -412,14 +391,14 @@ func TestLogger_ConfiguredWriters(t *testing.T) {
 	l.Error(context.Background(), "error_msg")
 
 	if got := outBuf.String(); !strings.Contains(got, "info_msg") {
-		t.Errorf("Writer output = %q, want to contain %q", got, "info_msg")
+		t.Errorf("Info(info_msg) Writer output = %q, want substring %q", got, "info_msg")
 	}
 	if got := outBuf.String(); strings.Contains(got, "warn_msg") {
-		t.Errorf("Writer output = %q, want not to contain %q", got, "warn_msg")
+		t.Errorf("Warn(warn_msg) Writer output = %q, want no substring %q", got, "warn_msg")
 	}
 	for _, want := range []string{"warn_msg", "error_msg"} {
 		if got := errBuf.String(); !strings.Contains(got, want) {
-			t.Errorf("ErrorWriter output = %q, want to contain %q", got, want)
+			t.Errorf("Warn/Error(...) ErrorWriter output = %q, want substring %q", got, want)
 		}
 	}
 }
@@ -441,10 +420,10 @@ func TestLogger_TraceCorrelation(t *testing.T) {
 			t.Fatalf("json.Unmarshal(record) error = %v, want nil", err)
 		}
 		if wantTrace := span.SpanContext().TraceID().String(); record["trace_id"] != wantTrace {
-			t.Errorf("record[trace_id] = %v, want %q", record["trace_id"], wantTrace)
+			t.Errorf("Info(ctx) record[trace_id] = %v, want %q", record["trace_id"], wantTrace)
 		}
 		if wantSpan := span.SpanContext().SpanID().String(); record["span_id"] != wantSpan {
-			t.Errorf("record[span_id] = %v, want %q", record["span_id"], wantSpan)
+			t.Errorf("Info(ctx) record[span_id] = %v, want %q", record["span_id"], wantSpan)
 		}
 	})
 
@@ -459,10 +438,10 @@ func TestLogger_TraceCorrelation(t *testing.T) {
 			t.Fatalf("json.Unmarshal(record) error = %v, want nil", err)
 		}
 		if _, ok := record["trace_id"]; ok {
-			t.Errorf("record has trace_id = %v, want no trace_id key", record["trace_id"])
+			t.Errorf("Info(uncorrelated) record has trace_id = %v, want no trace_id key", record["trace_id"])
 		}
 		if _, ok := record["span_id"]; ok {
-			t.Errorf("record has span_id = %v, want no span_id key", record["span_id"])
+			t.Errorf("Info(uncorrelated) record has span_id = %v, want no span_id key", record["span_id"])
 		}
 	})
 }
@@ -480,14 +459,14 @@ func TestLogger_ExplicitCorrelationWins(t *testing.T) {
 
 	text := outBuf.String()
 	if got := strings.Count(text, "trace_id="); got != 1 {
-		t.Errorf("count(trace_id=) in %q = %d, want 1", text, got)
+		t.Errorf("Info(explicit, trace_id=manual-trace) count(trace_id=) in %q = %d, want 1", text, got)
 	}
 	if got := strings.Count(text, "span_id="); got != 1 {
-		t.Errorf("count(span_id=) in %q = %d, want 1", text, got)
+		t.Errorf("Info(explicit, span_id=manual-span) count(span_id=) in %q = %d, want 1", text, got)
 	}
 	for _, want := range []string{"trace_id=manual-trace", "span_id=manual-span"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("output = %q, want to contain %q", text, want)
+			t.Errorf("l.Info(...) output = %q, want substring %q", text, want)
 		}
 	}
 }
@@ -511,7 +490,7 @@ func TestFacade_SetDefaultNilResets(t *testing.T) {
 
 	SetDefault(nil)
 	if got := Default(); got == nil {
-		t.Errorf("after SetDefault(nil), Default() = nil, want non-nil")
+		t.Errorf("SetDefault(nil) then Default() = nil, want non-nil")
 	}
 
 	var errBuf bytes.Buffer
@@ -521,7 +500,7 @@ func TestFacade_SetDefaultNilResets(t *testing.T) {
 	})
 
 	if got := errBuf.String(); !strings.Contains(got, "after_nil") {
-		t.Errorf("stderr = %q, want to contain %q", got, "after_nil")
+		t.Errorf("Debug(after_nil) stderr = %q, want substring %q", got, "after_nil")
 	}
 }
 
@@ -542,7 +521,7 @@ func TestLogger_GlobalCorrelationWins(t *testing.T) {
 	l.Info(ctx, "global_correlation")
 
 	if got := strings.Count(outBuf.String(), `"trace_id"`); got != 1 {
-		t.Errorf("count(\"trace_id\") in %q = %d, want 1", outBuf.String(), got)
+		t.Errorf("Info(global_correlation) count(\"trace_id\") in %q = %d, want 1", outBuf.String(), got)
 	}
 
 	var record map[string]any
@@ -550,10 +529,10 @@ func TestLogger_GlobalCorrelationWins(t *testing.T) {
 		t.Fatalf("json.Unmarshal(record) error = %v, want nil", err)
 	}
 	if record["trace_id"] != "fixed-trace" {
-		t.Errorf("record[trace_id] = %v, want %q", record["trace_id"], "fixed-trace")
+		t.Errorf("Info(global_correlation) record[trace_id] = %v, want %q", record["trace_id"], "fixed-trace")
 	}
 	if wantSpan := span.SpanContext().SpanID().String(); record["span_id"] != wantSpan {
-		t.Errorf("record[span_id] = %v, want %q", record["span_id"], wantSpan)
+		t.Errorf("Info(ctx) record[span_id] = %v, want %q", record["span_id"], wantSpan)
 	}
 }
 
@@ -588,10 +567,10 @@ func TestSetStreams(t *testing.T) {
 	l.Error(context.Background(), "stream_error")
 
 	if got := outBuf.String(); !strings.Contains(got, "stream_info") {
-		t.Errorf("stdout = %q, want to contain %q", got, "stream_info")
+		t.Errorf("l.Info(stream_info) stdout = %q, want substring %q", got, "stream_info")
 	}
 	if got := errBuf.String(); !strings.Contains(got, "stream_error") {
-		t.Errorf("stderr = %q, want to contain %q", got, "stream_error")
+		t.Errorf("l.Error(stream_error) stderr = %q, want substring %q", got, "stream_error")
 	}
 }
 

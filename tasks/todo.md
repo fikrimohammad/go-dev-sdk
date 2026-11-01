@@ -236,9 +236,9 @@ package `testing`.
 **Estimated scope:** M
 
 ### Checkpoint B: goconvey gone, coverage held
-- [ ] Every observability package is at or above its baseline coverage, and no goconvey
+- [x] Every observability package is at or above its baseline coverage, and no goconvey
       import is left.
-- [ ] Behavior is unchanged: the other modules' tests still pass.
+- [x] Behavior is unchanged: the other modules' tests still pass.
 
 ---
 

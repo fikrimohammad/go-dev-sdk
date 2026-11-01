@@ -41,11 +41,14 @@ func TestConfig_Validate(t *testing.T) {
 		cfg      Config
 		wantErrs []error
 	}{
-		{"a defaulted Config validates", Config{}, nil},
-		{"invalid format is rejected", Config{Format: "xml"}, []error{ErrInvalidLogFormat}},
-		{"invalid level is rejected", Config{Level: "verbose"}, []error{ErrInvalidLogLevel}},
-		{"multiple invalid fields are aggregated", Config{Format: "xml", Level: "verbose"},
-			[]error{ErrInvalidLogFormat, ErrInvalidLogLevel}},
+		{name: "a defaulted Config validates", cfg: Config{}, wantErrs: nil},
+		{name: "invalid format is rejected", cfg: Config{Format: "xml"}, wantErrs: []error{ErrInvalidLogFormat}},
+		{name: "invalid level is rejected", cfg: Config{Level: "verbose"}, wantErrs: []error{ErrInvalidLogLevel}},
+		{
+			name:     "multiple invalid fields are aggregated",
+			cfg:      Config{Format: "xml", Level: "verbose"},
+			wantErrs: []error{ErrInvalidLogFormat, ErrInvalidLogLevel},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

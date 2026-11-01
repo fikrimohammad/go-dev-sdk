@@ -152,22 +152,22 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"other":   struct{ name string }{name: "x"},
 		}))
 		if got := m["user.id"].AsString(); got != "u1" {
-			t.Errorf(`user_id: AsString() = %q, want "u1"`, got)
+			t.Errorf(`ConvertMapsToKVs(user_id=u1)["user.id"].AsString() = %q, want "u1"`, got)
 		}
 		if got := m["count"].AsInt64(); got != 1 {
-			t.Errorf("count: AsInt64() = %d, want 1", got)
+			t.Errorf(`ConvertMapsToKVs(count=1)["count"].AsInt64() = %d, want 1`, got)
 		}
 		if got := m["big"].AsInt64(); got != 2 {
-			t.Errorf("big: AsInt64() = %d, want 2", got)
+			t.Errorf(`ConvertMapsToKVs(big=int64(2))["big"].AsInt64() = %d, want 2`, got)
 		}
 		if got := m["ratio"].AsFloat64(); got != 0.5 {
-			t.Errorf("ratio: AsFloat64() = %v, want 0.5", got)
+			t.Errorf(`ConvertMapsToKVs(ratio)["ratio"].AsFloat64() = %v, want 0.5`, got)
 		}
 		if got := m["enabled"].AsBool(); !got {
-			t.Errorf("enabled: AsBool() = %v, want true", got)
+			t.Errorf(`ConvertMapsToKVs(enabled=true)["enabled"].AsBool() = %v, want true`, got)
 		}
 		if got := m["other"].AsString(); got != "{x}" {
-			t.Errorf(`other: AsString() = %q, want "{x}"`, got)
+			t.Errorf(`ConvertMapsToKVs(other=struct)["other"].AsString() = %q, want "{x}"`, got)
 		}
 	})
 
@@ -179,16 +179,16 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"span_id":                   "span",
 		}))
 		if got := m["http.response.status_code"].AsInt64(); got != 200 {
-			t.Errorf("http.response.status_code: AsInt64() = %d, want 200", got)
+			t.Errorf(`ConvertMapsToKVs(http.response.status_code=200)["http.response.status_code"].AsInt64() = %d, want 200`, got)
 		}
 		if got := m["user_agent.original"].AsString(); got != "ua" {
-			t.Errorf(`user_agent.original: AsString() = %q, want "ua"`, got)
+			t.Errorf(`ConvertMapsToKVs(user_agent.original=ua)["user_agent.original"].AsString() = %q, want "ua"`, got)
 		}
 		if got := m["trace_id"].AsString(); got != "trace" {
-			t.Errorf(`trace_id: AsString() = %q, want "trace"`, got)
+			t.Errorf(`ConvertMapsToKVs(trace_id=trace)["trace_id"].AsString() = %q, want "trace"`, got)
 		}
 		if got := m["span_id"].AsString(); got != "span" {
-			t.Errorf(`span_id: AsString() = %q, want "span"`, got)
+			t.Errorf(`ConvertMapsToKVs(span_id=span)["span_id"].AsString() = %q, want "span"`, got)
 		}
 	})
 
@@ -202,34 +202,43 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"u8":  uint8(8),
 		}))
 		tests := []struct {
+			name string
 			key  string
 			want int64
 		}{
-			{key: "i32", want: 32},
-			{key: "i16", want: 16},
-			{key: "i8", want: 8},
-			{key: "u32", want: 32},
-			{key: "u16", want: 16},
-			{key: "u8", want: 8},
+			{name: "int32", key: "i32", want: 32},
+			{name: "int16", key: "i16", want: 16},
+			{name: "int8", key: "i8", want: 8},
+			{name: "uint32", key: "u32", want: 32},
+			{name: "uint16", key: "u16", want: 16},
+			{name: "uint8", key: "u8", want: 8},
 		}
 		for _, tt := range tests {
-			if got := m[attribute.Key(tt.key)].AsInt64(); got != tt.want {
-				t.Errorf("%s: AsInt64() = %d, want %d", tt.key, got, tt.want)
-			}
+			t.Run(tt.name, func(t *testing.T) {
+				if got := m[attribute.Key(tt.key)].AsInt64(); got != tt.want {
+					t.Errorf("ConvertMapsToKVs(%s=...)[%q].AsInt64() = %d, want %d", tt.key, tt.key, got, tt.want)
+				}
+			})
 		}
 	})
 
 	t.Run("float32 widens to float64", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{"ratio": float32(0.5)})
+		if len(kvs) != 1 {
+			t.Fatalf("len(ConvertMapsToKVs(ratio=float32(0.5))) = %d, want 1", len(kvs))
+		}
 		if got := kvs[0].Value.AsFloat64(); math.Abs(got-0.5) > 1e-10 {
-			t.Errorf("ratio: AsFloat64() = %v, want 0.5", got)
+			t.Errorf(`ConvertMapsToKVs(ratio)["ratio"].AsFloat64() = %v, want 0.5`, got)
 		}
 	})
 
 	t.Run("time.Duration is recorded as nanoseconds", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{"latency": 250 * time.Millisecond})
+		if len(kvs) != 1 {
+			t.Fatalf("len(ConvertMapsToKVs(latency=250ms)) = %d, want 1", len(kvs))
+		}
 		if got, want := kvs[0].Value.AsInt64(), int64(250*time.Millisecond); got != want {
-			t.Errorf("latency: AsInt64() = %d, want %d", got, want)
+			t.Errorf("ConvertMapsToKVs(latency=250ms)[0].Value.AsInt64() = %d, want %d", got, want)
 		}
 	})
 
@@ -240,13 +249,13 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"large": uint64(1) << 63,
 		}))
 		if got := m["u"].AsInt64(); got != 1 {
-			t.Errorf("u: AsInt64() = %d, want 1", got)
+			t.Errorf(`ConvertMapsToKVs(u=uint(1))["u"].AsInt64() = %d, want 1`, got)
 		}
 		if got := m["u64"].AsInt64(); got != 2 {
-			t.Errorf("u64: AsInt64() = %d, want 2", got)
+			t.Errorf(`ConvertMapsToKVs(u64=uint64(2))["u64"].AsInt64() = %d, want 2`, got)
 		}
 		if got := m["large"].AsString(); got != "9223372036854775808" {
-			t.Errorf(`large: AsString() = %q, want "9223372036854775808"`, got)
+			t.Errorf(`ConvertMapsToKVs(large=2^63)["large"].AsString() = %q, want "9223372036854775808"`, got)
 		}
 	})
 
@@ -257,13 +266,13 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"flags": []bool{true},
 		}))
 		if got, want := m["tags"].AsStringSlice(), []string{"a", "b"}; !slices.Equal(got, want) {
-			t.Errorf("tags: AsStringSlice() = %q, want %q", got, want)
+			t.Errorf("ConvertMapsToKVs(tags=[a b])[\"tags\"].AsStringSlice() = %q, want %q", got, want)
 		}
 		if got, want := m["nums"].AsFloat64Slice(), []float64{1.5}; !slices.Equal(got, want) {
-			t.Errorf("nums: AsFloat64Slice() = %v, want %v", got, want)
+			t.Errorf("ConvertMapsToKVs(nums=[1.5])[\"nums\"].AsFloat64Slice() = %v, want %v", got, want)
 		}
 		if got, want := m["flags"].AsBoolSlice(), []bool{true}; !slices.Equal(got, want) {
-			t.Errorf("flags: AsBoolSlice() = %v, want %v", got, want)
+			t.Errorf("ConvertMapsToKVs(flags=[true])[\"flags\"].AsBoolSlice() = %v, want %v", got, want)
 		}
 	})
 
@@ -273,10 +282,10 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"name": myStringer("x"),
 		}))
 		if got := m["err"].AsString(); got != "boom" {
-			t.Errorf(`err: AsString() = %q, want "boom"`, got)
+			t.Errorf(`ConvertMapsToKVs(err=boom)["err"].AsString() = %q, want "boom"`, got)
 		}
 		if got := m["name"].AsString(); got != "x" {
-			t.Errorf(`name: AsString() = %q, want "x"`, got)
+			t.Errorf(`ConvertMapsToKVs(name=myStringer(x))["name"].AsString() = %q, want "x"`, got)
 		}
 	})
 
@@ -292,7 +301,7 @@ func TestConvertMapsToKVs(t *testing.T) {
 			t.Fatalf("len(ConvertMapsToKVs(typed nils, kept)) = %d, want 1", len(kvs))
 		}
 		if got, want := kvs[0].Key, attribute.Key("kept"); got != want {
-			t.Errorf("key = %q, want %q", got, want)
+			t.Errorf("ConvertMapsToKVs(...)[0].Key = %q, want %q", got, want)
 		}
 	})
 
@@ -302,7 +311,7 @@ func TestConvertMapsToKVs(t *testing.T) {
 			t.Fatalf("len(ConvertMapsToKVs(nil value, kept)) = %d, want 1", len(kvs))
 		}
 		if got, want := kvs[0].Key, attribute.Key("kept"); got != want {
-			t.Errorf("key = %q, want %q", got, want)
+			t.Errorf("ConvertMapsToKVs(...)[0].Key = %q, want %q", got, want)
 		}
 	})
 
@@ -318,7 +327,7 @@ func TestConvertMapsToKVs(t *testing.T) {
 			t.Fatalf("len(ConvertMapsToKVs(invalid keys, ok)) = %d, want 1", len(kvs))
 		}
 		if got, want := kvs[0].Key, attribute.Key("ok"); got != want {
-			t.Errorf("key = %q, want %q", got, want)
+			t.Errorf("ConvertMapsToKVs(...)[0].Key = %q, want %q", got, want)
 		}
 	})
 
@@ -334,10 +343,10 @@ func TestConvertMapsToKVs(t *testing.T) {
 			t.Fatalf("len(ConvertMapsToKVs(KeyValue values)) = %d, want 1", len(kvs))
 		}
 		if got, want := kvs[0].Key, attribute.Key("http.response.status_code"); got != want {
-			t.Errorf("key = %q, want %q", got, want)
+			t.Errorf("ConvertMapsToKVs(...)[0].Key = %q, want %q", got, want)
 		}
 		if got := kvs[0].Value.AsInt64(); got != 200 {
-			t.Errorf("AsInt64() = %d, want 200", got)
+			t.Errorf("ConvertMapsToKVs(status=attribute.Int(200))[0].Value.AsInt64() = %d, want 200", got)
 		}
 	})
 
@@ -347,10 +356,10 @@ func TestConvertMapsToKVs(t *testing.T) {
 			t.Fatalf("len(ConvertMapsToKVs(b, a)) = %d, want 2", len(kvs))
 		}
 		if got, want := kvs[0].Key, attribute.Key("a"); got != want {
-			t.Errorf("kvs[0].Key = %q, want %q", got, want)
+			t.Errorf("ConvertMapsToKVs(b, a)[0].Key = %q, want %q", got, want)
 		}
 		if got, want := kvs[1].Key, attribute.Key("b"); got != want {
-			t.Errorf("kvs[1].Key = %q, want %q", got, want)
+			t.Errorf("ConvertMapsToKVs(b, a)[1].Key = %q, want %q", got, want)
 		}
 	})
 }
@@ -366,19 +375,19 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 			m[string(kv.Key)] = kv.Value.AsString()
 		}
 		if got := m["order.id"]; got != "1" {
-			t.Errorf(`order.id = %q, want "1"`, got)
+			t.Errorf(`ConvertMapsToKVs(order_id=1, env=custom, ...)["order.id"] = %q, want "1"`, got)
 		}
 		if got := m["env"]; got != "custom" {
-			t.Errorf(`env = %q, want "custom"`, got)
+			t.Errorf(`ConvertMapsToKVs(env=custom, ...)["env"] = %q, want "custom"`, got)
 		}
 		if got := m["service.name"]; got != "svc" {
-			t.Errorf(`service.name = %q, want "svc"`, got)
+			t.Errorf(`ConvertMapsToKVs(...)["service.name"] = %q, want "svc"`, got)
 		}
 		if got := m["service.version"]; got != "1.0" {
-			t.Errorf(`service.version = %q, want "1.0"`, got)
+			t.Errorf(`ConvertMapsToKVs(...)["service.version"] = %q, want "1.0"`, got)
 		}
 		if got := m["deployment.environment.name"]; got != "prod" {
-			t.Errorf(`deployment.environment.name = %q, want "prod"`, got)
+			t.Errorf(`ConvertMapsToKVs(...)["deployment.environment.name"] = %q, want "prod"`, got)
 		}
 	})
 
@@ -392,13 +401,13 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 			m[string(kv.Key)] = kv.Value.AsString()
 		}
 		if got := m["service.name"]; got != "svc" {
-			t.Errorf(`service.name = %q, want "svc"`, got)
+			t.Errorf(`ConvertMapsToKVs(...)["service.name"] = %q, want "svc"`, got)
 		}
 		if got := m["service.version"]; got != "1.0" {
-			t.Errorf(`service.version = %q, want "1.0"`, got)
+			t.Errorf(`ConvertMapsToKVs(...)["service.version"] = %q, want "1.0"`, got)
 		}
 		if got := m["deployment.environment.name"]; got != "prod" {
-			t.Errorf(`deployment.environment.name = %q, want "prod"`, got)
+			t.Errorf(`ConvertMapsToKVs(...)["deployment.environment.name"] = %q, want "prod"`, got)
 		}
 	})
 
@@ -409,10 +418,10 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 			m[string(kv.Key)] = kv.Value.AsString()
 		}
 		if got := m["order.id"]; got != "under" {
-			t.Errorf(`order.id = %q, want "under"`, got)
+			t.Errorf(`ConvertMapsToKVs(order_id=under, order.id=dot)["order.id"] = %q, want "under"`, got)
 		}
 		if len(kvs) != 1 {
-			t.Errorf("len(kvs) = %d, want 1", len(kvs))
+			t.Errorf("ConvertMapsToKVs(order_id=under, order.id=dot) len = %d, want 1", len(kvs))
 		}
 	})
 }
@@ -421,20 +430,20 @@ func TestConvertAppInfoToMap(t *testing.T) {
 	t.Run("returns the full service identity", func(t *testing.T) {
 		m := ConvertAppInfoToMap(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"})
 		if got := m["service.name"]; got != "svc" {
-			t.Errorf(`service.name = %v, want "svc"`, got)
+			t.Errorf(`ConvertAppInfoToMap(...)["service.name"] = %v, want "svc"`, got)
 		}
 		if got := m["service.version"]; got != "1.0" {
-			t.Errorf(`service.version = %v, want "1.0"`, got)
+			t.Errorf(`ConvertAppInfoToMap(...)["service.version"] = %v, want "1.0"`, got)
 		}
 		if got := m["deployment.environment.name"]; got != "prod" {
-			t.Errorf(`deployment.environment.name = %v, want "prod"`, got)
+			t.Errorf(`ConvertAppInfoToMap(...)["deployment.environment.name"] = %v, want "prod"`, got)
 		}
 	})
 
 	t.Run("omits empty optional identity fields", func(t *testing.T) {
 		m := ConvertAppInfoToMap(identity.Info{Name: "svc"})
 		if got := m["service.name"]; got != "svc" {
-			t.Errorf(`service.name = %v, want "svc"`, got)
+			t.Errorf(`ConvertAppInfoToMap(...)["service.name"] = %v, want "svc"`, got)
 		}
 		if _, ok := m["service.version"]; ok {
 			t.Error(`ConvertAppInfoToMap(Name only) has "service.version", want it omitted`)

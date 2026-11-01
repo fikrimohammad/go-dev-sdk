@@ -44,20 +44,18 @@ func withDefault(t *testing.T) {
 }
 
 func TestClient_StartSpan(t *testing.T) {
-	t.Run("client starts spans through its provider", func(t *testing.T) {
-		provider := sdktrace.NewTracerProvider()
-		defer func() { _ = provider.Shutdown(context.Background()) }()
+	provider := sdktrace.NewTracerProvider()
+	defer func() { _ = provider.Shutdown(context.Background()) }()
 
-		c := &client{provider: provider}
-		_, span := c.Tracer("test").Start(context.Background(), "op")
-		if got := span.SpanContext().IsValid(); !got {
-			t.Errorf("Start(op).IsValid() = %v, want true", got)
-		}
-		if got := span.SpanContext().IsSampled(); !got {
-			t.Errorf("Start(op).IsSampled() = %v, want true", got)
-		}
-		span.End()
-	})
+	c := &client{provider: provider}
+	_, span := c.Tracer("test").Start(context.Background(), "op")
+	if got := span.SpanContext().IsValid(); !got {
+		t.Errorf("client.Tracer(test).Start(op).IsValid() = %v, want true", got)
+	}
+	if got := span.SpanContext().IsSampled(); !got {
+		t.Errorf("client.Tracer(test).Start(op).IsSampled() = %v, want true", got)
+	}
+	span.End()
 }
 
 func TestClient_Stop(t *testing.T) {
@@ -115,29 +113,25 @@ func TestTraceIDFrom(t *testing.T) {
 }
 
 func TestTracer_TraceIDFromPackageFunc(t *testing.T) {
-	t.Run("TraceIDFrom works through the noop tracer", func(t *testing.T) {
-		provider := sdktrace.NewTracerProvider()
-		defer func() { _ = provider.Shutdown(context.Background()) }()
+	provider := sdktrace.NewTracerProvider()
+	defer func() { _ = provider.Shutdown(context.Background()) }()
 
-		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
-		if want, got := span.SpanContext().TraceID().String(), TraceIDFrom(ctx); got != want {
-			t.Errorf("TraceIDFrom(ctx) = %q, want %q", got, want)
-		}
-		if got := TraceIDFrom(context.Background()); got != "" {
-			t.Errorf("TraceIDFrom(background) = %q, want empty", got)
-		}
-		span.End()
-	})
+	ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+	if want, got := span.SpanContext().TraceID().String(), TraceIDFrom(ctx); got != want {
+		t.Errorf("TraceIDFrom(ctx) = %q, want %q", got, want)
+	}
+	if got := TraceIDFrom(context.Background()); got != "" {
+		t.Errorf("TraceIDFrom(background) = %q, want empty", got)
+	}
+	span.End()
 }
 
 func TestNoop_InvalidSpan(t *testing.T) {
-	t.Run("Noop produces invalid spans", func(t *testing.T) {
-		_, span := Noop().Tracer("scope").Start(context.Background(), "op")
-		if got := span.SpanContext().IsValid(); got {
-			t.Errorf("Noop() span IsValid() = %v, want false", got)
-		}
-		span.End()
-	})
+	_, span := Noop().Tracer("scope").Start(context.Background(), "op")
+	if got := span.SpanContext().IsValid(); got {
+		t.Errorf("Noop() span IsValid() = %v, want false", got)
+	}
+	span.End()
 }
 
 func TestTracer_Attrs(t *testing.T) {
@@ -186,76 +180,66 @@ func TestNew_Validation(t *testing.T) {
 }
 
 func TestDefault_NeverNil(t *testing.T) {
-	t.Run("Default returns a non-nil client before any SetDefault", func(t *testing.T) {
-		if Default() == nil {
-			t.Error("Default() = nil, want non-nil")
-		}
-	})
+	if Default() == nil {
+		t.Error("Default() before any SetDefault = nil, want non-nil")
+	}
 }
 
 func TestDefault_BeforeSetDefault(t *testing.T) {
-	t.Run("before SetDefault the package funcs are noop", func(t *testing.T) {
-		withDefault(t)
-		_, span := Tracer("scope").Start(context.Background(), "op")
-		if got := span.SpanContext().IsValid(); got {
-			t.Errorf("Tracer(scope).Start(op) IsValid() = %v, want false", got)
-		}
-		span.End()
-		if got := Attrs(map[string]any{"user_id": "u1"}); got == nil {
-			t.Errorf("Attrs(user_id=u1) = nil, want non-nil")
-		}
-		if got := TraceIDFrom(context.Background()); got != "" {
-			t.Errorf("TraceIDFrom(background) = %q, want empty", got)
-		}
-		if err := Stop(context.Background()); err != nil {
-			t.Errorf("Stop() = %v, want nil", err)
-		}
-	})
+	withDefault(t)
+	_, span := Tracer("scope").Start(context.Background(), "op")
+	if got := span.SpanContext().IsValid(); got {
+		t.Errorf("Tracer(scope).Start(op) IsValid() = %v, want false", got)
+	}
+	span.End()
+	if got := Attrs(map[string]any{"user_id": "u1"}); got == nil {
+		t.Errorf("Attrs(user_id=u1) = nil, want non-nil")
+	}
+	if got := TraceIDFrom(context.Background()); got != "" {
+		t.Errorf("TraceIDFrom(background) = %q, want empty", got)
+	}
+	if err := Stop(context.Background()); err != nil {
+		t.Errorf("Stop() = %v, want nil", err)
+	}
 }
 
 func TestFacade_SetDefault(t *testing.T) {
-	t.Run("SetDefault routes the package funcs through the installed client", func(t *testing.T) {
-		withDefault(t)
-		fakeC := fakeClient(func(context.Context) error { return nil })
-		SetDefault(fakeC)
-		if got := Default(); got != fakeC {
-			t.Errorf("Default() = %v, want %v", got, fakeC)
-		}
-		if err := Stop(context.Background()); err != nil {
-			t.Errorf("Stop() = %v, want nil", err)
-		}
-	})
+	withDefault(t)
+	fakeC := fakeClient(func(context.Context) error { return nil })
+	SetDefault(fakeC)
+	if got := Default(); got != fakeC {
+		t.Errorf("SetDefault(fakeC) then Default() = %v, want %v", got, fakeC)
+	}
+	if err := Stop(context.Background()); err != nil {
+		t.Errorf("Stop() = %v, want nil", err)
+	}
 }
 
 func TestFacade_LastWins(t *testing.T) {
-	t.Run("repeated SetDefault calls replace the default", func(t *testing.T) {
-		withDefault(t)
-		first := fakeClient(func(context.Context) error { return nil })
-		second := fakeClient(func(context.Context) error { return nil })
-		SetDefault(first)
-		if got := Default(); got != first {
-			t.Errorf("Default() after SetDefault(first) = %v, want %v", got, first)
-		}
-		SetDefault(second)
-		if got := Default(); got != second {
-			t.Errorf("Default() after SetDefault(second) = %v, want %v", got, second)
-		}
-	})
+	withDefault(t)
+	first := fakeClient(func(context.Context) error { return nil })
+	second := fakeClient(func(context.Context) error { return nil })
+	SetDefault(first)
+	if got := Default(); got != first {
+		t.Errorf("Default() after SetDefault(first) = %v, want %v", got, first)
+	}
+	SetDefault(second)
+	if got := Default(); got != second {
+		t.Errorf("Default() after SetDefault(second) = %v, want %v", got, second)
+	}
 }
 
 func TestFacade_SetDefaultNilResets(t *testing.T) {
-	t.Run("SetDefault(nil) resets to the noop client", func(t *testing.T) {
-		withDefault(t)
-		SetDefault(nil)
-		if Default() == nil {
-			t.Error("Default() after SetDefault(nil) = nil, want non-nil")
-		}
-		_, span := Tracer("scope").Start(context.Background(), "op")
-		if got := span.SpanContext().IsValid(); got {
-			t.Errorf("Tracer(scope).Start(op) after SetDefault(nil) IsValid() = %v, want false", got)
-		}
-		span.End()
-	})
+	withDefault(t)
+	SetDefault(nil)
+	if Default() == nil {
+		t.Error("Default() after SetDefault(nil) = nil, want non-nil")
+	}
+	_, span := Tracer("scope").Start(context.Background(), "op")
+	if got := span.SpanContext().IsValid(); got {
+		t.Errorf("Tracer(scope).Start(op) after SetDefault(nil) IsValid() = %v, want false", got)
+	}
+	span.End()
 }
 
 func TestFacade_StopDelegates(t *testing.T) {
@@ -285,37 +269,33 @@ func TestFacade_StopDelegates(t *testing.T) {
 }
 
 func TestWrap_NilProvider(t *testing.T) {
-	t.Run("Wrap(nil) returns a noop-backed client", func(t *testing.T) {
-		c := Wrap(nil)
-		if c == nil {
-			t.Fatal("Wrap(nil) = nil, want non-nil")
-		}
-		_, span := c.Tracer("scope").Start(context.Background(), "op")
-		if got := span.SpanContext().IsValid(); got {
-			t.Errorf("Wrap(nil).Tracer(scope).Start(op) IsValid() = %v, want false", got)
-		}
-		span.End()
-	})
+	c := Wrap(nil)
+	if c == nil {
+		t.Fatal("Wrap(nil) = nil, want non-nil")
+	}
+	_, span := c.Tracer("scope").Start(context.Background(), "op")
+	if got := span.SpanContext().IsValid(); got {
+		t.Errorf("Wrap(nil).Tracer(scope).Start(op) IsValid() = %v, want false", got)
+	}
+	span.End()
 }
 
 func TestSpanIDFrom(t *testing.T) {
-	t.Run("extracts the span ID from a valid span context", func(t *testing.T) {
-		provider := sdktrace.NewTracerProvider()
-		defer func() { _ = provider.Shutdown(context.Background()) }()
+	provider := sdktrace.NewTracerProvider()
+	defer func() { _ = provider.Shutdown(context.Background()) }()
 
-		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
-		defer span.End()
+	ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+	defer span.End()
 
-		if want, got := span.SpanContext().SpanID().String(), SpanIDFrom(ctx); got != want {
-			t.Errorf("SpanIDFrom(ctx) = %q, want %q", got, want)
-		}
-		if got := SpanIDFrom(context.Background()); got != "" {
-			t.Errorf("SpanIDFrom(background) = %q, want empty", got)
-		}
-		if got := SpanIDFrom(nil); got != "" { //nolint:staticcheck // intentionally verifying nil handling
-			t.Errorf("SpanIDFrom(nil) = %q, want empty", got)
-		}
-	})
+	if want, got := span.SpanContext().SpanID().String(), SpanIDFrom(ctx); got != want {
+		t.Errorf("SpanIDFrom(ctx) = %q, want %q", got, want)
+	}
+	if got := SpanIDFrom(context.Background()); got != "" {
+		t.Errorf("SpanIDFrom(background) = %q, want empty", got)
+	}
+	if got := SpanIDFrom(nil); got != "" { //nolint:staticcheck // intentionally verifying nil handling
+		t.Errorf("SpanIDFrom(nil) = %q, want empty", got)
+	}
 }
 
 // fakeSpanExporter captures exported spans for client construction tests.
@@ -346,144 +326,136 @@ func (f *fakeSpanExporter) snapshot() []sdktrace.ReadOnlySpan {
 }
 
 func TestNewClientWithExporter_Resource(t *testing.T) {
-	t.Run("builds a provider with resource identity, scope, and exporter shutdown", func(t *testing.T) {
-		cfg := Config{GlobalKV: map[string]any{"deployment.environment.name": "staging"}}
-		cfg.setDefaults()
-		exporter := &fakeSpanExporter{}
-		info := identity.Info{Name: "svc", Version: "1.0.0", Environment: "production"}
+	cfg := Config{GlobalKV: map[string]any{"deployment.environment.name": "staging"}}
+	cfg.setDefaults()
+	exporter := &fakeSpanExporter{}
+	info := identity.Info{Name: "svc", Version: "1.0.0", Environment: "production"}
 
-		c, err := newClientWithExporter(context.Background(), info, cfg, exporter)
-		if err != nil {
-			t.Fatalf("newClientWithExporter(svc) error = %v, want nil", err)
-		}
-		if c.Provider() == nil {
-			t.Fatal("Provider() = nil, want non-nil")
-		}
+	c, err := newClientWithExporter(context.Background(), info, cfg, exporter)
+	if err != nil {
+		t.Fatalf("newClientWithExporter(svc) error = %v, want nil", err)
+	}
+	if c.Provider() == nil {
+		t.Fatal("Provider() = nil, want non-nil")
+	}
 
-		ctx, span := c.Tracer("custom.scope").Start(context.Background(), "op")
-		span.End()
+	ctx, span := c.Tracer("custom.scope").Start(context.Background(), "op")
+	span.End()
 
-		provider, ok := c.Provider().(*sdktrace.TracerProvider)
-		if !ok {
-			t.Fatalf("Provider() = %T, want *sdktrace.TracerProvider", c.Provider())
-		}
-		if err := provider.ForceFlush(context.Background()); err != nil {
-			t.Errorf("ForceFlush() = %v, want nil", err)
-		}
+	provider, ok := c.Provider().(*sdktrace.TracerProvider)
+	if !ok {
+		t.Fatalf("Provider() = %T, want *sdktrace.TracerProvider", c.Provider())
+	}
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Errorf("ForceFlush() = %v, want nil", err)
+	}
 
-		spans := exporter.snapshot()
-		if got := len(spans); got != 1 {
-			t.Fatalf("exported spans = %d, want 1", got)
-		}
-		if got := spans[0].InstrumentationScope().Name; got != "custom.scope" {
-			t.Errorf("span scope name = %q, want %q", got, "custom.scope")
-		}
+	spans := exporter.snapshot()
+	if got := len(spans); got != 1 {
+		t.Fatalf("exported spans = %d, want 1", got)
+	}
+	if got := spans[0].InstrumentationScope().Name; got != "custom.scope" {
+		t.Errorf("newClientWithExporter(svc) span scope name = %q, want %q", got, "custom.scope")
+	}
 
-		attrs := map[string]string{}
-		for _, kv := range spans[0].Resource().Attributes() {
-			attrs[string(kv.Key)] = kv.Value.AsString()
+	attrs := map[string]string{}
+	for _, kv := range spans[0].Resource().Attributes() {
+		attrs[string(kv.Key)] = kv.Value.AsString()
+	}
+	wantAttrs := map[string]string{
+		"service.name":                "svc",
+		"service.version":             "1.0.0",
+		"deployment.environment.name": "production",
+	}
+	for k, want := range wantAttrs {
+		if got := attrs[k]; got != want {
+			t.Errorf("newClientWithExporter(svc) resource attribute %s = %q, want %q", k, got, want)
 		}
-		wantAttrs := map[string]string{
-			"service.name":                "svc",
-			"service.version":             "1.0.0",
-			"deployment.environment.name": "production",
-		}
-		for k, want := range wantAttrs {
-			if got := attrs[k]; got != want {
-				t.Errorf("resource attribute %s = %q, want %q", k, got, want)
-			}
-		}
+	}
 
-		if err := c.Stop(ctx); err != nil {
-			t.Errorf("Stop() = %v, want nil", err)
-		}
-		if got := exporter.shutdown.Load(); got != 1 {
-			t.Errorf("exporter shutdown calls = %d, want 1", got)
-		}
-	})
+	if err := c.Stop(ctx); err != nil {
+		t.Errorf("Stop() = %v, want nil", err)
+	}
+	if got := exporter.shutdown.Load(); got != 1 {
+		t.Errorf("exporter shutdown calls = %d, want 1", got)
+	}
 }
 
 func TestNewClientWithExporter_Sampler(t *testing.T) {
-	t.Run("honors the configured sampler", func(t *testing.T) {
-		cfg := Config{Sampler: sdktrace.NeverSample()}
-		cfg.setDefaults()
-		exporter := &fakeSpanExporter{}
+	cfg := Config{Sampler: sdktrace.NeverSample()}
+	cfg.setDefaults()
+	exporter := &fakeSpanExporter{}
 
-		c, err := newClientWithExporter(context.Background(), testInfo(), cfg, exporter)
-		if err != nil {
-			t.Fatalf("newClientWithExporter(NeverSample) error = %v, want nil", err)
-		}
+	c, err := newClientWithExporter(context.Background(), testInfo(), cfg, exporter)
+	if err != nil {
+		t.Fatalf("newClientWithExporter(NeverSample) error = %v, want nil", err)
+	}
 
-		_, span := c.Tracer("test").Start(context.Background(), "op")
-		if got := span.SpanContext().IsSampled(); got {
-			t.Errorf("Start(op) with NeverSample IsSampled() = %v, want false", got)
-		}
-		span.End()
+	_, span := c.Tracer("test").Start(context.Background(), "op")
+	if got := span.SpanContext().IsSampled(); got {
+		t.Errorf("Tracer(test).Start(op) with NeverSample IsSampled() = %v, want false", got)
+	}
+	span.End()
 
-		provider, ok := c.Provider().(*sdktrace.TracerProvider)
-		if !ok {
-			t.Fatalf("Provider() = %T, want *sdktrace.TracerProvider", c.Provider())
-		}
-		if err := provider.ForceFlush(context.Background()); err != nil {
-			t.Errorf("ForceFlush() = %v, want nil", err)
-		}
-		if got := len(exporter.snapshot()); got != 0 {
-			t.Errorf("exported spans with NeverSample = %d, want 0", got)
-		}
+	provider, ok := c.Provider().(*sdktrace.TracerProvider)
+	if !ok {
+		t.Fatalf("Provider() = %T, want *sdktrace.TracerProvider", c.Provider())
+	}
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Errorf("ForceFlush() = %v, want nil", err)
+	}
+	if got := len(exporter.snapshot()); got != 0 {
+		t.Errorf("exported spans with NeverSample = %d, want 0", got)
+	}
 
-		if err := c.Stop(context.Background()); err != nil {
-			t.Errorf("Stop() = %v, want nil", err)
-		}
-		if got := exporter.shutdown.Load(); got != 1 {
-			t.Errorf("exporter shutdown calls = %d, want 1", got)
-		}
-	})
+	if err := c.Stop(context.Background()); err != nil {
+		t.Errorf("Stop() = %v, want nil", err)
+	}
+	if got := exporter.shutdown.Load(); got != 1 {
+		t.Errorf("exporter shutdown calls = %d, want 1", got)
+	}
 }
 
 func TestSetGlobal(t *testing.T) {
-	t.Run("installs the provider and W3C propagator", func(t *testing.T) {
-		prevProvider := otel.GetTracerProvider()
-		prevPropagator := otel.GetTextMapPropagator()
-		t.Cleanup(func() {
-			otel.SetTracerProvider(prevProvider)
-			otel.SetTextMapPropagator(prevPropagator)
-		})
-
-		provider := sdktrace.NewTracerProvider()
-		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
-
-		SetGlobal(Wrap(provider))
-		if got := otel.GetTracerProvider(); got != provider {
-			t.Errorf("otel.GetTracerProvider() = %v, want %v", got, provider)
-		}
-
-		ctx, span := provider.Tracer("test").Start(context.Background(), "op")
-		defer span.End()
-
-		carrier := propagation.MapCarrier{}
-		otel.GetTextMapPropagator().Inject(ctx, carrier)
-		want := span.SpanContext().TraceID().String()
-		if got := carrier.Get("traceparent"); !strings.Contains(got, want) {
-			t.Errorf("traceparent = %q, want it to contain trace ID %q", got, want)
-		}
+	prevProvider := otel.GetTracerProvider()
+	prevPropagator := otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevProvider)
+		otel.SetTextMapPropagator(prevPropagator)
 	})
+
+	provider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	SetGlobal(Wrap(provider))
+	if got := otel.GetTracerProvider(); got != provider {
+		t.Errorf("SetGlobal(Wrap(provider)) then otel.GetTracerProvider() = %v, want %v", got, provider)
+	}
+
+	ctx, span := provider.Tracer("test").Start(context.Background(), "op")
+	defer span.End()
+
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	want := span.SpanContext().TraceID().String()
+	if got := carrier.Get("traceparent"); !strings.Contains(got, want) {
+		t.Errorf("SetGlobal(Wrap(provider)) traceparent = %q, want it to contain trace ID %q", got, want)
+	}
 }
 
 func TestSetGlobal_Nil(t *testing.T) {
-	t.Run("SetGlobal(nil) installs the noop provider and W3C propagator", func(t *testing.T) {
-		prevProvider := otel.GetTracerProvider()
-		prevPropagator := otel.GetTextMapPropagator()
-		t.Cleanup(func() {
-			otel.SetTracerProvider(prevProvider)
-			otel.SetTextMapPropagator(prevPropagator)
-		})
-
-		SetGlobal(nil)
-		if otel.GetTracerProvider() == nil {
-			t.Error("otel.GetTracerProvider() after SetGlobal(nil) = nil, want non-nil")
-		}
-		if fields := otel.GetTextMapPropagator().Fields(); !slices.Contains(fields, "traceparent") {
-			t.Errorf("propagator Fields() = %v, want it to contain %q", fields, "traceparent")
-		}
+	prevProvider := otel.GetTracerProvider()
+	prevPropagator := otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevProvider)
+		otel.SetTextMapPropagator(prevPropagator)
 	})
+
+	SetGlobal(nil)
+	if otel.GetTracerProvider() == nil {
+		t.Error("SetGlobal(nil) then otel.GetTracerProvider() = nil, want non-nil")
+	}
+	if fields := otel.GetTextMapPropagator().Fields(); !slices.Contains(fields, "traceparent") {
+		t.Errorf("SetGlobal(nil) propagator Fields() = %v, want it to contain %q", fields, "traceparent")
+	}
 }
