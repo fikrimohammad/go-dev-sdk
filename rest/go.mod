@@ -1,13 +1,18 @@
-module github.com/fikrimohammad/go-dev-sdk/apiserver
+module github.com/fikrimohammad/go-dev-sdk/rest
 
 go 1.26.5
 
+replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
+
+replace github.com/fikrimohammad/go-dev-sdk/errs/v2 => ../errs
+
+replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
+
 require (
 	github.com/cloudwego/hertz v0.10.6
-	github.com/fikrimohammad/go-dev-sdk/errs/v2 v2.0.0
+	github.com/fikrimohammad/go-dev-sdk/errs/v2 v2.0.0-00010101000000-000000000000
 	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0
-	github.com/fikrimohammad/go-dev-sdk/observability v1.0.0
-	github.com/smartystreets/goconvey v1.8.1
+	github.com/fikrimohammad/go-dev-sdk/observability v0.0.0-00010101000000-000000000000
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
@@ -26,11 +31,8 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gopherjs/gopherjs v1.17.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/jtolds/gls v4.20.0+incompatible // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
-	github.com/smarty/assertions v1.15.0 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
@@ -51,9 +53,3 @@ require (
 	google.golang.org/grpc v1.83.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
-
-replace github.com/fikrimohammad/go-dev-sdk/errs/v2 => ../errs
-
-replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability

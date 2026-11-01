@@ -13,8 +13,8 @@ Each package is an independent Go module, importable directly:
 | `identity` | `github.com/fikrimohammad/go-dev-sdk/identity` | Standardized service identity (name/version/env) |
 | `observability` | `github.com/fikrimohammad/go-dev-sdk/observability` | OpenTelemetry logs, metrics, and traces |
 | `confloader` | `github.com/fikrimohammad/go-dev-sdk/confloader` | Layered config: file + dynamic (etcd) + secrets (Infisical) |
-| `apiserver` | `github.com/fikrimohammad/go-dev-sdk/apiserver` | Hertz HTTP server wiring and middleware |
-| `cron` | `github.com/fikrimohammad/go-dev-sdk/cron` | Recurring job scheduler with robfig/cron, middleware pipeline, and dev REST API |
+| `rest` | `github.com/fikrimohammad/go-dev-sdk/rest` | Hertz HTTP server and client for gateway services: fixed telemetry, edge-safe defaults, RFC 9457 errors |
+| `cron` | `github.com/fikrimohammad/go-dev-sdk/cron` | Recurring job scheduler with robfig/cron and middleware pipeline |
 | `db` | `github.com/fikrimohammad/go-dev-sdk/db` | sqlx-based MySQL/PostgreSQL pool with named queries and telemetry |
 | `nats` | `github.com/fikrimohammad/go-dev-sdk/nats` | NATS JetStream producer/consumer with middleware and telemetry |
 | `redis` | `github.com/fikrimohammad/go-dev-sdk/redis` | Redis client with metrics/tracing |
