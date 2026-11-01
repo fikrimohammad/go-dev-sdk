@@ -34,7 +34,7 @@ const (
 )
 
 // ErrName reports an identity that has no service name.
-var ErrName = errors.New("service name is required")
+var ErrName = errors.New("identity: service name is required")
 
 // version holds the build-time stamped version. Build tooling sets it with
 // -ldflags; when left empty, [Resolve] falls back to the running binary's build

@@ -73,7 +73,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T2: Strict-lint ratchet (`rest`), ireturn allow-list, AGENTS.md convention
 
 ### Phase 1: Small modules
-- [ ] T3: identity: ErrName prefix (I1), strict
+- [x] T3: identity: ErrName prefix (I1), strict
 - [ ] T4: errs: Is, LogValue, SlogAttr fixes, test first (E1–E3)
 - [ ] T5: errs: package doc, AsType, test wording, strict (E4, X8, X9)
 - [ ] T6: errgroup: PanicError, no naked returns, no nil-ctx fallback, test first (G2, X7)

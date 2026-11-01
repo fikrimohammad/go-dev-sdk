@@ -69,11 +69,11 @@ can generate mocks, and how the strict-lint list works.
 Add `identity` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [ ] The ErrName text has the package prefix, and `errors.Is` callers are unaffected.
-- [ ] `identity` is in the strict list, with 0 full-tree lint and gostyle findings.
+- [x] The ErrName text has the package prefix, and `errors.Is` callers are unaffected.
+- [x] `identity` is in the strict list, with 0 full-tree lint and gostyle findings.
 
 **Verification:**
-- [ ] Module checks pass in `identity`, plus `nats` and `observability` (they wrap ErrName).
+- [x] Module checks pass in `identity`, plus `nats` and `observability` (they wrap ErrName).
 
 **Dependencies:** T2
 **Files likely touched:** `identity/identity.go`, `.github/workflows/ci.yml`
