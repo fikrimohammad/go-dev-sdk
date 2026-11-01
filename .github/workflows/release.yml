@@ -1,16 +1,30 @@
 name: Release
 
-# Tags each module independently (errs/v1.0.1, redis/v1.1.0, ...) when commits
-# touching that module are merged to main. Bump rule follows Conventional
-# Commits:
-#   - major: BREAKING CHANGE footer, or a "!" marker (feat!:, fix(scope)!:)
-#   - minor: feat:
-#   - patch: anything else
-# A module with no commits since its last tag is skipped.
+# Tags one module by hand. Nothing is tagged on push to main: every module is
+# still in development, so each release is a deliberate decision.
+#
+#   gh workflow run release.yml -f module=observability -f version=v0.2.0
+#
+# The tag is <module dir>/<version> on the current main. The run fails when:
+#   - the directory has no go.mod, or the version is not vMAJOR.MINOR.PATCH
+#     (an optional -prerelease suffix is allowed);
+#   - the major does not match the module path (v2+ needs a /vN path, and a
+#     /vN path needs vN.x.y), because Go cannot resolve such a tag;
+#   - the tag exists, or proxy.golang.org already has the version. Deleted
+#     tags stay in the proxy and the checksum database, so a reused version
+#     gives every consumer a checksum mismatch.
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      module:
+        description: Module directory, for example observability
+        required: true
+        type: string
+      version:
+        description: Version to tag, for example v0.2.0
+        required: true
+        type: string
 
 concurrency:
   group: release-${{ github.workflow }}
@@ -21,80 +35,47 @@ permissions:
 
 jobs:
   release:
-    name: Tag changed modules
+    name: Tag ${{ inputs.module }}/${{ inputs.version }}
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Fetch tags
-        run: git fetch --tags --force
+          fetch-tags: true
 
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Compute and push module tags
+      - name: Validate and push tag
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODULE: ${{ inputs.module }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
 
-          modules=$(find . -maxdepth 2 -name go.mod -not -path './vendor/*' -printf '%h\n' \
-            | sed 's|^\./||' | sort)
-          new_tags=()
+          [[ "$MODULE" =~ ^[a-z0-9_-]+$ && -f "$MODULE/go.mod" ]] || fail "$MODULE is not a module directory"
+          [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] \
+            || fail "$VERSION is not vMAJOR.MINOR.PATCH"
+          major="${BASH_REMATCH[1]}"
 
-          for m in $modules; do
-            last=$(git tag -l "$m/v*" | sort -V | tail -1 || true)
-
-            if [ -n "$last" ]; then
-              range="$last..HEAD"
-              base="${last#*/}"          # v1.0.0
-            else
-              range=""                   # module never tagged: full history
-              base="v0.0.0"
-            fi
-
-            commits=$(git log --format='%s%n%b' $range -- "$m" 2>/dev/null || true)
-            if [ -z "$(printf '%s' "$commits" | tr -d '[:space:]')" ]; then
-              echo "skip $m: no commits since ${last:-beginning}"
-              continue
-            fi
-
-            # Determine the bump from the commits touching this module.
-            has_major=false; has_feat=false
-            while IFS= read -r line; do
-              case "$line" in
-                *'BREAKING CHANGE:'*) has_major=true ;;
-              esac
-              if printf '%s' "$line" | grep -qE '^[a-z]+(\([^)]*\))?!:' ; then
-                has_major=true
-              fi
-              if printf '%s' "$line" | grep -qE '^feat' ; then
-                has_feat=true
-              fi
-            done <<< "$commits"
-
-            IFS='.' read -r ma mi pa <<< "${base#v}"
-            if [ "$has_major" = true ]; then
-              ma=$((ma + 1)); mi=0; pa=0
-            elif [ "$has_feat" = true ]; then
-              mi=$((mi + 1)); pa=0
-            else
-              pa=$((pa + 1))
-            fi
-
-            tag="$m/v$ma.$mi.$pa"
-            git tag -a "$tag" -m "Release $m v$ma.$mi.$pa"
-            echo "tagged $m: ${last:-none} -> $tag"
-            new_tags+=("$tag")
-          done
-
-          if [ ${#new_tags[@]} -eq 0 ]; then
-            echo "no modules changed; nothing to release"
-            exit 0
+          path=$(awk '/^module /{print $2; exit}' "$MODULE/go.mod")
+          if [[ "$path" =~ /v([0-9]+)$ ]]; then
+            [ "$major" = "${BASH_REMATCH[1]}" ] || fail "$path needs a v${BASH_REMATCH[1]}.x.y version"
+          elif [ "$major" -ge 2 ]; then
+            fail "v$major needs the module path to end in /v$major (it is $path)"
           fi
 
-          git push origin "${new_tags[@]}"
+          tag="$MODULE/$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            fail "$tag already exists"
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://proxy.golang.org/$path/@v/$VERSION.info")
+          [ "$code" != 200 ] || fail "$path@$VERSION is already in proxy.golang.org; pick a new version"
+
+          git tag -a "$tag" -m "Release $MODULE $VERSION"
+          git push origin "$tag"
+          echo "tagged $tag at $(git rev-parse --short HEAD)"

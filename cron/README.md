@@ -13,7 +13,6 @@
   - Lock infrastructure errors: **Fail-closed** (aborts execution to prevent split-brain).
   - Toggler infrastructure errors: **Fail-open** (warns and proceeds to prevent schedule starvation).
 - **Two-Phase Graceful Shutdown**: Waits for in-flight jobs up to the shutdown context deadline, cancelling active job contexts if the deadline expires.
-- **Developer REST API**: Built on `apiserver` (Hertz) to inspect registered jobs (`GET /jobs`, `GET /jobs/:name`) and manually trigger jobs synchronously or asynchronously (`POST /jobs/:name/run`).
 
 ---
 
@@ -23,7 +22,6 @@
 import (
 	"github.com/fikrimohammad/go-dev-sdk/cron"
 	"github.com/fikrimohammad/go-dev-sdk/cron/engine"
-	"github.com/fikrimohammad/go-dev-sdk/cron/server"
 )
 ```
 
@@ -39,13 +37,13 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/fikrimohammad/go-dev-sdk/cron"
 	"github.com/fikrimohammad/go-dev-sdk/cron/engine"
-	"github.com/fikrimohammad/go-dev-sdk/cron/server"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
 func main() {
@@ -86,37 +84,12 @@ func main() {
 		_ = eng.Stop(ctx)
 	}()
 
-	// 4. Run developer REST API server
-	srv, err := server.New(server.Config{}, eng, metricsClient, tracerClient)
-	if err != nil {
-		log.Fatalf("failed to create server: %v", err)
-	}
-
-	if err := srv.Run(); err != nil {
-		log.Fatalf("server error: %v", err)
-	}
+	// 4. Block until a shutdown signal arrives
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
 }
 ```
-
----
-
-## Developer REST API
-
-| Method | Endpoint | Query Param | Response Code | Description |
-|---|---|---|---|---|
-| `GET` | `/healthz` | — | `200 OK` | Health status: `{"status": "ok"}` |
-| `GET` | `/jobs` | — | `200 OK` | List of all registered jobs with runtime statistics |
-| `GET` | `/jobs/:name` | — | `200 OK` / `404` | Details of a single job |
-| `POST` | `/jobs/:name/run` | `?async=true` | `202 Accepted` | Asynchronously triggers job execution in background |
-| `POST` | `/jobs/:name/run` | (none) | `200 OK` | Synchronously triggers job execution and waits for result |
-
-### Error Responses for Manual Triggers
-- `404 Not Found`: Job name is not registered.
-- `409 Conflict`: Job is currently executing (either locked by another replica or running locally).
-- `422 Unprocessable Entity`: Job is disabled by toggler.
-- `503 Service Unavailable`: Cron engine is stopped or shutting down.
-- `504 Gateway Timeout`: Job execution exceeded its configured timeout deadline.
-- `500 Internal Server Error`: Job handler failed with an internal error.
 
 ---
 

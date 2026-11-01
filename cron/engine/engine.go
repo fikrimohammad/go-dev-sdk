@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	robfigcron "github.com/robfig/cron/v3"
 
@@ -46,24 +45,12 @@ func WithTracer(t tracer.Client) Option {
 	}
 }
 
-type registeredJob struct {
-	job      cron.Job
-	entryID  robfigcron.EntryID
-	schedule robfigcron.Schedule
-
-	mu         sync.RWMutex
-	lastRun    time.Time
-	lastStatus string
-	lastDur    time.Duration
-	lastErr    string
-}
-
 // Engine wraps robfig/cron and orchestrates job scheduling, execution, and instrumentation.
 type Engine struct {
 	cfg     Config
 	cron    *robfigcron.Cron
 	parser  robfigcron.ScheduleParser
-	jobs    map[string]*registeredJob
+	jobs    map[string]cron.Job
 	jobsMu  sync.RWMutex
 	running atomic.Bool
 
@@ -106,7 +93,7 @@ func New(cfg Config, opts ...Option) (*Engine, error) {
 		cfg:        cfg,
 		cron:       robfigcron.New(robfigcron.WithParser(parser)),
 		parser:     parser,
-		jobs:       make(map[string]*registeredJob),
+		jobs:       make(map[string]cron.Job),
 		stopCtx:    stopCtx,
 		stopCancel: stopCancel,
 	}
@@ -145,16 +132,10 @@ func (e *Engine) Register(job cron.Job) error {
 	}
 
 	jobCopy := job
-	entryID := e.cron.Schedule(schedule, robfigcron.FuncJob(func() {
+	e.cron.Schedule(schedule, robfigcron.FuncJob(func() {
 		_ = e.runJob(context.Background(), jobCopy, "scheduled")
 	}))
-
-	e.jobs[job.Name] = &registeredJob{
-		job:        jobCopy,
-		entryID:    entryID,
-		schedule:   schedule,
-		lastStatus: "idle",
-	}
+	e.jobs[job.Name] = jobCopy
 
 	return nil
 }
@@ -162,14 +143,14 @@ func (e *Engine) Register(job cron.Job) error {
 // Trigger triggers a job manually by name.
 func (e *Engine) Trigger(ctx context.Context, jobName string) error {
 	e.jobsMu.RLock()
-	reg, exists := e.jobs[jobName]
+	job, exists := e.jobs[jobName]
 	e.jobsMu.RUnlock()
 
 	if !exists {
 		return cron.ErrJobNotFound
 	}
 
-	return e.runJob(ctx, reg.job, "manual")
+	return e.runJob(ctx, job, "manual")
 }
 
 func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string) error {
@@ -205,8 +186,6 @@ func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string)
 	}
 	defer e.inFlight.Delete(job.Name)
 
-	e.updateJobStatus(job.Name, "running", 0, "")
-
 	m := meta{
 		job:     job,
 		trigger: trigger,
@@ -217,95 +196,7 @@ func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string)
 		tracer:  e.tracer,
 	}
 
-	chain := m.buildChain(job.Handler)
-	start := time.Now()
-
-	err := chain(ctx)
-	duration := time.Since(start)
-
-	status := "success"
-	errMsg := ""
-	if err != nil {
-		if errors.Is(err, cron.ErrLockHeld) || errors.Is(err, cron.ErrJobDisabled) {
-			status = "skipped"
-		} else {
-			status = "failed"
-			errMsg = err.Error()
-		}
-	}
-
-	e.updateJobStatus(job.Name, status, duration, errMsg)
-	return err
-}
-
-func (e *Engine) updateJobStatus(name, status string, dur time.Duration, errMsg string) {
-	e.jobsMu.RLock()
-	reg, ok := e.jobs[name]
-	e.jobsMu.RUnlock()
-	if !ok {
-		return
-	}
-
-	reg.mu.Lock()
-	defer reg.mu.Unlock()
-	if status == "running" {
-		reg.lastRun = time.Now()
-	}
-	reg.lastStatus = status
-	reg.lastDur = dur
-	reg.lastErr = errMsg
-}
-
-// Jobs returns snapshot metadata for all registered jobs.
-func (e *Engine) Jobs() []cron.JobInfo {
-	e.jobsMu.RLock()
-	defer e.jobsMu.RUnlock()
-
-	cronEntries := e.cron.Entries()
-	entryMap := make(map[robfigcron.EntryID]robfigcron.Entry, len(cronEntries))
-	for _, entry := range cronEntries {
-		entryMap[entry.ID] = entry
-	}
-
-	infos := make([]cron.JobInfo, 0, len(e.jobs))
-	for _, reg := range e.jobs {
-		infos = append(infos, e.snapshotJobWithEntry(reg, entryMap[reg.entryID]))
-	}
-	return infos
-}
-
-// Job returns snapshot metadata for a specific job.
-func (e *Engine) Job(name string) (cron.JobInfo, bool) {
-	e.jobsMu.RLock()
-	reg, ok := e.jobs[name]
-	e.jobsMu.RUnlock()
-	if !ok {
-		return cron.JobInfo{}, false
-	}
-	entry := e.cron.Entry(reg.entryID)
-	return e.snapshotJobWithEntry(reg, entry), true
-}
-
-func (e *Engine) snapshotJobWithEntry(reg *registeredJob, entry robfigcron.Entry) cron.JobInfo {
-	reg.mu.RLock()
-	defer reg.mu.RUnlock()
-
-	timeout := reg.job.Timeout
-	if timeout <= 0 {
-		timeout = e.cfg.GlobalTimeout
-	}
-
-	return cron.JobInfo{
-		Name:         reg.job.Name,
-		Schedule:     reg.job.Schedule,
-		Description:  reg.job.Description,
-		Timeout:      timeout.String(),
-		NextRun:      entry.Next,
-		PrevRun:      reg.lastRun,
-		LastStatus:   reg.lastStatus,
-		LastDuration: reg.lastDur.String(),
-		LastError:    reg.lastErr,
-	}
+	return m.buildChain(job.Handler)(ctx)
 }
 
 // Start begins scheduling and executing jobs.
