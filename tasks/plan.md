@@ -36,9 +36,10 @@ switches those modules plus `rest` to full-tree lint in CI.
   equal to its baseline. New regression tests then land in files that are already
   converted, so no file mixes styles. The cost is converting a few SetDefault tests
   that T19 deletes; that's accepted.
-- **Transitional default, then deletion.** T12/T13 make the *initial* default
-  `Wrap(otel.Get*Provider())`, so `Default()` follows the OTel global while `SetDefault`
-  still compiles for callers. T15–T18 migrate the callers. T19 deletes `SetDefault` and
+- **Transitional default, then deletion.** In T12/T13, `Default()` returns the
+  `SetDefault` override if one is set. Otherwise it resolves `otel.Get*Provider()` per
+  call, cached by provider identity; see the spec's design note on why an init-time
+  capture is wrong. `SetDefault` still compiles for callers. T15–T18 migrate the callers. T19 deletes `SetDefault` and
   the package-level `Stop`. Every commit builds; a grep in T19 proves no transitional
   code is left.
 - **Caller tests inject; one fallback test per module uses OTel.** The db, redis, and s3
@@ -46,9 +47,9 @@ switches those modules plus `rest` to full-tree lint in CI.
   their fakes, with no globals. Each module's "falls back to the default" test installs
   an OTel span recorder or manual reader with `otel.Set*Provider`, restored in
   `t.Cleanup`.
-- **The OTel delegate behavior is already validated** (2026-11-01 probe): providers
-  captured before `otel.Set*Provider` forward afterwards, including instruments created
-  before the install.
+- **OTel delegate behavior was validated by two probes** (2026-11-01). Providers captured
+  before `otel.Set*Provider` forward to the *first* install, including instruments created
+  before it, but never to a later install. Hence the per-call resolution.
 
 ## Coverage Baselines (main @ a86089d, 2026-11-01)
 

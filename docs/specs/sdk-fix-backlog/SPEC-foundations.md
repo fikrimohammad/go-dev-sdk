@@ -1,7 +1,8 @@
 # Spec: foundations
 
 Module id: `foundations` ([capability map](capability-map.md)). Status: approved
-2026-11-01; assumptions 1–6 confirmed by the owner. Items: X7–X10, O1–O4, O6, E1–E4, G1–G4, I1
+2026-11-01; assumptions 1–6 confirmed by the owner. Amended 2026-11-01: Default()
+resolves the OTel global per call (see Design note). Items: X7–X10, O1–O4, O6, E1–E4, G1–G4, I1
 ([item index](../../ideas/sdk-fix-backlog.md#item-index)).
 
 ## Objective
@@ -103,7 +104,7 @@ no-backward-compat policy.
 | Before | After |
 | --- | --- |
 | `SetDefault(Client)` | Deleted. Install a provider with `otel.SetMeterProvider` (or `tracer.SetGlobal` for traces). |
-| `Default() Client`, backed by an SDK-owned atomic pointer | `Default() Client` returns one process-wide `Wrap(otel.GetMeterProvider())` created at init. It forwards to whatever provider the app installs, before or after the first measurement (validated 2026-11-01). |
+| `Default() Client`, backed by an SDK-owned atomic pointer | `Default() Client` resolves `otel.GetMeterProvider()` on each call and returns a cached `Wrap` of it. The cache is keyed by provider identity, so the instrument cache survives while the provider is unchanged. Instruments created before the first install forward to it through OTel's delegate. |
 | `Stop(ctx)` (package-level) | Deleted. |
 | `Add`, `Record`, `AddUpDown`, `RecordGauge` (package-level) | Unchanged; they delegate to `Default()`. |
 | `Config.Insecure *bool`; nil means insecure | `Config.Insecure bool`; false (the zero value) means TLS. |
@@ -115,7 +116,7 @@ no-backward-compat policy.
 | Before | After |
 | --- | --- |
 | `SetDefault(Client)` | Deleted. |
-| `Default() Client` | Returns one process-wide `Wrap(otel.GetTracerProvider())` created at init. |
+| `Default() Client` | Resolves `otel.GetTracerProvider()` on each call, cached by provider identity (same as metrics). |
 | `Stop(ctx)` (package-level) | Deleted. |
 | `SetGlobal(Client)` | Unchanged: installs the provider and the W3C propagator into the OTel globals. That is now the one way to route SDK spans. |
 | `Tracer`, `Attrs`, `TraceIDFrom`, `SpanIDFrom` | Unchanged. The docs drop the reference to the nonexistent `Init` (O3). |
@@ -184,6 +185,16 @@ func (e *PanicError) Unwrap() error // Value when it is an error, otherwise nil
 No metric name, span name, unit, or attribute changes in this module. The telemetry
 contract is untouched.
 
+### Design note: why Default() resolves per call (amended 2026-11-01)
+
+OTel's global delegate binds to the **first** `otel.Set*Provider` only (an internal
+`sync.Once`). A probe on otel v1.45.0 showed that a provider captured at init sent 2/0
+metrics and 1/0 spans to the first and second installed providers. Resolving
+`otel.Get*Provider()` at call time reached the second. A `Default()` built once at init
+would silently lose telemetry for any app that swaps providers, and for any test package
+that installs one per test. The per-call resolution with a per-provider cache fixes this
+and keeps the spec's intent: the SDK follows whatever provider the app installs.
+
 ### Exporter TLS (O1)
 
 `metrics.New` and `tracer.New` call `WithInsecure()` only when `Config.Insecure` is true.
@@ -230,8 +241,8 @@ on every exported identifier; sentinel errors prefixed with the package name; `e
 
 | Test | Proves |
 | --- | --- |
-| `metrics.TestDefault_FollowsOTelGlobal` | `metrics.Add` after `otel.SetMeterProvider(manual reader)` is collected, including an instrument first used before the install |
-| `tracer.TestDefault_FollowsOTelGlobal` | A span from `tracer.Tracer("x")` is recorded after `otel.SetTracerProvider(recorder)` |
+| `metrics.TestDefault_FollowsOTelGlobal` | `metrics.Add` after `otel.SetMeterProvider(manual reader)` is collected, including an instrument first used before the install; after a **second** `otel.SetMeterProvider`, new measurements reach the second provider |
+| `tracer.TestDefault_FollowsOTelGlobal` | A span from `tracer.Tracer("x")` is recorded after `otel.SetTracerProvider(recorder)`, and after a second install it reaches the second recorder |
 | `errs.TestError_Is` | Two code-0 errors don't match; the same non-zero code matches; different codes don't |
 | `errs.TestError_LogValue` | `debug` appears exactly once |
 | `errs.TestSlogAttr` | A `fmt.Errorf("x: %w", errsErr)` still logs structured fields |

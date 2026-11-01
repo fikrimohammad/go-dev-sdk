@@ -246,15 +246,17 @@ package `testing`.
 
 ## Task 12: metrics: Default follows OTel, Insecure bool, no nil-ctx fallback (X10, O1, X7)
 
-**Description:** Write the failing test first. The initial and `SetDefault(nil)` default
-becomes one process-wide `Wrap(otel.GetMeterProvider())` (SetDefault stays transitionally,
-until T19). `Config.Insecure` becomes `bool`, with false meaning TLS. Delete
+**Description:** Write the failing test first. `Default()` returns the `SetDefault`
+override if one is set (transitional, until T19). Otherwise it resolves
+`otel.GetMeterProvider()` per call and returns a `Wrap` of it, cached by provider
+identity. `SetDefault(nil)` clears the override. `Config.Insecure` becomes `bool`, with false meaning TLS. Delete
 `contextOrBackground`.
 
 **Acceptance criteria:**
 - [ ] *(regression)* `TestDefault_FollowsOTelGlobal`: `metrics.Add` after
       `otel.SetMeterProvider(manual reader)` is collected, including an instrument first
-      used before the install. The test restores the global in `t.Cleanup`.
+      used before the install, and after a second `otel.SetMeterProvider`, new measurements
+      reach the second provider. The test restores the global in `t.Cleanup`.
 - [ ] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure; `Insecure: true` does.
 - [ ] No nil-ctx substitution is left in `metrics`.
 
@@ -272,7 +274,8 @@ until T19). `Config.Insecure` becomes `bool`, with false meaning TLS. Delete
 
 **Acceptance criteria:**
 - [ ] *(regression)* `TestDefault_FollowsOTelGlobal`: a span from `tracer.Tracer("x")` is
-      recorded after `otel.SetTracerProvider(recorder)`.
+      recorded after `otel.SetTracerProvider(recorder)`, and after a second install it
+      reaches the second recorder.
 - [ ] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure.
 - [ ] `go doc -all ./tracer` has no `Init`, and no nil-ctx substitution is left.
 
