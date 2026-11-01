@@ -34,7 +34,7 @@ alert/dashboard template repo depends on it; changing it is a breaking change.
 - Go 1.26.5 (from `go.work`); module `github.com/fikrimohammad/go-dev-sdk/rest`.
 - `github.com/cloudwego/hertz` v0.10.6 (server; `ut` for tests).
 - `github.com/fikrimohammad/go-dev-sdk/observability` (`metrics.Client`,
-  `tracer.Client`, `logs`), `errs/v2`, `identity` (tests only), using local
+  `tracer.Client`, `logs`), `errs`, `identity` (tests only), using local
   `replace` directives like other modules.
 - `go.opentelemetry.io/otel` v1.45.0: `trace`, `propagation`, `codes`,
   `semconv/v1.43.0` (attribute keys only), `sdk/trace/tracetest` (tests).

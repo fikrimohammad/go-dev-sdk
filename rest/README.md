@@ -36,7 +36,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs/v2"
+	"github.com/fikrimohammad/go-dev-sdk/errs"
 	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
@@ -164,7 +164,7 @@ import (
 	"net/http"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs/v2"
+	"github.com/fikrimohammad/go-dev-sdk/errs"
 	"github.com/fikrimohammad/go-dev-sdk/rest/server"
 )
 

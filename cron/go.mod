@@ -4,7 +4,7 @@ go 1.26.5
 
 replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
 
-replace github.com/fikrimohammad/go-dev-sdk/errs/v2 => ../errs
+replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
 
 replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
 

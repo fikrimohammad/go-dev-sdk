@@ -8,7 +8,7 @@ Each package is an independent Go module, importable directly:
 
 | Module | Import path | Purpose |
 | --- | --- | --- |
-| `errs` | `github.com/fikrimohammad/go-dev-sdk/errs/v2` | Structured errors carrying an integer code, cause, metadata, and stack |
+| `errs` | `github.com/fikrimohammad/go-dev-sdk/errs` | Structured errors carrying an integer code, cause, metadata, and stack |
 | `errgroup` | `github.com/fikrimohammad/go-dev-sdk/errgroup` | Concurrency-limited, panic-safe errgroup wrapper |
 | `identity` | `github.com/fikrimohammad/go-dev-sdk/identity` | Standardized service identity (name/version/env) |
 | `observability` | `github.com/fikrimohammad/go-dev-sdk/observability` | OpenTelemetry logs, metrics, and traces |
