@@ -359,12 +359,12 @@ and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated. Its
 `Insecure: true` (TLS is the default since T12/T13).
 
 **Acceptance criteria:**
-- [ ] No `SetDefault` for metrics/tracer in `rest/server`.
-- [ ] The default-fallback test still proves the server records through the defaults.
-- [ ] `rest` stays at 0 full-tree lint findings (it's strict).
+- [x] No `SetDefault` for metrics/tracer in `rest/server`.
+- [x] The default-fallback test still proves the server records through the defaults.
+- [x] `rest` stays at 0 full-tree lint findings (it's strict).
 
 **Verification:**
-- [ ] Module checks (strict) pass in `rest`.
+- [x] Module checks (strict) pass in `rest`.
 
 **Dependencies:** T12, T13
 **Files likely touched:** `rest/server/server_test.go`, `rest/server/example_test.go`, `rest/server/server.go`, `rest/server/middleware.go`
@@ -375,10 +375,10 @@ and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated. Its
 **Description:** The same as T17 for `rest/client`.
 
 **Acceptance criteria:**
-- [ ] No `SetDefault` for metrics/tracer in `rest/client`, and the fallback test is kept.
+- [x] No `SetDefault` for metrics/tracer in `rest/client`, and the fallback test is kept.
 
 **Verification:**
-- [ ] Module checks (strict) pass in `rest`.
+- [x] Module checks (strict) pass in `rest`.
 
 **Dependencies:** T17
 **Files likely touched:** `rest/client/client_test.go`, `rest/client/client.go`, `rest/client/middleware.go`

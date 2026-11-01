@@ -67,15 +67,15 @@ type options struct {
 }
 
 // WithMetrics sets the metrics client for the client's measurements. Without
-// it, or with a nil m, the client uses the package-level default
-// (metrics.SetDefault), read on every attempt.
+// it, or with a nil m, the client uses the OTel global meter provider
+// (otel.SetMeterProvider), read on every attempt.
 func WithMetrics(m metrics.Client) Option {
 	return func(o *options) { o.metrics = m }
 }
 
 // WithTracer sets the tracer client for the client's spans. Without it, or
-// with a nil t, the client uses the package-level default (tracer.SetDefault),
-// read on every attempt.
+// with a nil t, the client uses the OTel global tracer provider
+// (otel.SetTracerProvider or tracer.SetGlobal), read on every attempt.
 func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }

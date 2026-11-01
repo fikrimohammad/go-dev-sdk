@@ -426,7 +426,7 @@ const tracerScope = "rest.client"
 // no description.
 func tracing(tc tracer.Client) hclient.Middleware {
 	// A nil tc means the package-level default, looked up per call so a
-	// later tracer.SetDefault still applies.
+	// a later otel.SetTracerProvider still applies.
 	var fixed trace.Tracer
 	if tc != nil {
 		fixed = tc.Tracer(tracerScope)
@@ -485,7 +485,7 @@ func measure(mc metrics.Client) hclient.Middleware {
 	return func(next hclient.Endpoint) hclient.Endpoint {
 		return func(ctx context.Context, req *protocol.Request, resp *protocol.Response) error {
 			// A nil mc means the package-level default, looked up per attempt
-			// so a later metrics.SetDefault still applies.
+			// so a later otel.SetMeterProvider still applies.
 			m := mc
 			if m == nil {
 				m = metrics.Default()
