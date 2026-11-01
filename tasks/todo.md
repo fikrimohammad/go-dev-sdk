@@ -106,12 +106,12 @@ anywhere in the chain.
 Add `errs` to the strict list.
 
 **Acceptance criteria:**
-- [ ] `go doc -all .` shows a package comment and no stale references.
-- [ ] 0 full-tree lint and gostyle findings, and `errs` is strict.
-- [ ] Coverage ≥ 98.5%.
+- [x] `go doc -all .` shows a package comment and no stale references.
+- [x] 0 full-tree lint and gostyle findings, and `errs` is strict.
+- [x] Coverage ≥ 98.5%.
 
 **Verification:**
-- [ ] Module checks (strict) pass in `errs`.
+- [x] Module checks (strict) pass in `errs`.
 
 **Dependencies:** T4
 **Files likely touched:** `errs/doc.go`, `errs/{error,constructors,slog}.go`, `errs/*_test.go`, `.github/workflows/ci.yml`

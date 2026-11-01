@@ -45,7 +45,7 @@ func (e *Error) Meta() map[string]any {
 	return m
 }
 
-// Error returns a concise error string: message: cause
+// Error returns a concise error string: message: cause.
 func (e *Error) Error() string {
 	if e.cause != nil {
 		return fmt.Sprintf("%s: %v", e.message, e.cause)

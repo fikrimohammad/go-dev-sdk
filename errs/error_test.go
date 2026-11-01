@@ -248,7 +248,7 @@ func TestStackFrames(t *testing.T) {
 
 	for i, frame := range frames {
 		if !strings.Contains(frame, "\n    ") {
-			t.Errorf("StackFrames()[%d] = %q, expected format 'function\\n    file:line'", i, frame)
+			t.Errorf("StackFrames()[%d] = %q, want format 'function\\n    file:line'", i, frame)
 		}
 	}
 }
@@ -316,8 +316,7 @@ func TestChainOfErrors(t *testing.T) {
 		t.Errorf("Meta()[job_id] = %v, want %v", target.Meta()["job_id"], int64(123))
 	}
 
-	var inner *Error
-	if errors.As(target.Unwrap(), &inner) {
+	if inner, ok := errors.AsType[*Error](target.Unwrap()); ok {
 		if inner.Meta()["bucket"] != "reports" {
 			t.Errorf("inner Meta()[bucket] = %v, want %q", inner.Meta()["bucket"], "reports")
 		}

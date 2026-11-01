@@ -108,7 +108,7 @@ func TestLogValue_EmptyOptionalFields(t *testing.T) {
 	m := slogGroupToMap(group)
 
 	if len(m) != 2 {
-		t.Errorf("expected 2 fields, got %d: %v", len(m), fieldKeys(m))
+		t.Errorf("LogValue() fields = %d %v, want 2", len(m), fieldKeys(m))
 	}
 }
 
@@ -128,7 +128,7 @@ func TestSlogAttr_WithError(t *testing.T) {
 
 	errGroup, ok := logEntry["err"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected nested group under 'err', got: %v", logEntry["err"])
+		t.Fatalf("SlogAttr(err) output err = %v, want nested group", logEntry["err"])
 	}
 	if errGroup["code"] != float64(4004) {
 		t.Errorf("err.code = %v, want %v", errGroup["code"], 4004)
