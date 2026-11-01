@@ -191,10 +191,10 @@ package `testing`.
 `//nolint:staticcheck` directives (O4).
 
 **Acceptance criteria:**
-- [ ] No goconvey import in `logs`; coverage ≥ 94.2%; no nolintlint findings.
+- [x] No goconvey import in `logs`; coverage ≥ 94.2%; no nolintlint findings.
 
 **Verification:**
-- [ ] `go test -count=3 -shuffle=on -cover ./logs/...` passes.
+- [x] `go test -count=3 -shuffle=on -cover ./logs/...` passes.
 
 **Dependencies:** T2
 **Files likely touched:** `observability/logs/logs_test.go`, `observability/logs/config_test.go`
