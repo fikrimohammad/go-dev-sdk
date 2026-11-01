@@ -482,10 +482,12 @@ func TestFacade_SetDefaultNilResets(t *testing.T) {
 		t.Fatalf("os.Create(stderr) error = %v, want nil", err)
 	}
 	t.Cleanup(func() { _ = errFile.Close() })
-	prevStderr := os.Stderr
-	os.Stderr = errFile
-	SetDefault(nil)
-	os.Stderr = prevStderr
+	func() {
+		prevStderr := os.Stderr
+		os.Stderr = errFile
+		defer func() { os.Stderr = prevStderr }()
+		SetDefault(nil)
+	}()
 
 	if got := Default(); got == nil {
 		t.Errorf("SetDefault(nil) then Default() = nil, want non-nil")

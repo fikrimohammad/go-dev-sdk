@@ -5,6 +5,7 @@ package tracer
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 
@@ -195,6 +196,10 @@ func Default() Client {
 		return *c
 	}
 	p := otel.GetTracerProvider()
+	if !reflect.TypeOf(p).Comparable() {
+		// ponytail: uncomparable providers are wrapped per call (no instrument cache); fine for the rare value-typed provider.
+		return Wrap(p)
+	}
 	if e := defaultCache.Load(); e != nil && e.provider == p {
 		return e.client
 	}

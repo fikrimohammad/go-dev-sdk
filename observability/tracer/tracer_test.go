@@ -43,7 +43,9 @@ func withDefault(t *testing.T) {
 	SetDefault(nil)
 	t.Cleanup(func() {
 		SetDefault(nil)
-		otel.SetTracerProvider(prev)
+		if otel.GetTracerProvider() != prev {
+			otel.SetTracerProvider(prev)
+		}
 	})
 }
 
@@ -183,6 +185,28 @@ func TestNew_Validation(t *testing.T) {
 	})
 }
 
+// valueTP is a tracer provider whose dynamic type is an uncomparable struct
+// value, so comparing it with == panics.
+type valueTP struct {
+	noop.TracerProvider
+	tags []string
+}
+
+func TestDefault_UncomparableProvider(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	SetDefault(nil)
+	t.Cleanup(func() {
+		SetDefault(nil)
+		otel.SetTracerProvider(prev)
+	})
+	otel.SetTracerProvider(valueTP{tags: []string{"value-typed"}})
+
+	for range 2 {
+		_, span := Default().Tracer("x").Start(context.Background(), "op")
+		span.End()
+	}
+}
+
 func TestDefault_NeverNil(t *testing.T) {
 	if Default() == nil {
 		t.Error("Default() before any SetDefault = nil, want non-nil")
@@ -190,11 +214,7 @@ func TestDefault_NeverNil(t *testing.T) {
 }
 
 func TestDefault_FollowsOTelGlobal(t *testing.T) {
-	prev := otel.GetTracerProvider()
-	t.Cleanup(func() {
-		SetDefault(nil)
-		otel.SetTracerProvider(prev)
-	})
+	withDefault(t)
 
 	first := tracetest.NewSpanRecorder()
 	p1 := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(first))
@@ -457,7 +477,9 @@ func TestSetGlobal(t *testing.T) {
 	prevProvider := otel.GetTracerProvider()
 	prevPropagator := otel.GetTextMapPropagator()
 	t.Cleanup(func() {
-		otel.SetTracerProvider(prevProvider)
+		if otel.GetTracerProvider() != prevProvider {
+			otel.SetTracerProvider(prevProvider)
+		}
 		otel.SetTextMapPropagator(prevPropagator)
 	})
 
@@ -484,7 +506,9 @@ func TestSetGlobal_Nil(t *testing.T) {
 	prevProvider := otel.GetTracerProvider()
 	prevPropagator := otel.GetTextMapPropagator()
 	t.Cleanup(func() {
-		otel.SetTracerProvider(prevProvider)
+		if otel.GetTracerProvider() != prevProvider {
+			otel.SetTracerProvider(prevProvider)
+		}
 		otel.SetTextMapPropagator(prevPropagator)
 	})
 

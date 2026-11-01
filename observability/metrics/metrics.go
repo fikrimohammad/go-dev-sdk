@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sync"
 	"sync/atomic"
@@ -401,6 +402,10 @@ func Default() Client {
 		return *o
 	}
 	p := otel.GetMeterProvider()
+	if !reflect.TypeOf(p).Comparable() {
+		// ponytail: uncomparable providers are wrapped per call (no instrument cache); fine for the rare value-typed provider.
+		return Wrap(p)
+	}
 	if c := defaultCached.Load(); c != nil && c.provider == p {
 		return c.client
 	}

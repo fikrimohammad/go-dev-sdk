@@ -35,6 +35,9 @@ type Config struct {
 	// Empty uses DefaultInstrumentationScope.
 	Scope string `yaml:"scope" json:"scope"`
 	// Insecure disables TLS for the exporter connection. The zero value uses TLS.
+	// The OTEL_EXPORTER_OTLP_INSECURE or OTEL_EXPORTER_OTLP_METRICS_INSECURE
+	// environment variable can still enable plaintext, because WithInsecure is
+	// only added when this field is true.
 	Insecure bool `yaml:"insecure" json:"insecure"`
 	// Headers are extra headers sent with OTLP exports.
 	Headers map[string]string `yaml:"headers" json:"headers"`

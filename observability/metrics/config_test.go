@@ -1,8 +1,11 @@
 package metrics
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"maps"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -122,25 +125,65 @@ func TestConfig(t *testing.T) {
 	tests := []struct {
 		name     string
 		insecure bool
+		wantHead string // prefix of the first bytes the exporter sends
 	}{
-		{name: "Insecure false uses TLS", insecure: false},
-		{name: "Insecure true uses plaintext", insecure: true},
+		{name: "Insecure false starts a TLS handshake", insecure: false, wantHead: "\x16\x03"},
+		{name: "Insecure true starts a plaintext HTTP/2 preface", insecure: true, wantHead: "PRI * HTTP/2.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// New dials lazily, so a short timeout and an unreachable endpoint
-			// still build a client; this checks that both settings are accepted.
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("net.Listen() error = %v, want nil", err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			first := listenFirstBytes(t, ln)
+
 			c, err := New(context.Background(), testInfo(), Config{
-				Endpoint: "127.0.0.1:1",
-				Timeout:  100 * time.Millisecond,
+				Endpoint: ln.Addr().String(),
+				Timeout:  500 * time.Millisecond,
 				Insecure: tt.insecure,
 			})
 			if err != nil {
 				t.Fatalf("New(Insecure=%t) error = %v, want nil", tt.insecure, err)
 			}
-			// Stop may fail to flush to the unreachable endpoint; the test only
-			// checks construction.
-			_ = c.Stop(context.Background())
+			if err := c.Add(context.Background(), Instrument{Name: "probe"}, 1, nil); err != nil {
+				t.Fatalf("Add(probe, 1) error = %v, want nil", err)
+			}
+			stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			// The fake collector never answers, so Stop is expected to fail.
+			_ = c.Stop(stopCtx)
+
+			select {
+			case b := <-first:
+				if !bytes.HasPrefix(b, []byte(tt.wantHead)) {
+					t.Errorf("New(Insecure=%t) first bytes = %q, want prefix %q", tt.insecure, b, tt.wantHead)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("New(Insecure=%t) exporter did not connect within 5s", tt.insecure)
+			}
 		})
 	}
+}
+
+// listenFirstBytes accepts one connection on ln in the background and sends
+// up to 14 received bytes on the returned channel. The channel is buffered, so
+// the goroutine finishes after its single send. Closing ln ends it early.
+func listenFirstBytes(t *testing.T, ln net.Listener) <-chan []byte {
+	t.Helper()
+	first := make(chan []byte, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			first <- nil
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, len("PRI * HTTP/2.0"))
+		n, _ := io.ReadFull(conn, buf)
+		first <- buf[:n]
+	}()
+	return first
 }

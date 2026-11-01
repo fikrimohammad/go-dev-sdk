@@ -10,6 +10,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -62,7 +63,9 @@ func withDefault(t *testing.T) {
 	SetDefault(nil)
 	t.Cleanup(func() {
 		SetDefault(nil)
-		otel.SetMeterProvider(prev)
+		if otel.GetMeterProvider() != prev {
+			otel.SetMeterProvider(prev)
+		}
 	})
 }
 
@@ -610,7 +613,9 @@ func TestDefault_FollowsOTelGlobal(t *testing.T) {
 	SetDefault(nil)
 	t.Cleanup(func() {
 		SetDefault(nil)
-		otel.SetMeterProvider(prev)
+		if otel.GetMeterProvider() != prev {
+			otel.SetMeterProvider(prev)
+		}
 	})
 	ctx := context.Background()
 
@@ -646,6 +651,30 @@ func TestDefault_FollowsOTelGlobal(t *testing.T) {
 	rm2 := collect(t, r2)
 	if findMetric(rm2, "second.counter") == nil {
 		t.Error("Add(second.counter) after second otel.SetMeterProvider: metric not collected by second provider, want it")
+	}
+}
+
+// valueMP is a meter provider whose dynamic type is an uncomparable struct
+// value, so comparing it with == panics.
+type valueMP struct {
+	noop.MeterProvider
+	tags []string
+}
+
+func TestDefault_UncomparableProvider(t *testing.T) {
+	prev := otel.GetMeterProvider()
+	SetDefault(nil)
+	t.Cleanup(func() {
+		SetDefault(nil)
+		otel.SetMeterProvider(prev)
+	})
+	otel.SetMeterProvider(valueMP{tags: []string{"value-typed"}})
+
+	ctx := context.Background()
+	for range 2 {
+		if err := Default().Add(ctx, Instrument{Name: "uncomparable.counter"}, 1, nil); err != nil {
+			t.Errorf("Default().Add(uncomparable.counter, 1) with value-typed provider = %v, want nil", err)
+		}
 	}
 }
 

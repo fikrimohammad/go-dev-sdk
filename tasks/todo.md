@@ -306,9 +306,9 @@ redirected streams pass `Config.Writer` / `ErrorWriter` instead.
 **Estimated scope:** S
 
 ### Checkpoint C: new behavior in place
-- [ ] Every go.work module builds and passes its tests, and `SetDefault` still exists
+- [x] Every go.work module builds and passes its tests, and `SetDefault` still exists
       (transitionally).
-- [ ] Review the observability diff with the owner, if wanted, before the caller migration.
+- [x] Review the observability diff with the owner, if wanted, before the caller migration.
 
 ---
 
@@ -350,7 +350,10 @@ SetDefault in its tests).
 ## Task 17: rest/server off SetDefault
 
 **Description:** `installDefaultTelemetry` installs OTel globals (a span recorder plus a
-manual reader) and asserts through them. `example_test.go` uses `tracer.SetGlobal(tc)`
+manual reader) and asserts through them. It must stop saving `metrics.Default()` /
+`tracer.Default()` and restoring them with `SetDefault(prev)`: that now turns a snapshot
+of the global-backed client into a fixed override for the rest of the package's tests.
+The same applies to rest/client in T18. `example_test.go` uses `tracer.SetGlobal(tc)`
 and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated. Its
 `metrics.New`/`tracer.New` calls target a plaintext local collector, so they set
 `Insecure: true` (TLS is the default since T12/T13).
@@ -384,10 +387,15 @@ and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated. Its
 ## Task 19: delete SetDefault and the package Stop, rewrite doc.go, observability strict
 
 **Description:** Delete `metrics.SetDefault`, `metrics.Stop`, `tracer.SetDefault`, and
-`tracer.Stop`, along with their tests. `Default()` returns the init-time
-`Wrap(otel.Get*Provider())`. Rewrite `observability/doc.go` for the OTel-global model. Its example configs
+`tracer.Stop`, along with their tests. Delete only the override: `Default()` keeps resolving
+`otel.Get*Provider()` per call, cached by provider identity (spec design note). An init-time
+capture would lose telemetry when the provider is swapped. Rewrite `observability/doc.go` for the OTel-global model. Its example configs
 and `observability/README.md` (the `Insecure | true (nil)` rows, about lines 164/176) document
-the new TLS default and set `Insecure: true` for a plaintext local collector.
+the new TLS default and set `Insecure: true` for a plaintext local collector. Also fix
+the README lines saying "`SetGlobal` does not change the package default; call
+`SetDefault` separately" (about lines 48-50), and doc.go's "noop default / SetDefault(nil)
+restores" text (about lines 57-59). Since T12/T13, SetGlobal and otel.Set*Provider change
+what Default returns.
 Fix the remaining full-tree findings (contextcheck, forbidigo, recvcheck, ireturn now
 allowed). Add `observability` to the strict list. mockey left the repo in T14, so also drop the
 mockey-only `-gcflags="all=-N -l"` from CI's test step, AGENTS.md's verification commands,
