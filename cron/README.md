@@ -14,8 +14,6 @@
   - Toggler infrastructure errors: **Fail-open** (warns and proceeds to prevent schedule starvation).
 - **Two-Phase Graceful Shutdown**: Waits for in-flight jobs up to the shutdown context deadline, cancelling active job contexts if the deadline expires.
 
-> **Note:** The developer management REST API (`cron/server`, built on the `apiserver` module) was removed. It was an internal dev-management API and will return on RPC.
-
 ---
 
 ## Installation

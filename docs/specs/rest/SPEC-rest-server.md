@@ -61,7 +61,7 @@ go doc -all ./server   # doc links resolve, no stray brackets
 ```
 rest/
   go.mod                       module github.com/fikrimohammad/go-dev-sdk/rest
-  README.md                    usage, middleware order, contract, migration from apiserver
+  README.md                    usage, middleware order, contract
   parity_test.go               (added by rest-client) client ↔ server end-to-end
   internal/semconv/
     semconv.go                 instrument descriptors, method normalization,
@@ -278,23 +278,6 @@ server requests."
   `errs` codes share number space with HTTP statuses (decided 2026-10-31 after
   the checkpoint B review).
 
-### Changes from `apiserver` (release notes for the alert repo)
-
-| Item | `apiserver` | `rest/server` |
-| --- | --- | --- |
-| `http.server.request.count` | emitted | **removed**; use the duration histogram's count |
-| `http.server.active_requests` | none | **new** |
-| `http.response.status_code` | string attribute | int attribute (Prometheus label values are unchanged) |
-| `error.type` | always sent (`""` on success); `errs` code for any bound error, including 4xx | 5xx only, always the status code; 5xx business-code alerts move to `errs.code` too |
-| `errs.code` | none | **new**: the `errs` code at any status. 4xx business-error alerts move from `error.type` to this attribute |
-| `network.protocol.name` | sent (`"http"`) | removed (semconv: only when not `http`) |
-| `http.request.method` | raw value | normalized; unknown methods become `_OTHER` |
-| Span name, unmatched route | `"GET "` (trailing space) | `"GET"` |
-| Incoming `traceparent` | joined | new root plus a link |
-| Panicked requests | missing from metrics, access log, and span status | recorded as 500 everywhere |
-| Tracer scope | `http.server.request` | `rest.server` |
-| Access-log keys | `method`, `path`, `route`, `status`, `trace_id` (manual) | `http.request.method`, `url.path`, `http.route`, `http.response.status_code`; `trace_id` from `logs` |
-
 ## Code Style
 
 Follow `go-best-practices` and the existing modules. For example:
@@ -383,11 +366,9 @@ func (c Config) validate() error {
       table test over 4xx, 5xx, and panic).
 - [ ] An incoming `traceparent` never becomes the parent of the server span.
 - [ ] `rest/README.md` documents the middleware order, the team middleware
-      slot, the contract, and a migration table from `apiserver`
-      (`Run()` → `Run(ctx)`, `Shutdown` removed,
-      `c.Get("X-Request-ID")` → `RequestIDFrom(ctx)`, `server.Error`).
-- [ ] The alert-repo owner has the "Changes from `apiserver`" table before
-      release.
+      slot, and the contract. No migration guide: the SDK is in development
+      and has no production consumers (2026-11-01), so backward
+      compatibility is not a goal.
 
 ## Open Questions
 
@@ -395,5 +376,5 @@ None. Resolved 2026-10-31:
 
 - Alert templates do use the 4xx business-error signal. `error.type` follows
   semconv (5xx only), and the signal moves to the custom `errs.code`
-  attribute. The alert-repo templates need updating before release.
-- Access-log keys switch to semconv names (in the migration table).
+  attribute.
+- Access-log keys switch to semconv names.

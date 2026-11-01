@@ -63,7 +63,7 @@ Server ships first (tasks 1–7), then client (tasks 8–13).
 
 - [x] Task 7: Delete `apiserver` and `cron/server`; update `go.work`, `cron`, and READMEs
 
-### Checkpoint C: rest-server shipped (rest/v0.1.0 tagged by hand); alert-repo owner has the changes table
+### Checkpoint C: rest-server shipped (rest/v0.1.0 tagged by hand)
 
 ### Phase 3: rest/client
 
@@ -86,8 +86,6 @@ Server ships first (tasks 1–7), then client (tasks 8–13).
 | Hertz `Run`/`Shutdown` semantics (what `Run` returns after `Shutdown`, port release) don't fit `Run(ctx)` | Med | Task 2 reads `pkg/route/engine.go` first and tests cancel → `nil` plus port reuse; adjust the documented return values in the spec if Hertz forces it |
 | Custom `NoRoute`/`NoMethod` handlers skip global middleware, so 404s go missing from metrics | Med | Task 3 test asserts a 404 is recorded by an outer middleware; the probe already showed this for the default handler |
 | A Hertz client middleware chain set with `Use` behaves differently from `c.Do` for redirects or proxies | Med | Task 8 proxy test plus task 10 retry tests run through real `httptest` servers |
-| `errs.code` or log-key changes break existing alerts or log queries | High | Checkpoint C: the alert-repo owner gets the "Changes from apiserver" table before the release merges |
-| `cron/server` deletion breaks an importer without a major bump | Low (accepted) | Ordinary commit by decision; note it in the `cron` release notes |
 | The `RoundTripper` conversion drops headers, `Host`, or multi-value headers | Med | Task 12 round-trip table test; task 13 parity test |
 | A semconv detail (span name for `_OTHER`, status rules) is misread | Low | Task 1 encodes the rules in table tests citing semconv v1.43.0 |
 

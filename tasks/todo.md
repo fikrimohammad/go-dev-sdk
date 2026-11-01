@@ -143,10 +143,9 @@ semconv keys; `request.id`; bound errors through `errs.SlogAttr`; no manual
 ## Task 6: `rest/README.md` server section and doc comments
 
 **Description:** README with usage, middleware order, team middleware slot,
-problem+json format, the Telemetry Contract, and the "Changes from apiserver"
-migration table (`Run()` → `Run(ctx)`, `Shutdown` removed,
-`c.Get("X-Request-ID")` → `RequestIDFrom(ctx)`, `server.Error`, log keys,
-`errs.code`). Review every doc comment in `rest/server`.
+problem+json format, and the Telemetry Contract. Review every doc comment in
+`rest/server`. (The apiserver migration table was dropped on 2026-11-01: no
+backward compatibility while the SDK is in development.)
 
 **Acceptance criteria:**
 - [ ] README covers each item above, with a runnable-looking example.
@@ -192,7 +191,6 @@ Ordinary commit, no `!`.
 ### Checkpoint C: rest-server shipped
 
 - [ ] Merged; `rest/v0.1.0` and a new `cron` v0 version (not v0.1.0 or v0.1.1) tagged with `gh workflow run release.yml`.
-- [ ] The alert-repo owner has the "Changes from apiserver" table, and templates are updated for `errs.code` and the removed `http.server.request.count`.
 
 ---
 

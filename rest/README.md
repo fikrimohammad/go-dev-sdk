@@ -390,44 +390,6 @@ are `http.request.method`, `server.address`, `url.path`,
 (seconds), and `error` (when the call failed). It never carries the query
 string or the userinfo.
 
-## Migrating from apiserver
-
-### Changes from apiserver
-
-These are the changes the alert repo must handle before release.
-
-| Item | `apiserver` | `rest/server` |
-| --- | --- | --- |
-| `http.server.request.count` | emitted | **removed**; use the duration histogram's count |
-| `http.server.active_requests` | none | **new** |
-| `http.response.status_code` | string attribute | int attribute (Prometheus label values are unchanged) |
-| `error.type` | always sent (`""` on success); `errs` code for any bound error, including 4xx | 5xx only: the status code as a string, never an `errs` code |
-| `errs.code` | none | **new**: the `errs` code at any status. 4xx and 5xx business-error alerts move from `error.type` to this attribute |
-| `network.protocol.name` | sent (`"http"`) | removed (semconv: only when not `http`) |
-| `http.request.method` | raw value | normalized; unknown methods become `_OTHER` |
-| Span name, unmatched route | `"GET "` (trailing space) | `"GET"` |
-| Incoming `traceparent` | joined | new root plus a link |
-| Panicked requests | missing from metrics, access log, and span status | recorded as 500 everywhere |
-| Trailing slash, `/users/42/` | redirected by Hertz | 404 problem from the stack; no redirect |
-| Tracer scope | `http.server.request` | `rest.server` |
-| Access-log keys | `method`, `path`, `route`, `status`, `trace_id` (manual) | `http.request.method`, `url.path`, `http.route`, `http.response.status_code`; `trace_id` from `logs` |
-
-### API changes
-
-| `apiserver` | `rest/server` |
-| --- | --- |
-| `apiserver.New(cfg, mc, tc)` | `server.New(cfg)` with the defaults set, or `server.New(cfg, server.WithMetrics(mc), server.WithTracer(tc))` (import `rest/server`) |
-| `srv.Run()` | `srv.Run(ctx)`. Cancel `ctx` to stop the server. |
-| `srv.Shutdown(ctx)` | Removed. Cancel the `ctx` passed to `Run`. `ShutdownTimeout` bounds the drain. |
-| `RequestID()`, `PanicRecovery()`, `Tracer(tc)`, `Logger()`, `Metrics(mc)`, `RequestIDKey` | Removed. The stack is fixed and unexported. |
-| `c.Get("X-Request-ID")` | `server.RequestIDFrom(ctx)` |
-| Hand-written error JSON | `server.Error(c, status, errs.New(code, msg))` |
-| `{"base":{"code":"1001","message":"..."}}` | problem+json: `{"title","status","detail","code","request_id"}`. `code` is an integer, and `detail` replaces `message`. |
-| Request IDs: 8-character hex | 26-character base32 (`crypto/rand`). A valid incoming ID of up to 64 characters is kept. |
-
-Access-log keys change as shown in the table above. The request ID key stays
-`request.id`, which `logs` already produces.
-
 ## Client
 
 `rest/client` builds the Hertz client that gateway services use to call external
