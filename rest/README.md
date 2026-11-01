@@ -166,7 +166,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/fikrimohammad/go-dev-sdk/errs"
 	"github.com/fikrimohammad/go-dev-sdk/rest/server"
-	"go.opentelemetry.io/otel"
 )
 
 func registerWebhooks(srv *server.Server, secret []byte) {

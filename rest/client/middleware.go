@@ -425,7 +425,7 @@ const tracerScope = "rest.client"
 // response with a status of 400 or above, sets the span status to Error with
 // no description.
 func tracing(tc tracer.Client) hclient.Middleware {
-	// A nil tc means the package-level default, looked up per call so a
+	// A nil tc means the OTel global tracer provider, looked up per call so
 	// a later otel.SetTracerProvider still applies.
 	var fixed trace.Tracer
 	if tc != nil {
@@ -484,7 +484,7 @@ func tracing(tc tracer.Client) hclient.Middleware {
 func measure(mc metrics.Client) hclient.Middleware {
 	return func(next hclient.Endpoint) hclient.Endpoint {
 		return func(ctx context.Context, req *protocol.Request, resp *protocol.Response) error {
-			// A nil mc means the package-level default, looked up per attempt
+			// A nil mc means the OTel global meter provider, looked up per attempt
 			// so a later otel.SetMeterProvider still applies.
 			m := mc
 			if m == nil {

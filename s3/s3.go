@@ -137,7 +137,7 @@ type meta struct {
 	serverPort           int    // server.port, 0 for real AWS
 	presignDefaultExpiry time.Duration
 
-	// metrics and tracer override the package-level defaults when non-nil.
+	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
 }

@@ -415,8 +415,8 @@ and the comments that justify it. Confirm first with `grep -rn mockey --include=
 **Estimated scope:** M
 
 ### Checkpoint D: complete
-- [ ] Every SPEC-foundations success criterion (1–7) is checked, with evidence in the PR body.
-- [ ] Module checks pass in every go.work module, and CI is green.
-- [ ] The PR body lists the breaking changes: SetDefault and the package Stop removed,
+- [x] Every SPEC-foundations success criterion (1–7) is checked, with evidence in the PR body.
+- [x] Module checks pass in every go.work module, and CI is green.
+- [x] The PR body lists the breaking changes: SetDefault and the package Stop removed,
       Insecure defaults to TLS, SetStreams removed, PanicError, and the errs.Is semantics.
 - [ ] The PR is marked ready for review, and the owner reviews.

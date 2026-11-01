@@ -283,7 +283,8 @@ on every exported identifier; sentinel errors prefixed with the package name; `e
    `go test -count=1 -shuffle=on`, and `go mod tidy -diff`.
 4. Every test in the Testing Strategy table exists and fails against `main`.
 5. `grep -rn 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
-   finds nothing. `grep -rn goconvey .` (excluding `vendor/`) finds nothing.
+   finds nothing. No `*.go`, go.mod or go.sum file mentions goconvey (the `.golangci.yml`
+   depguard rule that bans it is intentional).
 6. `.golangci.yml`'s ireturn allow-list includes `github.com/fikrimohammad/go-dev-sdk/`.
    AGENTS.md documents that client packages may export and return a caller-facing
    interface so users can generate mocks.

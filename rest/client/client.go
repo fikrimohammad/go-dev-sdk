@@ -60,7 +60,7 @@ import (
 type Option func(*options)
 
 // options holds the telemetry clients set by Option. A nil client means the
-// package-level default.
+// OTel global provider.
 type options struct {
 	metrics metrics.Client
 	tracer  tracer.Client

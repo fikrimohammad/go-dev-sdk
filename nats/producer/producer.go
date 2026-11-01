@@ -187,8 +187,8 @@ var _ Client = (*Producer)(nil)
 // from info (its Name seeds the producer group names). A missing service name
 // is rejected with identity.ErrName; a name containing dots is rejected with
 // ErrInvalidAppName because NATS uses dots as subject separators. Metrics and
-// tracing use the package-level defaults unless overridden via
-// WithMetrics/WithTracer.
+// tracing go through the OTel global providers (via metrics.Default and tracer.Default)
+// unless overridden via WithMetrics/WithTracer.
 func New(info identity.Info, opts ...Option) (*Producer, error) {
 	if err := info.Validate(); err != nil {
 		return nil, fmt.Errorf("producer: %w", err)
