@@ -39,16 +39,22 @@ type Config struct {
 	ErrorWriter io.Writer `yaml:"-" json:"-"`
 }
 
-func (c *Config) setDefaults() {
+// SetDefaults returns a copy of c with an empty Format set to "text" and an
+// empty Level set to "debug". All other fields are returned unchanged. New
+// calls SetDefaults before Validate.
+func (c Config) SetDefaults() Config {
 	if c.Format == "" {
 		c.Format = defaultLogFormat
 	}
 	if c.Level == "" {
 		c.Level = defaultLogLevel
 	}
+	return c
 }
 
-func (c *Config) validate() error {
+// Validate reports every problem with c, joined with errors.Join, or nil when
+// c is usable. Call SetDefaults first; New does.
+func (c Config) Validate() error {
 	var errs []error
 	if c.Format != FormatText && c.Format != FormatJSON {
 		errs = append(errs, ErrInvalidLogFormat)

@@ -307,8 +307,7 @@ func (f *fakeSpanExporter) snapshot() []sdktrace.ReadOnlySpan {
 }
 
 func TestNewClientWithExporter_Resource(t *testing.T) {
-	cfg := Config{GlobalKV: map[string]any{"deployment.environment.name": "staging"}}
-	cfg.setDefaults()
+	cfg := Config{GlobalKV: map[string]any{"deployment.environment.name": "staging"}}.SetDefaults()
 	exporter := &fakeSpanExporter{}
 	info := identity.Info{Name: "svc", Version: "1.0.0", Environment: "production"}
 
@@ -363,8 +362,7 @@ func TestNewClientWithExporter_Resource(t *testing.T) {
 }
 
 func TestNewClientWithExporter_Sampler(t *testing.T) {
-	cfg := Config{Sampler: sdktrace.NeverSample()}
-	cfg.setDefaults()
+	cfg := Config{Sampler: sdktrace.NeverSample()}.SetDefaults()
 	exporter := &fakeSpanExporter{}
 
 	c, err := newClientWithExporter(context.Background(), testInfo(), cfg, exporter)

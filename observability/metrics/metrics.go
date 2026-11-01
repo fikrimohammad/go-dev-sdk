@@ -296,8 +296,8 @@ func New(ctx context.Context, info identity.Info, cfg Config) (Client, error) {
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
 	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+	cfg = cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 

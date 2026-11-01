@@ -434,8 +434,7 @@ func TestWrap(t *testing.T) {
 }
 
 func TestNewMeterProvider_Resource(t *testing.T) {
-	cfg := Config{Scope: "custom.scope", GlobalKV: map[string]any{"deployment.environment.name": "staging"}}
-	cfg.setDefaults()
+	cfg := Config{Scope: "custom.scope", GlobalKV: map[string]any{"deployment.environment.name": "staging"}}.SetDefaults()
 	info := identity.Info{Name: "testapp", Version: "1.0.0", Environment: "production"}
 
 	reader := sdkmetric.NewManualReader()
@@ -689,8 +688,7 @@ func (f *fakeExporter) Shutdown(context.Context) error {
 }
 
 func TestNewClientWithExporter(t *testing.T) {
-	cfg := Config{}
-	cfg.setDefaults()
+	cfg := Config{}.SetDefaults()
 	exporter := &fakeExporter{}
 
 	c, err := newClientWithExporter(context.Background(), testInfo(), cfg, exporter)

@@ -160,8 +160,8 @@ func New(info identity.Info, cfg Config) (Logger, error) {
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("logs: %w", err)
 	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+	cfg = cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	level, err := parseLevel(cfg.Level)

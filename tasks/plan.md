@@ -108,7 +108,7 @@ Wave 1 runs in parallel because the tasks touch disjoint files. Wave 2 waits for
 because it moves declarations out of the files wave 1 edits. Wave 3 adds examples once the
 API is final.
 - [x] T20: Codify R1–R4 in AGENTS.md; record them as confloader redesign requirements (wave 1)
-- [ ] T21: R1 observability logs/metrics/tracer: export SetDefaults/Validate (wave 1)
+- [x] T21: R1 observability logs/metrics/tracer: export SetDefaults/Validate (wave 1)
 - [ ] T22: R1 rest/client, rest/server, cron/engine: export, and Join in Validate (wave 1)
 - [ ] T23: R4 cron, db, redis: move interfaces.go into <pkg>.go (wave 1)
 - [ ] T24: R3 errors.go in errgroup, identity, attributes, logs, metrics, rest/client, redis, errs (wave 2)

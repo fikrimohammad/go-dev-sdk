@@ -6,31 +6,29 @@ import (
 	"testing"
 )
 
-func TestConfig_Defaults(t *testing.T) {
+func TestConfig_SetDefaults(t *testing.T) {
 	t.Run("an empty Config gets sane defaults", func(t *testing.T) {
-		cfg := Config{}
-		cfg.setDefaults()
+		cfg := Config{}.SetDefaults()
 
 		if cfg.Format != FormatText {
-			t.Errorf("setDefaults() Format = %q, want %q", cfg.Format, FormatText)
+			t.Errorf("SetDefaults() Format = %q, want %q", cfg.Format, FormatText)
 		}
 		if cfg.Level != "debug" {
-			t.Errorf("setDefaults() Level = %q, want %q", cfg.Level, "debug")
+			t.Errorf("SetDefaults() Level = %q, want %q", cfg.Level, "debug")
 		}
 	})
 
 	t.Run("explicit values are preserved", func(t *testing.T) {
-		cfg := Config{Format: FormatJSON, Level: "error", GlobalKV: map[string]any{"env": "prod"}}
-		cfg.setDefaults()
+		cfg := Config{Format: FormatJSON, Level: "error", GlobalKV: map[string]any{"env": "prod"}}.SetDefaults()
 
 		if cfg.Format != FormatJSON {
-			t.Errorf("setDefaults() Format = %q, want %q", cfg.Format, FormatJSON)
+			t.Errorf("SetDefaults() Format = %q, want %q", cfg.Format, FormatJSON)
 		}
 		if cfg.Level != "error" {
-			t.Errorf("setDefaults() Level = %q, want %q", cfg.Level, "error")
+			t.Errorf("SetDefaults() Level = %q, want %q", cfg.Level, "error")
 		}
 		if want := map[string]any{"env": "prod"}; !maps.Equal(cfg.GlobalKV, want) {
-			t.Errorf("setDefaults() GlobalKV = %v, want %v", cfg.GlobalKV, want)
+			t.Errorf("SetDefaults() GlobalKV = %v, want %v", cfg.GlobalKV, want)
 		}
 	})
 }
@@ -52,16 +50,15 @@ func TestConfig_Validate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := tt.cfg
-			cfg.setDefaults()
-			err := cfg.validate()
+			cfg := tt.cfg.SetDefaults()
+			err := cfg.Validate()
 
 			if len(tt.wantErrs) == 0 && err != nil {
-				t.Errorf("validate(%+v) error = %v, want nil", tt.cfg, err)
+				t.Errorf("Validate(%+v) error = %v, want nil", tt.cfg, err)
 			}
 			for _, want := range tt.wantErrs {
 				if !errors.Is(err, want) {
-					t.Errorf("validate(%+v) error = %v, want %v", tt.cfg, err, want)
+					t.Errorf("Validate(%+v) error = %v, want %v", tt.cfg, err, want)
 				}
 			}
 		})

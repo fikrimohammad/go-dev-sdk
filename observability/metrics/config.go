@@ -51,7 +51,12 @@ type Config struct {
 	HistogramMaxScale int32 `yaml:"histogram_max_scale" json:"histogram_max_scale"`
 }
 
-func (c *Config) setDefaults() {
+// SetDefaults returns a copy of c with zero-valued fields set to their
+// defaults: Endpoint "localhost:4317", Timeout 10s, ExportInterval 10s, Scope
+// DefaultInstrumentationScope, HistogramMaxBuckets 160, and HistogramMaxScale
+// 20. Other fields are returned unchanged. New calls SetDefaults before
+// Validate.
+func (c Config) SetDefaults() Config {
 	if c.Endpoint == "" {
 		c.Endpoint = defaultEndpoint
 	}
@@ -70,9 +75,12 @@ func (c *Config) setDefaults() {
 	if c.HistogramMaxScale == 0 {
 		c.HistogramMaxScale = defaultHistogramMaxScale
 	}
+	return c
 }
 
-func (c *Config) validate() error {
+// Validate reports every problem with c, joined with errors.Join, or nil when
+// c is usable. Call SetDefaults first; New does.
+func (c Config) Validate() error {
 	var errs []error
 	if c.Timeout <= 0 {
 		errs = append(errs, fmt.Errorf("metrics: timeout must be positive"))

@@ -460,12 +460,12 @@ errors.Join), with doc comments. `New` calls `cfg = cfg.SetDefaults()` and then
 `TestConfig_Validate`.
 
 **Acceptance criteria:**
-- [ ] No unexported setDefaults/validate in observability.
-- [ ] `go doc ./logs Config` (and the same for metrics and tracer) shows both methods.
-- [ ] Coverage meets each baseline (logs 97.9, metrics 93.8, tracer 92.9).
+- [x] No unexported setDefaults/validate in observability.
+- [x] `go doc ./logs Config` (and the same for metrics and tracer) shows both methods.
+- [x] Coverage meets each baseline (logs 97.9, metrics 93.8, tracer 92.9).
 
 **Verification:**
-- [ ] Module checks (strict) pass in observability.
+- [x] Module checks (strict) pass in observability.
 
 **Dependencies:** None
 **Files likely touched:** `observability/{logs,metrics,tracer}/{config.go,config_test.go}` and each package's main file (New)
