@@ -81,7 +81,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Checkpoint A: small modules strict
 ### Phase 2: goconvey → package testing (no behavior change)
-- [ ] T8: attributes tests
+- [x] T8: attributes tests
 - [ ] T9: logs tests
 - [ ] T10: metrics tests
 - [ ] T11: tracer tests; remove goconvey from go.mod

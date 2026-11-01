@@ -176,10 +176,10 @@ baseline in plan.md. Only `_test.go` files change.
 package `testing`.
 
 **Acceptance criteria:**
-- [ ] No goconvey import in `attributes`; coverage ≥ 97.7%.
+- [x] No goconvey import in `attributes`; coverage ≥ 97.7%.
 
 **Verification:**
-- [ ] `go test -count=3 -shuffle=on -cover ./attributes/...` passes in `observability`.
+- [x] `go test -count=3 -shuffle=on -cover ./attributes/...` passes in `observability`.
 
 **Dependencies:** T2
 **Files likely touched:** `observability/attributes/attributes_test.go`

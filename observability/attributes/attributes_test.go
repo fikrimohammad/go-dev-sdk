@@ -2,10 +2,10 @@ package attributes
 
 import (
 	"errors"
+	"math"
+	"slices"
 	"testing"
 	"time"
-
-	. "github.com/smartystreets/goconvey/convey"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -24,196 +24,263 @@ type nilError struct{ s string }
 
 func (e *nilError) Error() string { return e.s }
 
+// kvsByKey indexes kvs by attribute key.
+func kvsByKey(kvs []attribute.KeyValue) map[attribute.Key]attribute.Value {
+	m := make(map[attribute.Key]attribute.Value, len(kvs))
+	for _, kv := range kvs {
+		m[kv.Key] = kv.Value
+	}
+	return m
+}
+
 func TestNormalizeKey(t *testing.T) {
-	Convey("NormalizeKey maps developer keys to OTel style", t, func() {
-		So(NormalizeKey("order_id"), ShouldEqual, "order.id")
-		So(NormalizeKey("shop_id"), ShouldEqual, "shop.id")
-		So(NormalizeKey("HTTP_METHOD"), ShouldEqual, "http.method")
-		So(NormalizeKey("request_id"), ShouldEqual, "request.id")
-	})
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// NormalizeKey maps developer keys to OTel style.
+		{name: "developer key order_id", in: "order_id", want: "order.id"},
+		{name: "developer key shop_id", in: "shop_id", want: "shop.id"},
+		{name: "developer key HTTP_METHOD", in: "HTTP_METHOD", want: "http.method"},
+		{name: "developer key request_id", in: "request_id", want: "request.id"},
 
-	Convey("NormalizeKey preserves keys that already contain a dot", t, func() {
-		So(NormalizeKey("service.name"), ShouldEqual, "service.name")
-		So(NormalizeKey("http.response.status_code"), ShouldEqual, "http.response.status_code")
-		So(NormalizeKey("http.request.body.size"), ShouldEqual, "http.request.body.size")
-		So(NormalizeKey("user_agent.original"), ShouldEqual, "user_agent.original")
-		So(NormalizeKey("exception.stacktrace"), ShouldEqual, "exception.stacktrace")
-	})
+		// NormalizeKey preserves keys that already contain a dot.
+		{name: "dotted key service.name", in: "service.name", want: "service.name"},
+		{name: "dotted key http.response.status_code", in: "http.response.status_code", want: "http.response.status_code"},
+		{name: "dotted key http.request.body.size", in: "http.request.body.size", want: "http.request.body.size"},
+		{name: "dotted key user_agent.original", in: "user_agent.original", want: "user_agent.original"},
+		{name: "dotted key exception.stacktrace", in: "exception.stacktrace", want: "exception.stacktrace"},
 
-	Convey("NormalizeKey preserves standard correlation keys", t, func() {
-		So(NormalizeKey("trace_id"), ShouldEqual, "trace_id")
-		So(NormalizeKey("span_id"), ShouldEqual, "span_id")
-		So(NormalizeKey("trace_flags"), ShouldEqual, "trace_flags")
-	})
+		// NormalizeKey preserves standard correlation keys.
+		{name: "correlation key trace_id", in: "trace_id", want: "trace_id"},
+		{name: "correlation key span_id", in: "span_id", want: "span_id"},
+		{name: "correlation key trace_flags", in: "trace_flags", want: "trace_flags"},
 
-	Convey("NormalizeKey trims stray underscores and dots", t, func() {
-		So(NormalizeKey("__a__"), ShouldEqual, "a")
-		So(NormalizeKey("_order_id"), ShouldEqual, "order.id")
-		So(NormalizeKey("a..b"), ShouldEqual, "a.b")
-		So(NormalizeKey("a__b"), ShouldEqual, "a.b")
-		So(NormalizeKey("..."), ShouldEqual, "")
-		So(NormalizeKey(".http.route."), ShouldEqual, "http.route")
-	})
+		// NormalizeKey trims stray underscores and dots.
+		{name: "stray underscores __a__", in: "__a__", want: "a"},
+		{name: "stray leading underscore _order_id", in: "_order_id", want: "order.id"},
+		{name: "stray repeated dots a..b", in: "a..b", want: "a.b"},
+		{name: "stray repeated underscores a__b", in: "a__b", want: "a.b"},
+		{name: "only separators ...", in: "...", want: ""},
+		{name: "stray surrounding dots .http.route.", in: ".http.route.", want: "http.route"},
 
-	Convey("NormalizeKey leaves invalid characters for validation to reject", t, func() {
-		So(NormalizeKey("foo bar"), ShouldEqual, "foo bar")
-		So(NormalizeKey("foo/bar"), ShouldEqual, "foo/bar")
-	})
+		// NormalizeKey leaves invalid characters for validation to reject.
+		{name: "invalid space foo bar", in: "foo bar", want: "foo bar"},
+		{name: "invalid character slash", in: "foo/bar", want: "foo/bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeKey(tt.in); got != tt.want {
+				t.Errorf("NormalizeKey(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestIsValidKey(t *testing.T) {
-	Convey("IsValidKey accepts OTel-style keys and rejects invalid ones", t, func() {
-		for _, key := range []string{
-			"a",
-			"order.id",
-			"http.response.status_code",
-			"user_agent.original",
-			"a-b_c.d",
-			"9lives",
-		} {
-			So(IsValidKey(key), ShouldBeTrue)
-		}
-		for _, key := range []string{
-			"",
-			"foo bar",
-			"foo/bar",
-			"foo%bar",
-			"foo:bar",
-		} {
-			So(IsValidKey(key), ShouldBeFalse)
-		}
-	})
+	tests := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		// IsValidKey accepts OTel-style keys.
+		{name: "accepts single letter", key: "a", want: true},
+		{name: "accepts dotted key", key: "order.id", want: true},
+		{name: "accepts semantic convention key", key: "http.response.status_code", want: true},
+		{name: "accepts underscore key", key: "user_agent.original", want: true},
+		{name: "accepts hyphen underscore dot key", key: "a-b_c.d", want: true},
+		{name: "accepts leading digit key", key: "9lives", want: true},
+
+		// IsValidKey rejects invalid keys.
+		{name: "rejects empty key", key: "", want: false},
+		{name: "rejects space", key: "foo bar", want: false},
+		{name: "rejects slash", key: "foo/bar", want: false},
+		{name: "rejects percent", key: "foo%bar", want: false},
+		{name: "rejects colon", key: "foo:bar", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsValidKey(tt.key); got != tt.want {
+				t.Errorf("IsValidKey(%q) = %v, want %v", tt.key, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestValidateAppInfo(t *testing.T) {
-	Convey("ValidateAppInfo requires a non-empty service name", t, func() {
-		So(ValidateAppInfo(identity.Info{Name: "svc"}), ShouldBeNil)
-		So(ValidateAppInfo(identity.Info{Name: "my service"}), ShouldBeNil)
-		So(errors.Is(ValidateAppInfo(identity.Info{}), ErrMissingServiceName), ShouldBeTrue)
-		So(errors.Is(ValidateAppInfo(identity.Info{Name: "   "}), ErrMissingServiceName), ShouldBeTrue)
-	})
+	tests := []struct {
+		name    string
+		info    identity.Info
+		wantErr error
+	}{
+		{name: "accepts simple name", info: identity.Info{Name: "svc"}, wantErr: nil},
+		{name: "accepts name with space", info: identity.Info{Name: "my service"}, wantErr: nil},
+		{name: "rejects empty name", info: identity.Info{}, wantErr: ErrMissingServiceName},
+		{name: "rejects blank name", info: identity.Info{Name: "   "}, wantErr: ErrMissingServiceName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// errors.Is(err, nil) holds only when err is nil.
+			if err := ValidateAppInfo(tt.info); !errors.Is(err, tt.wantErr) {
+				t.Errorf("ValidateAppInfo(%+v) = %v, want %v", tt.info, err, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestConvertMapsToKVs(t *testing.T) {
-	Convey("no maps, nil, and empty maps yield nil", t, func() {
-		So(ConvertMapsToKVs(), ShouldBeNil)
-		So(ConvertMapsToKVs(nil), ShouldBeNil)
-		So(ConvertMapsToKVs(map[string]any{}), ShouldBeNil)
+	t.Run("no maps, nil, and empty maps yield nil", func(t *testing.T) {
+		if got := ConvertMapsToKVs(); got != nil {
+			t.Errorf("ConvertMapsToKVs() = %v, want nil", got)
+		}
+		if got := ConvertMapsToKVs(nil); got != nil {
+			t.Errorf("ConvertMapsToKVs(nil) = %v, want nil", got)
+		}
+		if got := ConvertMapsToKVs(map[string]any{}); got != nil {
+			t.Errorf("ConvertMapsToKVs(map{}) = %v, want nil", got)
+		}
 	})
 
-	Convey("developer keys are normalized and values typed", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
+	t.Run("developer keys are normalized and values typed", func(t *testing.T) {
+		m := kvsByKey(ConvertMapsToKVs(map[string]any{
 			"user_id": "u1",
 			"count":   int(1),
 			"big":     int64(2),
 			"ratio":   0.5,
 			"enabled": true,
 			"other":   struct{ name string }{name: "x"},
-		})
-		m := make(map[attribute.Key]attribute.Value)
-		for _, kv := range kvs {
-			m[kv.Key] = kv.Value
+		}))
+		if got := m["user.id"].AsString(); got != "u1" {
+			t.Errorf(`user_id: AsString() = %q, want "u1"`, got)
 		}
-		So(m["user.id"].AsString(), ShouldEqual, "u1")
-		So(m["count"].AsInt64(), ShouldEqual, int64(1))
-		So(m["big"].AsInt64(), ShouldEqual, int64(2))
-		So(m["ratio"].AsFloat64(), ShouldEqual, 0.5)
-		So(m["enabled"].AsBool(), ShouldBeTrue)
-		So(m["other"].AsString(), ShouldEqual, "{x}")
+		if got := m["count"].AsInt64(); got != 1 {
+			t.Errorf("count: AsInt64() = %d, want 1", got)
+		}
+		if got := m["big"].AsInt64(); got != 2 {
+			t.Errorf("big: AsInt64() = %d, want 2", got)
+		}
+		if got := m["ratio"].AsFloat64(); got != 0.5 {
+			t.Errorf("ratio: AsFloat64() = %v, want 0.5", got)
+		}
+		if got := m["enabled"].AsBool(); !got {
+			t.Errorf("enabled: AsBool() = %v, want true", got)
+		}
+		if got := m["other"].AsString(); got != "{x}" {
+			t.Errorf(`other: AsString() = %q, want "{x}"`, got)
+		}
 	})
 
-	Convey("semantic-convention and correlation keys are preserved", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
+	t.Run("semantic-convention and correlation keys are preserved", func(t *testing.T) {
+		m := kvsByKey(ConvertMapsToKVs(map[string]any{
 			"http.response.status_code": 200,
 			"user_agent.original":       "ua",
 			"trace_id":                  "trace",
 			"span_id":                   "span",
-		})
-		m := make(map[attribute.Key]attribute.Value)
-		for _, kv := range kvs {
-			m[kv.Key] = kv.Value
+		}))
+		if got := m["http.response.status_code"].AsInt64(); got != 200 {
+			t.Errorf("http.response.status_code: AsInt64() = %d, want 200", got)
 		}
-		So(m["http.response.status_code"].AsInt64(), ShouldEqual, int64(200))
-		So(m["user_agent.original"].AsString(), ShouldEqual, "ua")
-		So(m["trace_id"].AsString(), ShouldEqual, "trace")
-		So(m["span_id"].AsString(), ShouldEqual, "span")
+		if got := m["user_agent.original"].AsString(); got != "ua" {
+			t.Errorf(`user_agent.original: AsString() = %q, want "ua"`, got)
+		}
+		if got := m["trace_id"].AsString(); got != "trace" {
+			t.Errorf(`trace_id: AsString() = %q, want "trace"`, got)
+		}
+		if got := m["span_id"].AsString(); got != "span" {
+			t.Errorf(`span_id: AsString() = %q, want "span"`, got)
+		}
 	})
 
-	Convey("narrow integers widen to int64", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
+	t.Run("narrow integers widen to int64", func(t *testing.T) {
+		m := kvsByKey(ConvertMapsToKVs(map[string]any{
 			"i32": int32(32),
 			"i16": int16(16),
 			"i8":  int8(8),
 			"u32": uint32(32),
 			"u16": uint16(16),
 			"u8":  uint8(8),
-		})
-		m := make(map[attribute.Key]attribute.Value)
-		for _, kv := range kvs {
-			m[kv.Key] = kv.Value
+		}))
+		tests := []struct {
+			key  string
+			want int64
+		}{
+			{key: "i32", want: 32},
+			{key: "i16", want: 16},
+			{key: "i8", want: 8},
+			{key: "u32", want: 32},
+			{key: "u16", want: 16},
+			{key: "u8", want: 8},
 		}
-		So(m["i32"].AsInt64(), ShouldEqual, int64(32))
-		So(m["i16"].AsInt64(), ShouldEqual, int64(16))
-		So(m["i8"].AsInt64(), ShouldEqual, int64(8))
-		So(m["u32"].AsInt64(), ShouldEqual, int64(32))
-		So(m["u16"].AsInt64(), ShouldEqual, int64(16))
-		So(m["u8"].AsInt64(), ShouldEqual, int64(8))
+		for _, tt := range tests {
+			if got := m[attribute.Key(tt.key)].AsInt64(); got != tt.want {
+				t.Errorf("%s: AsInt64() = %d, want %d", tt.key, got, tt.want)
+			}
+		}
 	})
 
-	Convey("float32 widens to float64", t, func() {
+	t.Run("float32 widens to float64", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{"ratio": float32(0.5)})
-		So(kvs[0].Value.AsFloat64(), ShouldAlmostEqual, 0.5)
+		if got := kvs[0].Value.AsFloat64(); math.Abs(got-0.5) > 1e-10 {
+			t.Errorf("ratio: AsFloat64() = %v, want 0.5", got)
+		}
 	})
 
-	Convey("time.Duration is recorded as nanoseconds", t, func() {
+	t.Run("time.Duration is recorded as nanoseconds", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{"latency": 250 * time.Millisecond})
-		So(kvs[0].Value.AsInt64(), ShouldEqual, int64(250*time.Millisecond))
+		if got, want := kvs[0].Value.AsInt64(), int64(250*time.Millisecond); got != want {
+			t.Errorf("latency: AsInt64() = %d, want %d", got, want)
+		}
 	})
 
-	Convey("uint values that fit int64 stay numeric and larger values are strings", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
+	t.Run("uint values that fit int64 stay numeric and larger values are strings", func(t *testing.T) {
+		m := kvsByKey(ConvertMapsToKVs(map[string]any{
 			"u":     uint(1),
 			"u64":   uint64(2),
 			"large": uint64(1) << 63,
-		})
-		m := make(map[attribute.Key]attribute.Value)
-		for _, kv := range kvs {
-			m[kv.Key] = kv.Value
+		}))
+		if got := m["u"].AsInt64(); got != 1 {
+			t.Errorf("u: AsInt64() = %d, want 1", got)
 		}
-		So(m["u"].AsInt64(), ShouldEqual, int64(1))
-		So(m["u64"].AsInt64(), ShouldEqual, int64(2))
-		So(m["large"].AsString(), ShouldEqual, "9223372036854775808")
+		if got := m["u64"].AsInt64(); got != 2 {
+			t.Errorf("u64: AsInt64() = %d, want 2", got)
+		}
+		if got := m["large"].AsString(); got != "9223372036854775808" {
+			t.Errorf(`large: AsString() = %q, want "9223372036854775808"`, got)
+		}
 	})
 
-	Convey("slices map to OTel slice types", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
+	t.Run("slices map to OTel slice types", func(t *testing.T) {
+		m := kvsByKey(ConvertMapsToKVs(map[string]any{
 			"tags":  []string{"a", "b"},
 			"nums":  []float64{1.5},
 			"flags": []bool{true},
-		})
-		m := make(map[attribute.Key]attribute.Value)
-		for _, kv := range kvs {
-			m[kv.Key] = kv.Value
+		}))
+		if got, want := m["tags"].AsStringSlice(), []string{"a", "b"}; !slices.Equal(got, want) {
+			t.Errorf("tags: AsStringSlice() = %q, want %q", got, want)
 		}
-		So(m["tags"].AsStringSlice(), ShouldResemble, []string{"a", "b"})
-		So(m["nums"].AsFloat64Slice(), ShouldResemble, []float64{1.5})
-		So(m["flags"].AsBoolSlice(), ShouldResemble, []bool{true})
+		if got, want := m["nums"].AsFloat64Slice(), []float64{1.5}; !slices.Equal(got, want) {
+			t.Errorf("nums: AsFloat64Slice() = %v, want %v", got, want)
+		}
+		if got, want := m["flags"].AsBoolSlice(), []bool{true}; !slices.Equal(got, want) {
+			t.Errorf("flags: AsBoolSlice() = %v, want %v", got, want)
+		}
 	})
 
-	Convey("error and fmt.Stringer values are stringified", t, func() {
-		kvs := ConvertMapsToKVs(map[string]any{
+	t.Run("error and fmt.Stringer values are stringified", func(t *testing.T) {
+		m := kvsByKey(ConvertMapsToKVs(map[string]any{
 			"err":  errors.New("boom"),
 			"name": myStringer("x"),
-		})
-		m := make(map[attribute.Key]attribute.Value)
-		for _, kv := range kvs {
-			m[kv.Key] = kv.Value
+		}))
+		if got := m["err"].AsString(); got != "boom" {
+			t.Errorf(`err: AsString() = %q, want "boom"`, got)
 		}
-		So(m["err"].AsString(), ShouldEqual, "boom")
-		So(m["name"].AsString(), ShouldEqual, "x")
+		if got := m["name"].AsString(); got != "x" {
+			t.Errorf(`name: AsString() = %q, want "x"`, got)
+		}
 	})
 
-	Convey("typed nil error and Stringer values are omitted", t, func() {
+	t.Run("typed nil error and Stringer values are omitted", func(t *testing.T) {
 		var nilErr *nilError
 		var nilStr *nilStringer
 		kvs := ConvertMapsToKVs(map[string]any{
@@ -221,17 +288,25 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"name": nilStr,
 			"kept": "v",
 		})
-		So(len(kvs), ShouldEqual, 1)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("kept"))
+		if len(kvs) != 1 {
+			t.Fatalf("len(ConvertMapsToKVs(typed nils, kept)) = %d, want 1", len(kvs))
+		}
+		if got, want := kvs[0].Key, attribute.Key("kept"); got != want {
+			t.Errorf("key = %q, want %q", got, want)
+		}
 	})
 
-	Convey("nil values are omitted", t, func() {
+	t.Run("nil values are omitted", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{"empty": nil, "kept": "v"})
-		So(len(kvs), ShouldEqual, 1)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("kept"))
+		if len(kvs) != 1 {
+			t.Fatalf("len(ConvertMapsToKVs(nil value, kept)) = %d, want 1", len(kvs))
+		}
+		if got, want := kvs[0].Key, attribute.Key("kept"); got != want {
+			t.Errorf("key = %q, want %q", got, want)
+		}
 	})
 
-	Convey("empty and invalid attribute keys are omitted", t, func() {
+	t.Run("empty and invalid attribute keys are omitted", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{
 			"":        1,
 			"...":     2,
@@ -239,11 +314,15 @@ func TestConvertMapsToKVs(t *testing.T) {
 			"foo/bar": 4,
 			"ok":      5,
 		})
-		So(len(kvs), ShouldEqual, 1)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("ok"))
+		if len(kvs) != 1 {
+			t.Fatalf("len(ConvertMapsToKVs(invalid keys, ok)) = %d, want 1", len(kvs))
+		}
+		if got, want := kvs[0].Key, attribute.Key("ok"); got != want {
+			t.Errorf("key = %q, want %q", got, want)
+		}
 	})
 
-	Convey("attribute.KeyValue values are used verbatim", t, func() {
+	t.Run("attribute.KeyValue values are used verbatim", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{
 			"status": attribute.Int("http.response.status_code", 200),
 			"invalid": attribute.KeyValue{
@@ -251,21 +330,33 @@ func TestConvertMapsToKVs(t *testing.T) {
 				Value: attribute.StringValue("x"),
 			},
 		})
-		So(len(kvs), ShouldEqual, 1)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("http.response.status_code"))
-		So(kvs[0].Value.AsInt64(), ShouldEqual, int64(200))
+		if len(kvs) != 1 {
+			t.Fatalf("len(ConvertMapsToKVs(KeyValue values)) = %d, want 1", len(kvs))
+		}
+		if got, want := kvs[0].Key, attribute.Key("http.response.status_code"); got != want {
+			t.Errorf("key = %q, want %q", got, want)
+		}
+		if got := kvs[0].Value.AsInt64(); got != 200 {
+			t.Errorf("AsInt64() = %d, want 200", got)
+		}
 	})
 
-	Convey("the result is sorted by attribute key", t, func() {
+	t.Run("the result is sorted by attribute key", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{"b": 1, "a": 2})
-		So(len(kvs), ShouldEqual, 2)
-		So(kvs[0].Key, ShouldEqual, attribute.Key("a"))
-		So(kvs[1].Key, ShouldEqual, attribute.Key("b"))
+		if len(kvs) != 2 {
+			t.Fatalf("len(ConvertMapsToKVs(b, a)) = %d, want 2", len(kvs))
+		}
+		if got, want := kvs[0].Key, attribute.Key("a"); got != want {
+			t.Errorf("kvs[0].Key = %q, want %q", got, want)
+		}
+		if got, want := kvs[1].Key, attribute.Key("b"); got != want {
+			t.Errorf("kvs[1].Key = %q, want %q", got, want)
+		}
 	})
 }
 
 func TestConvertMapsToKVs_Merge(t *testing.T) {
-	Convey("later maps override earlier ones", t, func() {
+	t.Run("later maps override earlier ones", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(
 			map[string]any{"order_id": "1", "env": "custom"},
 			ConvertAppInfoToMap(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"}),
@@ -274,14 +365,24 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 		for _, kv := range kvs {
 			m[string(kv.Key)] = kv.Value.AsString()
 		}
-		So(m["order.id"], ShouldEqual, "1")
-		So(m["env"], ShouldEqual, "custom")
-		So(m["service.name"], ShouldEqual, "svc")
-		So(m["service.version"], ShouldEqual, "1.0")
-		So(m["deployment.environment.name"], ShouldEqual, "prod")
+		if got := m["order.id"]; got != "1" {
+			t.Errorf(`order.id = %q, want "1"`, got)
+		}
+		if got := m["env"]; got != "custom" {
+			t.Errorf(`env = %q, want "custom"`, got)
+		}
+		if got := m["service.name"]; got != "svc" {
+			t.Errorf(`service.name = %q, want "svc"`, got)
+		}
+		if got := m["service.version"]; got != "1.0" {
+			t.Errorf(`service.version = %q, want "1.0"`, got)
+		}
+		if got := m["deployment.environment.name"]; got != "prod" {
+			t.Errorf(`deployment.environment.name = %q, want "prod"`, got)
+		}
 	})
 
-	Convey("a later map's value overrides an earlier colliding key", t, func() {
+	t.Run("a later map's value overrides an earlier colliding key", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(
 			map[string]any{"service.name": "spoofed"},
 			ConvertAppInfoToMap(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"}),
@@ -290,48 +391,68 @@ func TestConvertMapsToKVs_Merge(t *testing.T) {
 		for _, kv := range kvs {
 			m[string(kv.Key)] = kv.Value.AsString()
 		}
-		So(m["service.name"], ShouldEqual, "svc")
-		So(m["service.version"], ShouldEqual, "1.0")
-		So(m["deployment.environment.name"], ShouldEqual, "prod")
+		if got := m["service.name"]; got != "svc" {
+			t.Errorf(`service.name = %q, want "svc"`, got)
+		}
+		if got := m["service.version"]; got != "1.0" {
+			t.Errorf(`service.version = %q, want "1.0"`, got)
+		}
+		if got := m["deployment.environment.name"]; got != "prod" {
+			t.Errorf(`deployment.environment.name = %q, want "prod"`, got)
+		}
 	})
 
-	Convey("keys normalizing to the same value collapse deterministically", t, func() {
+	t.Run("keys normalizing to the same value collapse deterministically", func(t *testing.T) {
 		kvs := ConvertMapsToKVs(map[string]any{"order_id": "under", "order.id": "dot"})
 		m := make(map[string]string)
 		for _, kv := range kvs {
 			m[string(kv.Key)] = kv.Value.AsString()
 		}
-		So(m["order.id"], ShouldEqual, "under")
-		So(len(kvs), ShouldEqual, 1)
+		if got := m["order.id"]; got != "under" {
+			t.Errorf(`order.id = %q, want "under"`, got)
+		}
+		if len(kvs) != 1 {
+			t.Errorf("len(kvs) = %d, want 1", len(kvs))
+		}
 	})
 }
 
 func TestConvertAppInfoToMap(t *testing.T) {
-	Convey("returns the full service identity", t, func() {
+	t.Run("returns the full service identity", func(t *testing.T) {
 		m := ConvertAppInfoToMap(identity.Info{Name: "svc", Version: "1.0", Environment: "prod"})
-		So(m["service.name"], ShouldEqual, "svc")
-		So(m["service.version"], ShouldEqual, "1.0")
-		So(m["deployment.environment.name"], ShouldEqual, "prod")
+		if got := m["service.name"]; got != "svc" {
+			t.Errorf(`service.name = %v, want "svc"`, got)
+		}
+		if got := m["service.version"]; got != "1.0" {
+			t.Errorf(`service.version = %v, want "1.0"`, got)
+		}
+		if got := m["deployment.environment.name"]; got != "prod" {
+			t.Errorf(`deployment.environment.name = %v, want "prod"`, got)
+		}
 	})
 
-	Convey("omits empty optional identity fields", t, func() {
+	t.Run("omits empty optional identity fields", func(t *testing.T) {
 		m := ConvertAppInfoToMap(identity.Info{Name: "svc"})
-		So(m["service.name"], ShouldEqual, "svc")
-		_, hasVersion := m["service.version"]
-		_, hasEnvironment := m["deployment.environment.name"]
-		So(hasVersion, ShouldBeFalse)
-		So(hasEnvironment, ShouldBeFalse)
+		if got := m["service.name"]; got != "svc" {
+			t.Errorf(`service.name = %v, want "svc"`, got)
+		}
+		if _, ok := m["service.version"]; ok {
+			t.Error(`ConvertAppInfoToMap(Name only) has "service.version", want it omitted`)
+		}
+		if _, ok := m["deployment.environment.name"]; ok {
+			t.Error(`ConvertAppInfoToMap(Name only) has "deployment.environment.name", want it omitted`)
+		}
 	})
 }
 
 func BenchmarkNormalizeKey(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = NormalizeKey("http.response.status_code")
 	}
 }
 
 func BenchmarkNormalizeKeyDeveloperStyle(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = NormalizeKey("order_id")
 	}
 }
@@ -345,7 +466,7 @@ func BenchmarkConvertMapsToKVs(b *testing.B) {
 		"network.protocol.version":  "1.1",
 	}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = ConvertMapsToKVs(attrs)
 	}
 }
