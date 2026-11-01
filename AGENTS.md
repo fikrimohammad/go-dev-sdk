@@ -38,6 +38,19 @@ perform unrelated repo-wide rewrites.
   [naming](https://opentelemetry.io/docs/specs/semconv/general/naming/)
   conventions, plus the relevant domain convention (DB, HTTP, messaging, RPC,
   object stores, exceptions).
+- Config methods: every package `Config` has exported value-receiver
+  `SetDefaults() Config` (fills zero values, returns the copy) and
+  `Validate() error`. `Validate` reports every problem with `errors.Join` and
+  returns nil when usable. Constructors call `cfg = cfg.SetDefaults()` and then
+  `cfg.Validate()`.
+- Examples: every package with exported API has `example_test.go` in package
+  `<pkg>_test`. Examples are runnable with `// Output:` when no external service
+  is needed, and compile-only (no `// Output:`) when they need a database,
+  Redis, S3, or NATS. Test-only and internal packages are exempt.
+- Errors: a package's exported errors (sentinels, aliases, error types and their
+  methods) live in `errors.go`.
+- Interfaces: all interface types live in `<pkg>.go`, the file named after the
+  package (as in `observability/logs/logs.go`). No `interfaces.go`.
 
 ## Load the detailed skill before acting
 
@@ -99,6 +112,8 @@ DB_POSTGRES_DSN='postgres://app:secret@127.0.0.1:5432/report_db?sslmode=disable'
 - [ ] New or changed telemetry follows the semantic conventions in the
       `opentelemetry-semconv` skill.
 - [ ] New or changed Go code follows the `go-best-practices` skill.
+- [ ] New or changed code follows the Config, example, `errors.go`, and
+      `<pkg>.go` conventions above.
 - [ ] The verification commands above pass, including `modernize` and the
       style-guide rules through
       `golangci-lint run --new-from-merge-base=main ./...` (the full tree,

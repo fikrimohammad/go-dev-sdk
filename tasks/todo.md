@@ -441,11 +441,11 @@ Add a "confloader redesign must follow R1–R4" line to docs/ideas/sdk-fix-backl
 (Not Doing → confloader).
 
 **Acceptance criteria:**
-- [ ] AGENTS.md states the four rules, matching the spec amendment's wording.
-- [ ] The idea doc records them as confloader redesign requirements.
+- [x] AGENTS.md states the four rules, matching the spec amendment's wording.
+- [x] The idea doc records them as confloader redesign requirements.
 
 **Verification:**
-- [ ] `grep -n 'errors.go\|example_test.go\|interfaces.go\|SetDefaults' AGENTS.md` shows each rule.
+- [x] `grep -n 'errors.go\|example_test.go\|interfaces.go\|SetDefaults' AGENTS.md` shows each rule.
 
 **Dependencies:** None
 **Files likely touched:** `AGENTS.md`, `docs/ideas/sdk-fix-backlog.md`

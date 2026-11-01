@@ -243,7 +243,10 @@ Tags: [B] bug, [T] telemetry/semconv, [A] API/design, [C] cleanup/lint.
   runs under the entry lock (deadlock confirmed by a probe), errors are compared with ==
   instead of errors.Is, the poll loop uses an uncancellable context.Background(), and
   ErrProviderConnect, ErrInvalidGetterType, ErrRootFolder, ErrStale, and AllowedProviders
-  are dead API.
+  are dead API. Its redesign must follow the repository conventions R1–R4 (see the
+  SPEC-foundations amendment and AGENTS.md): today confloader has unexported
+  applyDefaults/validate, no examples in its client packages, and confloader/client's
+  ErrNotFound outside an errors.go.
 - Shared telemetry helper: not chosen. The same fix lands in each module instead.
 - O5 (attribute-conversion allocations): no profile shows it matters yet.
 - Rewriting the existing unexported test seams to use real transports: about 4.3k lines of
