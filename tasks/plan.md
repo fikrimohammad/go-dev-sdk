@@ -69,8 +69,8 @@ Command: `go test -count=1 -gcflags="all=-N -l" -cover ./...` in each module.
 Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Phase 0: Setup
-- [ ] T1: Branch, commit the docs, open a draft PR
-- [ ] T2: Strict-lint ratchet (`rest`), ireturn allow-list, AGENTS.md convention
+- [x] T1: Branch, commit the docs, open a draft PR
+- [x] T2: Strict-lint ratchet (`rest`), ireturn allow-list, AGENTS.md convention
 
 ### Phase 1: Small modules
 - [ ] T3: identity: ErrName prefix (I1), strict

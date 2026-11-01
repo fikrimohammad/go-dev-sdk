@@ -23,14 +23,14 @@ the capability map, SPEC-foundations, this plan and task list, and the deletion 
 shipped rest plan files. Open a draft PR so CI checks every later commit.
 
 **Acceptance criteria:**
-- [ ] The branch exists, and one `docs:` commit holds `docs/ideas/sdk-fix-backlog.md`,
+- [x] The branch exists, and one `docs:` commit holds `docs/ideas/sdk-fix-backlog.md`,
       `docs/specs/sdk-fix-backlog/*`, `tasks/plan.md`, `tasks/todo.md`, and the old
       tasks' deletion.
-- [ ] A draft PR targets `main`, and its body links the spec.
+- [x] A draft PR targets `main`, and its body links the spec.
 
 **Verification:**
-- [ ] `git log --stat -1` shows only docs and tasks files.
-- [ ] `gh pr view --json isDraft` reports `true`.
+- [x] `git log --stat -1` shows only docs and tasks files.
+- [x] `gh pr view --json isDraft` reports `true`.
 
 **Dependencies:** None
 **Files likely touched:** `docs/ideas/sdk-fix-backlog.md`, `docs/specs/sdk-fix-backlog/*`, `tasks/*`
@@ -45,14 +45,14 @@ AGENTS.md that client packages may export and return a caller-facing interface s
 can generate mocks, and how the strict-lint list works.
 
 **Acceptance criteria:**
-- [ ] CI runs `rest` lint with `only-new-issues: false`, and every other module with `true`.
-- [ ] `.golangci.yml` ireturn `allow` includes the SDK path.
-- [ ] AGENTS.md states the exported-interface convention and the ratchet rule ("add a
+- [x] CI runs `rest` lint with `only-new-issues: false`, and every other module with `true`.
+- [x] `.golangci.yml` ireturn `allow` includes the SDK path.
+- [x] AGENTS.md states the exported-interface convention and the ratchet rule ("add a
       module to STRICT_LINT_MODULES in the commit that makes it clean; never remove one").
 
 **Verification:**
-- [ ] `golangci-lint run ./...` in `rest` reports 0 findings locally.
-- [ ] On the draft PR, the `rest` CI job's lint log shows a full run; another module's
+- [x] `golangci-lint run ./...` in `rest` reports 0 findings locally.
+- [x] On the draft PR, the `rest` CI job's lint log shows a full run; another module's
       shows only-new-issues.
 
 **Dependencies:** T1

@@ -15,6 +15,7 @@ permissions:
 env:
   GO_VERSION: "1.26.5"
   GOLANGCI_VERSION: v2.15.0
+  STRICT_LINT_MODULES: '["rest"]'
 
 jobs:
   modules:
@@ -64,8 +65,10 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_VERSION }}
           working-directory: ${{ matrix.module }}
-          # Existing code predates the style-guide rules; fail only on new issues.
-          only-new-issues: true
+          # Modules in STRICT_LINT_MODULES are linted on the full tree; all others
+          # fail only on new issues. Add a module in the commit that makes it clean;
+          # never remove one.
+          only-new-issues: ${{ !contains(fromJSON(env.STRICT_LINT_MODULES), matrix.module) }}
 
       - name: Vet
         run: go vet ./...
