@@ -1,94 +1,119 @@
-# Implementation Plan: rest module (rest/server + rest/client)
+# Implementation Plan: foundations (SDK fix backlog, PR 1)
 
-Specs: [SPEC-rest-server](../docs/specs/rest/SPEC-rest-server.md),
-[SPEC-rest-client](../docs/specs/rest/SPEC-rest-client.md),
-[capability map](../docs/specs/rest/capability-map.md). Tasks:
-[tasks/todo.md](todo.md).
+Spec: [SPEC-foundations](../docs/specs/sdk-fix-backlog/SPEC-foundations.md) (approved
+2026-11-01). Capability map: [capability-map](../docs/specs/sdk-fix-backlog/capability-map.md).
+Item index: [docs/ideas/sdk-fix-backlog.md](../docs/ideas/sdk-fix-backlog.md#item-index).
+Tasks: [tasks/todo.md](todo.md).
 
 ## Overview
 
-Build the `rest` Go module, which replaces `apiserver`. `rest/server` is a
-Hertz server with a fixed, observable middleware stack, edge-trust rules, and
-RFC 9457 errors. `rest/client` is a Hertz client with safe retries, deadlines
-that hold, and the same telemetry, plus a `RoundTripper` for vendor SDKs. The
-Telemetry Contract in SPEC-rest-server is a public API for the alert repo.
-Server ships first (tasks 1–7), then client (tasks 8–13).
+One PR, branch `feat/foundations`, with one commit per task, so the owner can review the
+PR commit by commit. It fixes `identity`, `errs`, `errgroup`, and `observability`, makes
+SDK telemetry follow the OTel global providers, migrates callers off `SetDefault`, and
+switches those modules plus `rest` to full-tree lint in CI.
+
+## Execution Roles (owner decision 2026-11-01)
+
+- **Coder and tester:** a Haiku 5.5 subagent per task (T2–T19). It gets the task, its spec
+  section, and the go-best-practices skill. It doesn't commit or push.
+- **Orchestrator:** the main session. It dispatches tasks, reruns the task's verification
+  independently, commits one task per commit, pushes, and ticks todo.md. It does T1
+  itself (setup, no code).
+- **Reviewer:** an Opus 5.5 subagent at each checkpoint (A–D). It reviews the commits
+  since the previous checkpoint against the spec and the go-best-practices skill.
+  Findings are fixed before the next phase starts.
 
 ## Architecture Decisions
 
-- **Contract first.** `rest/internal/semconv` (task 1) holds instrument
-  descriptors, method normalization, span naming, and the `error.type` and
-  `errs.code` rules. Server and client both use it, so the contract has one
-  implementation.
-- **Recovery innermost.** The order is
-  `requestID → tracing → metrics → logging → recovery → team → handler`.
-  Probed: outer middleware sees the route and the final 500 after a panic.
-- **No exported middleware.** The stack is fixed; team middleware goes through
-  `Hertz().Use`, which only appends, so it lands in the slot automatically.
-- **Retry is our middleware, not Hertz's.** It runs outside tracing and
-  metrics, so there's one span and one measurement per attempt (probed). Hertz
-  `WithRetryConfig` and `RetryIfFunc` are never set.
-- **Deadline conversion.** Hertz ignores a ctx deadline in flight (probed), so
-  each attempt gets `WithRequestTimeout(min(AttemptTimeout, time.Until(deadline)))`,
-  and Hertz timeouts are wrapped to match `context.DeadlineExceeded`.
-- **`RoundTripper` uses its own conversion**, not `adaptor.CopyToHertzRequest`
-  (that reads the empty client `RequestURI` and streams the body).
-- **Key normalization is a given.** `logs` and `metrics` normalize keys
-  without a dot (`request_id` → `request.id`); contract keys all contain a
-  dot. Span attributes that must keep an exact key are set with
-  `attribute.*` directly.
-- **Releases:** manual. `release.yml` runs only on `workflow_dispatch` with a
-  module and version (all tags deleted 2026-11-01; every module is v0). The
-  first tag is `rest/v0.1.0`; `cron` gets a v0 version that proxy.golang.org
-  doesn't already have (v0.1.0 and v0.1.1 are taken).
+- **Ratchet first, with `rest` only.** T2 lands the `STRICT_LINT_MODULES` mechanism with
+  `rest`, which is already clean, so a mistake in the CI expression shows up before any
+  module depends on it. Each later task adds its module to the list in the same commit
+  that makes it clean. The list only grows, and every commit stays green.
+- **Small modules before observability.** identity, errs, and errgroup are independent
+  and quick. They prove the TDD-plus-strict loop before the big module.
+- **Convert goconvey before changing behavior.** Each observability package's tests are
+  converted to package `testing` with no behavior change, guarded by coverage at least
+  equal to its baseline. New regression tests then land in files that are already
+  converted, so no file mixes styles. The cost is converting a few SetDefault tests
+  that T19 deletes; that's accepted.
+- **Transitional default, then deletion.** T12/T13 make the *initial* default
+  `Wrap(otel.Get*Provider())`, so `Default()` follows the OTel global while `SetDefault`
+  still compiles for callers. T15–T18 migrate the callers. T19 deletes `SetDefault` and
+  the package-level `Stop`. Every commit builds; a grep in T19 proves no transitional
+  code is left.
+- **Caller tests inject; one fallback test per module uses OTel.** The db, redis, and s3
+  helpers build their structs directly, so they set `meta.metrics` / `meta.tracer` to
+  their fakes, with no globals. Each module's "falls back to the default" test installs
+  an OTel span recorder or manual reader with `otel.Set*Provider`, restored in
+  `t.Cleanup`.
+- **The OTel delegate behavior is already validated** (2026-11-01 probe): providers
+  captured before `otel.Set*Provider` forward afterwards, including instruments created
+  before the install.
+
+## Coverage Baselines (main @ a86089d, 2026-11-01)
+
+| Package | Coverage |
+| --- | --- |
+| observability/attributes | 97.7% |
+| observability/logs | 94.2% |
+| observability/metrics | 90.0% |
+| observability/tracer | 83.0% |
+| errs | 98.5% |
+| errgroup | 100.0% |
+| identity | 100.0% |
+
+Command: `go test -count=1 -gcflags="all=-N -l" -cover ./...` in each module.
 
 ## Task List
 
-### Phase 1: Foundation
+Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
-- [x] Task 1: Module scaffold and `rest/internal/semconv`
+### Phase 0: Setup
+- [ ] T1: Branch, commit the docs, open a draft PR
+- [ ] T2: Strict-lint ratchet (`rest`), ireturn allow-list, AGENTS.md convention
 
-### Phase 2: rest/server
+### Phase 1: Small modules
+- [ ] T3: identity: ErrName prefix (I1), strict
+- [ ] T4: errs: Is, LogValue, SlogAttr fixes, test first (E1–E3)
+- [ ] T5: errs: package doc, AsType, test wording, strict (E4, X8, X9)
+- [ ] T6: errgroup: PanicError, no naked returns, no nil-ctx fallback, test first (G2, X7)
+- [ ] T7: errgroup: const default, docs, nolint, test wording, strict (G1, G3, G4, X9)
 
-- [x] Task 2: Server lifecycle: `Config`, `New`, `Hertz`, `Run(ctx)`
-- [x] Task 3: Request ID, recovery, and problem+json responses
-- [x] Task 4: Server tracing (edge trust, span contract, panic exception)
+### Checkpoint A: small modules strict
+### Phase 2: goconvey → package testing (no behavior change)
+- [ ] T8: attributes tests
+- [ ] T9: logs tests
+- [ ] T10: metrics tests
+- [ ] T11: tracer tests; remove goconvey from go.mod
 
-### Checkpoint A: server behaviour (passed, review fixes applied)
+### Checkpoint B: goconvey gone, coverage held
+### Phase 3: observability behavior
+- [ ] T12: metrics: Default follows the OTel global, Insecure bool, no nil-ctx fallback (X10, O1, X7)
+- [ ] T13: tracer: the same, plus the doc fix (X10, O1, O3, X7)
+- [ ] T14: logs: delete SetStreams and the stream vars (O2)
 
-- [x] Task 5: Server metrics and access log (full contract, panic full stack, team slot)
-- [x] Task 6: `rest/README.md` server section and doc comments
+### Checkpoint C: new behavior in place, callers still compile
+### Phase 4: migrate callers, then delete
+- [ ] T15: db and redis tests and docs off SetDefault
+- [ ] T16: s3 tests and docs, nats docs off SetDefault
+- [ ] T17: rest/server tests and docs off SetDefault
+- [ ] T18: rest/client tests and docs off SetDefault
+- [ ] T19: delete SetDefault and the package Stop, rewrite observability/doc.go, observability strict
 
-### Checkpoint B: server complete (passed, review fixes applied)
-
-- [x] Task 7: Delete `apiserver` and `cron/server`; update `go.work`, `cron`, and READMEs
-
-### Checkpoint C: rest-server shipped (rest/v0.1.0 tagged by hand)
-
-### Phase 3: rest/client
-
-- [x] Task 8: Client `Config` and `New` (dial, TLS, proxy)
-- [x] Task 9: Deadlines, timeout wrapping, and logging middleware
-- [x] Task 10: Retry middleware
-
-### Checkpoint D: client behaviour (passed, review fixes applied)
-
-- [x] Task 11: Client tracing and metrics (per-attempt, hygiene, contract)
-- [x] Task 12: `RoundTripper`
-- [x] Task 13: `rest/parity_test.go` and the README client section
-
-### Checkpoint E: complete (final review passed after fixes; ship once merged)
+### Checkpoint D: complete; owner review
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Hertz `Run`/`Shutdown` semantics (what `Run` returns after `Shutdown`, port release) don't fit `Run(ctx)` | Med | Task 2 reads `pkg/route/engine.go` first and tests cancel → `nil` plus port reuse; adjust the documented return values in the spec if Hertz forces it |
-| Custom `NoRoute`/`NoMethod` handlers skip global middleware, so 404s go missing from metrics | Med | Task 3 test asserts a 404 is recorded by an outer middleware; the probe already showed this for the default handler |
-| A Hertz client middleware chain set with `Use` behaves differently from `c.Do` for redirects or proxies | Med | Task 8 proxy test plus task 10 retry tests run through real `httptest` servers |
-| The `RoundTripper` conversion drops headers, `Host`, or multi-value headers | Med | Task 12 round-trip table test; task 13 parity test |
-| A semconv detail (span name for `_OTHER`, status rules) is misread | Low | Task 1 encodes the rules in table tests citing semconv v1.43.0 |
+| goconvey conversion silently drops assertions | High | Convert test by test, keeping names; per-package coverage must be at least baseline; the diff of `func Test` names before and after must match |
+| OTel global state leaks between tests (CI runs `-shuffle=on`) | Med | Never `t.Parallel()` with globals; restore the previous provider in `t.Cleanup`; run each module's tests locally with `-shuffle=on -count=3` |
+| CI ratchet expression is wrong | Med | Lands first (T2) with only `rest`, verified on the draft PR's CI run before anything depends on it |
+| Transitional SetDefault survives | Low | T19's acceptance grep (spec criterion 5) |
+| The PR is too large to review | Med | One commit per task with an item-ID commit subject; checkpoints A–D give natural review stops |
+| `Insecure` default flip breaks the testing app | Low | Expected and accepted (the app is frozen until after `guardrails`); called out in the PR body |
 
 ## Open Questions
 
-None. All spec questions were resolved on 2026-10-31.
+- None blocking. T1 opens a **draft** PR early, so CI validates the ratchet (T2) and every
+  later commit. It becomes ready for review at Checkpoint D.
