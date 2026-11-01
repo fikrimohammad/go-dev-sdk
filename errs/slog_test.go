@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"testing"
 )
 
@@ -170,4 +172,67 @@ func fieldKeys(m map[string]slog.Value) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+func TestError_LogValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       *Error
+		wantDebug string
+		wantMeta  map[string]any
+	}{
+		{
+			name:      "debug and meta",
+			err:       New(4004, "not found").WithDebug("d").WithMeta("k", "v"),
+			wantDebug: "d",
+			wantMeta:  map[string]any{"k": "v"},
+		},
+		{
+			name:      "only debug omits meta",
+			err:       New(4004, "not found").WithDebug("d"),
+			wantDebug: "d",
+			wantMeta:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, nil))
+			logger.Error("export failed", SlogAttr(tt.err))
+
+			var logEntry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+				t.Fatalf("failed to unmarshal log output: %v", err)
+			}
+			errObj, ok := logEntry["err"].(map[string]any)
+			if !ok {
+				t.Fatalf("LogValue(%q) err = %v, want map[string]any", tt.name, logEntry["err"])
+			}
+
+			if got := errObj["debug"]; got != tt.wantDebug {
+				t.Errorf("LogValue(%q) debug = %v, want %v", tt.name, got, tt.wantDebug)
+			}
+			got, _ := errObj["meta"].(map[string]any)
+			if !maps.Equal(got, tt.wantMeta) {
+				t.Errorf("LogValue(%q) meta = %v, want %v", tt.name, got, tt.wantMeta)
+			}
+		})
+	}
+}
+
+func TestSlogAttr(t *testing.T) {
+	err := fmt.Errorf("wrap: %w", New(42, "boom"))
+
+	attr := SlogAttr(err)
+	if attr.Key != "err" {
+		t.Errorf("SlogAttr(%v).Key = %q, want %q", err, attr.Key, "err")
+	}
+	if attr.Value.Kind() != slog.KindGroup {
+		t.Fatalf("SlogAttr(%v).Value.Kind() = %v, want %v", err, attr.Value.Kind(), slog.KindGroup)
+	}
+	code := slogGroupToMap(attr.Value.Group())["code"]
+	if code.Int64() != 42 {
+		t.Errorf("SlogAttr(%v) code = %d, want %d", err, code.Int64(), 42)
+	}
 }

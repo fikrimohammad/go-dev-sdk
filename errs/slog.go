@@ -1,7 +1,9 @@
 package errs
 
 import (
+	"errors"
 	"log/slog"
+	"maps"
 	"strings"
 )
 
@@ -17,8 +19,10 @@ func (e *Error) LogValue() slog.Value {
 		attrs = append(attrs, slog.String("debug", debug))
 	}
 
-	if len(e.meta) > 0 {
-		attrs = append(attrs, slog.Any("meta", e.meta))
+	meta := maps.Clone(e.meta)
+	delete(meta, "debug")
+	if len(meta) > 0 {
+		attrs = append(attrs, slog.Any("meta", meta))
 	}
 
 	if e.cause != nil {
@@ -37,11 +41,12 @@ func (e *Error) LogValue() slog.Value {
 }
 
 // SlogAttr returns an slog Attr that logs err using LogValue() for structured output.
-// slog checks the error interface before LogValuer, so this helper forces the
-// structured path. Usage: slog.Error("msg", errs.SlogAttr(err))
+// It finds the first *Error in err's chain, so wrapped errors keep the structured
+// output. Errors without an *Error in their chain are logged with slog.Any.
+// Usage: slog.Error("msg", errs.SlogAttr(err)).
 func SlogAttr(err error) slog.Attr {
-	if lv, ok := err.(slog.LogValuer); ok {
-		return slog.Attr{Key: "err", Value: lv.LogValue()}
+	if e, ok := errors.AsType[*Error](err); ok {
+		return slog.Attr{Key: "err", Value: e.LogValue()}
 	}
 	return slog.Any("err", err)
 }

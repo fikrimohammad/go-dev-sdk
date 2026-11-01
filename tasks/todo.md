@@ -86,14 +86,14 @@ codes are equal and non-zero; `LogValue` emits `debug` once; `SlogAttr` finds an
 anywhere in the chain.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestError_Is`: two code-0 errors don't match; the same non-zero code
+- [x] *(regression)* `TestError_Is`: two code-0 errors don't match; the same non-zero code
       matches; different codes don't.
-- [ ] *(regression)* `TestError_LogValue`: `debug` appears exactly once.
-- [ ] *(regression)* `TestSlogAttr`: `fmt.Errorf("x: %w", e)` logs structured fields.
+- [x] *(regression)* `TestError_LogValue`: `debug` appears exactly once.
+- [x] *(regression)* `TestSlogAttr`: `fmt.Errorf("x: %w", e)` logs structured fields.
 
 **Verification:**
-- [ ] The three tests fail before the fix and pass after; errs module checks pass.
-- [ ] `rest` module checks pass (rest/server reads errs codes).
+- [x] The three tests fail before the fix and pass after; errs module checks pass.
+- [x] `rest` module checks pass (rest/server reads errs codes).
 
 **Dependencies:** T2
 **Files likely touched:** `errs/error.go`, `errs/slog.go`, `errs/error_test.go`, `errs/slog_test.go`

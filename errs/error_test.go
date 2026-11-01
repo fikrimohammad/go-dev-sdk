@@ -2,6 +2,8 @@ package errs
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
@@ -140,6 +142,30 @@ func TestError_Is(t *testing.T) {
 			target:   errors.New("not found"),
 			expected: false,
 		},
+		{
+			name:     "two code 0 errors do not match",
+			err:      AsError(io.EOF),
+			target:   AsError(errors.New("other")),
+			expected: false,
+		},
+		{
+			name:     "code 0 does not match New(0)",
+			err:      AsError(io.EOF),
+			target:   New(0, "unknown"),
+			expected: false,
+		},
+		{
+			name:     "same non-zero code matches",
+			err:      New(4004, "not found"),
+			target:   New(4004, "other message"),
+			expected: true,
+		},
+		{
+			name:     "different non-zero codes do not match",
+			err:      New(4004, "not found"),
+			target:   New(5001, "not found"),
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -148,6 +174,17 @@ func TestError_Is(t *testing.T) {
 				t.Errorf("Is() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestError_Is_ThroughErrorsIs(t *testing.T) {
+	wrapped := fmt.Errorf("handler: %w", New(4004, "job not found"))
+
+	if !errors.Is(wrapped, &Error{code: 4004}) {
+		t.Error("errors.Is(fmt.Errorf(%w), same code) = false, want true")
+	}
+	if errors.Is(wrapped, &Error{code: 5001}) {
+		t.Error("errors.Is(fmt.Errorf(%w), different code) = true, want false")
 	}
 }
 
