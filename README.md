@@ -28,8 +28,8 @@ The repository is a Go workspace; all modules are listed in `go.work`.
 # build every module
 go build ./...
 
-# test every module (mockey requires inlining disabled)
-go test -count=1 -gcflags="all=-N -l" ./...
+# test every module
+go test -count=1 ./...
 
 # run inside a single module
 (cd errs && go test ./...)
@@ -41,9 +41,9 @@ GitHub Actions workflows live in `.github/workflows/`:
 
 - **`ci.yml`** — on PR + push to main. Discovers every Go module and runs a
   matrix job per module: `gofmt`, `golangci-lint` (config at repo root,
-  `.golangci.yml`), `go vet`, `go test -gcflags="all=-N -l"`, and a
-  `go mod tidy -diff` check. Tests must use the inlining-disabled flag because
-  of `mockey`.
+  `.golangci.yml`), `go vet`, `go test` (plus `-race`), and a
+  `go mod tidy -diff` check. Modules in `STRICT_LINT_MODULES` are linted on the
+  full tree.
 - **`coverage-report.yml`** — on PR. Runs tests with coverage per module and
   posts a per-module coverage table as a PR comment.
 - **`release.yml`** — manual only (`workflow_dispatch`); nothing is tagged on

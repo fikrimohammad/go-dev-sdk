@@ -128,7 +128,7 @@ func New(ctx context.Context, info identity.Info, cfg Config) (Client, error) {
 func newClientWithExporter(ctx context.Context, info identity.Info, cfg Config, exporter sdktrace.SpanExporter) (Client, error) {
 	provider, err := newProvider(ctx, info, cfg, exporter)
 	if err != nil {
-		_ = exporter.Shutdown(context.Background())
+		_ = exporter.Shutdown(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	return &client{provider: provider, shutdown: provider.Shutdown}, nil
@@ -174,9 +174,6 @@ func Noop() Client {
 	return Wrap(noop.NewTracerProvider())
 }
 
-// defaultOverride holds the client installed by SetDefault, or nil.
-var defaultOverride atomic.Pointer[Client]
-
 // defaultEntry caches the client built for one OTel global tracer provider.
 type defaultEntry struct {
 	provider trace.TracerProvider
@@ -186,15 +183,12 @@ type defaultEntry struct {
 // defaultCache holds the most recent entry built by Default.
 var defaultCache atomic.Pointer[defaultEntry]
 
-// Default returns the Client used by the package-level Tracer func. It is the
-// client installed by SetDefault if there is one. Otherwise it wraps the
-// current OTel global tracer provider, so otel.SetTracerProvider or SetGlobal
-// routes SDK spans with no other wiring. Before any install, the global is a
-// no-op and spans are not recorded. Default is never nil.
+// Default returns a Client for the current OTel global tracer provider,
+// resolved on every call. The package-level Tracer func records through it, so
+// otel.SetTracerProvider or SetGlobal routes SDK spans with no other wiring.
+// Before any install, the global is a no-op and spans are not recorded. Default
+// is never nil.
 func Default() Client {
-	if c := defaultOverride.Load(); c != nil {
-		return *c
-	}
 	p := otel.GetTracerProvider()
 	if !reflect.TypeOf(p).Comparable() {
 		// ponytail: uncomparable providers are wrapped per call (no instrument cache); fine for the rare value-typed provider.
@@ -208,23 +202,11 @@ func Default() Client {
 	return e.client
 }
 
-// SetDefault overrides the client returned by Default, replacing any override
-// installed earlier. It is safe to call concurrently with tracing. A nil c
-// clears the override, so Default follows the OTel global again.
-func SetDefault(c Client) {
-	if c == nil {
-		defaultOverride.Store(nil)
-		return
-	}
-	defaultOverride.Store(&c)
-}
-
 // SetGlobal installs c's provider as the OTel global tracer provider and
 // installs a W3C TraceContext and Baggage propagator for inbound extraction
 // and outbound injection. A nil c installs the noop provider. SetGlobal mutates
 // process-global OTel state and should be called once at the composition root.
-// Package-level tracer funcs follow the global through [Default], unless
-// [SetDefault] installed an override.
+// Package-level tracer funcs follow the global through [Default].
 func SetGlobal(c Client) {
 	if c == nil {
 		c = Noop()
@@ -239,12 +221,6 @@ func SetGlobal(c Client) {
 // Tracer returns an OTel tracer for the given instrumentation scope name.
 func Tracer(name string, opts ...trace.TracerOption) trace.Tracer {
 	return Default().Tracer(name, opts...)
-}
-
-// Stop calls Stop on Default. A client wrapping the OTel global has no shutdown
-// of its own, so Stop is a no-op unless SetDefault installed a client that does.
-func Stop(ctx context.Context) error {
-	return Default().Stop(ctx)
 }
 
 // Attrs converts kv to span attributes, normalizing keys to the OTel semantic

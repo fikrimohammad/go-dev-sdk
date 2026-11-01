@@ -402,13 +402,13 @@ mockey-only `-gcflags="all=-N -l"` from CI's test step, AGENTS.md's verification
 and the comments that justify it. Confirm first with `grep -rn mockey --include=*.go .`.
 
 **Acceptance criteria:**
-- [ ] Spec criterion 5: `grep -rn 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
+- [x] Spec criterion 5: `grep -rn 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
       finds nothing.
-- [ ] 0 full-tree lint and gostyle findings in `observability`, and it's strict.
-- [ ] `go doc -all` for each observability package shows no stale references.
+- [x] 0 full-tree lint and gostyle findings in `observability`, and it's strict.
+- [x] `go doc -all` for each observability package shows no stale references.
 
 **Verification:**
-- [ ] Module checks (strict) pass in `observability`; coverage meets every baseline.
+- [x] Module checks (strict) pass in `observability`; coverage meets every baseline.
 
 **Dependencies:** T14, T15, T16, T17, T18
 **Files likely touched:** `observability/metrics/metrics.go`, `observability/tracer/tracer.go`, `observability/doc.go`, `observability/*/…_test.go`, `.github/workflows/ci.yml`

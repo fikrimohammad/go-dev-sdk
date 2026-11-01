@@ -34,15 +34,12 @@ func fakeClient(shutdown func(context.Context) error) *client {
 	}
 }
 
-// withDefault clears any SetDefault override for the duration of the test and
-// restores the OTel global tracer provider afterward, isolating the package
-// facade from other tests.
+// withDefault restores the OTel global tracer provider after the test if the
+// test changed it, isolating the package-level funcs from other tests.
 func withDefault(t *testing.T) {
 	t.Helper()
 	prev := otel.GetTracerProvider()
-	SetDefault(nil)
 	t.Cleanup(func() {
-		SetDefault(nil)
 		if otel.GetTracerProvider() != prev {
 			otel.SetTracerProvider(prev)
 		}
@@ -193,12 +190,7 @@ type valueTP struct {
 }
 
 func TestDefault_UncomparableProvider(t *testing.T) {
-	prev := otel.GetTracerProvider()
-	SetDefault(nil)
-	t.Cleanup(func() {
-		SetDefault(nil)
-		otel.SetTracerProvider(prev)
-	})
+	withDefault(t)
 	otel.SetTracerProvider(valueTP{tags: []string{"value-typed"}})
 
 	for range 2 {
@@ -209,7 +201,7 @@ func TestDefault_UncomparableProvider(t *testing.T) {
 
 func TestDefault_NeverNil(t *testing.T) {
 	if Default() == nil {
-		t.Error("Default() before any SetDefault = nil, want non-nil")
+		t.Error("Default() before any install = nil, want non-nil")
 	}
 }
 
@@ -242,7 +234,7 @@ func TestDefault_FollowsOTelGlobal(t *testing.T) {
 	}
 }
 
-func TestDefault_BeforeSetDefault(t *testing.T) {
+func TestDefault_BeforeInstall(t *testing.T) {
 	withDefault(t)
 	_, span := Tracer("scope").Start(context.Background(), "op")
 	if got := span.SpanContext().IsValid(); got {
@@ -255,74 +247,6 @@ func TestDefault_BeforeSetDefault(t *testing.T) {
 	if got := TraceIDFrom(context.Background()); got != "" {
 		t.Errorf("TraceIDFrom(background) = %q, want empty", got)
 	}
-	if err := Stop(context.Background()); err != nil {
-		t.Errorf("Stop() = %v, want nil", err)
-	}
-}
-
-func TestFacade_SetDefault(t *testing.T) {
-	withDefault(t)
-	fakeC := fakeClient(func(context.Context) error { return nil })
-	SetDefault(fakeC)
-	if got := Default(); got != fakeC {
-		t.Errorf("SetDefault(fakeC) then Default() = %v, want %v", got, fakeC)
-	}
-	if err := Stop(context.Background()); err != nil {
-		t.Errorf("Stop() = %v, want nil", err)
-	}
-}
-
-func TestFacade_LastWins(t *testing.T) {
-	withDefault(t)
-	first := fakeClient(func(context.Context) error { return nil })
-	second := fakeClient(func(context.Context) error { return nil })
-	SetDefault(first)
-	if got := Default(); got != first {
-		t.Errorf("Default() after SetDefault(first) = %v, want %v", got, first)
-	}
-	SetDefault(second)
-	if got := Default(); got != second {
-		t.Errorf("Default() after SetDefault(second) = %v, want %v", got, second)
-	}
-}
-
-func TestFacade_SetDefaultNilResets(t *testing.T) {
-	withDefault(t)
-	SetDefault(nil)
-	if Default() == nil {
-		t.Error("Default() after SetDefault(nil) = nil, want non-nil")
-	}
-	_, span := Tracer("scope").Start(context.Background(), "op")
-	if got := span.SpanContext().IsValid(); got {
-		t.Errorf("Tracer(scope).Start(op) after SetDefault(nil) IsValid() = %v, want false", got)
-	}
-	span.End()
-}
-
-func TestFacade_StopDelegates(t *testing.T) {
-	t.Run("Stop delegates to the installed client", func(t *testing.T) {
-		withDefault(t)
-		var shut atomic.Int32
-		SetDefault(fakeClient(func(context.Context) error {
-			shut.Add(1)
-			return nil
-		}))
-		if err := Stop(context.Background()); err != nil {
-			t.Errorf("Stop() = %v, want nil", err)
-		}
-		if got := shut.Load(); got != 1 {
-			t.Errorf("installed client shutdown calls = %d, want 1", got)
-		}
-	})
-
-	t.Run("Stop propagates the installed client's error", func(t *testing.T) {
-		withDefault(t)
-		boom := errors.New("shutdown failed")
-		SetDefault(fakeClient(func(context.Context) error { return boom }))
-		if err := Stop(context.Background()); !errors.Is(err, boom) {
-			t.Errorf("Stop() = %v, want %v", err, boom)
-		}
-	})
 }
 
 func TestWrap_NilProvider(t *testing.T) {

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -22,28 +21,6 @@ func testInfo() identity.Info {
 	return identity.Info{Name: "testapp", Version: "1.0.0", Environment: "test"}
 }
 
-// fakeMetrics implements Client for facade tests.
-type fakeMetrics struct {
-	onStop func(context.Context) error
-}
-
-func (*fakeMetrics) Add(context.Context, Instrument, int64, map[string]any) error      { return nil }
-func (*fakeMetrics) Record(context.Context, Instrument, float64, map[string]any) error { return nil }
-func (*fakeMetrics) AddUpDown(context.Context, Instrument, int64, map[string]any) error {
-	return nil
-}
-func (*fakeMetrics) RecordGauge(context.Context, Instrument, float64, map[string]any) error {
-	return nil
-}
-func (*fakeMetrics) Provider() metric.MeterProvider { return nil }
-
-func (f *fakeMetrics) Stop(ctx context.Context) error {
-	if f.onStop != nil {
-		return f.onStop(ctx)
-	}
-	return nil
-}
-
 // newTestMetrics creates a Client backed by a manual reader so
 // recorded metrics can be inspected.
 func newTestMetrics(t *testing.T) (*otelMetrics, *sdkmetric.ManualReader) {
@@ -54,15 +31,12 @@ func newTestMetrics(t *testing.T) (*otelMetrics, *sdkmetric.ManualReader) {
 	return newInstrumentClient(provider, "myapp", provider.Shutdown), reader
 }
 
-// withDefault clears any SetDefault override for the duration of the test and
-// restores the OTel global meter provider afterward, isolating the package
-// facade from other tests.
+// withDefault restores the OTel global meter provider after the test if the
+// test changed it, isolating the package-level funcs from other tests.
 func withDefault(t *testing.T) {
 	t.Helper()
 	prev := otel.GetMeterProvider()
-	SetDefault(nil)
 	t.Cleanup(func() {
-		SetDefault(nil)
 		if otel.GetMeterProvider() != prev {
 			otel.SetMeterProvider(prev)
 		}
@@ -609,14 +583,7 @@ func TestNew_Validation(t *testing.T) {
 }
 
 func TestDefault_FollowsOTelGlobal(t *testing.T) {
-	prev := otel.GetMeterProvider()
-	SetDefault(nil)
-	t.Cleanup(func() {
-		SetDefault(nil)
-		if otel.GetMeterProvider() != prev {
-			otel.SetMeterProvider(prev)
-		}
-	})
+	withDefault(t)
 	ctx := context.Background()
 
 	// Measured before any install: the OTel global is a no-op, so this is dropped.
@@ -662,12 +629,7 @@ type valueMP struct {
 }
 
 func TestDefault_UncomparableProvider(t *testing.T) {
-	prev := otel.GetMeterProvider()
-	SetDefault(nil)
-	t.Cleanup(func() {
-		SetDefault(nil)
-		otel.SetMeterProvider(prev)
-	})
+	withDefault(t)
 	otel.SetMeterProvider(valueMP{tags: []string{"value-typed"}})
 
 	ctx := context.Background()
@@ -681,110 +643,27 @@ func TestDefault_UncomparableProvider(t *testing.T) {
 func TestDefault_NeverNil(t *testing.T) {
 	withDefault(t)
 	if Default() == nil {
-		t.Error("Default() before any SetDefault = nil, want non-nil")
+		t.Error("Default() before any install = nil, want non-nil")
 	}
 }
 
-func TestDefault_BeforeSetDefault(t *testing.T) {
+func TestDefault_BeforeInstall(t *testing.T) {
 	withDefault(t)
 	if Default() == nil {
-		t.Fatal("Default() before SetDefault = nil, want non-nil")
+		t.Fatal("Default() before install = nil, want non-nil")
 	}
 	// Measurements are dropped without error while the OTel global is a no-op.
 	if err := Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
-		t.Errorf("Add(counter, 1) before SetDefault = %v, want nil", err)
+		t.Errorf("Add(counter, 1) before install = %v, want nil", err)
 	}
 	if err := Record(context.Background(), Instrument{Name: "hist"}, 0.5, nil); err != nil {
-		t.Errorf("Record(hist, 0.5) before SetDefault = %v, want nil", err)
+		t.Errorf("Record(hist, 0.5) before install = %v, want nil", err)
 	}
 	if err := AddUpDown(context.Background(), Instrument{Name: "updown"}, 1, nil); err != nil {
-		t.Errorf("AddUpDown(updown, 1) before SetDefault = %v, want nil", err)
+		t.Errorf("AddUpDown(updown, 1) before install = %v, want nil", err)
 	}
 	if err := RecordGauge(context.Background(), Instrument{Name: "gauge"}, 0.5, nil); err != nil {
-		t.Errorf("RecordGauge(gauge, 0.5) before SetDefault = %v, want nil", err)
-	}
-	if err := Stop(context.Background()); err != nil {
-		t.Errorf("Stop() before SetDefault = %v, want nil", err)
-	}
-}
-
-func TestFacade_SetDefault(t *testing.T) {
-	withDefault(t)
-	c, _ := newTestMetrics(t)
-	SetDefault(c)
-	if got := Default(); got != c {
-		t.Fatalf("SetDefault(c) then Default() = %v, want %v", got, c)
-	}
-
-	if err := Add(context.Background(), Instrument{Name: "instrument.counter", Unit: "1"}, 1, nil); err != nil {
-		t.Errorf("Add(instrument.counter, 1) = %v, want nil", err)
-	}
-	if err := Record(context.Background(), Instrument{Name: "instrument.hist", Unit: "s"}, 0.5, nil); err != nil {
-		t.Errorf("Record(instrument.hist, 0.5) = %v, want nil", err)
-	}
-	if err := AddUpDown(context.Background(), Instrument{Name: "instrument.updown"}, 1, nil); err != nil {
-		t.Errorf("AddUpDown(instrument.updown, 1) = %v, want nil", err)
-	}
-	if err := RecordGauge(context.Background(), Instrument{Name: "instrument.gauge"}, 0.5, nil); err != nil {
-		t.Errorf("RecordGauge(instrument.gauge, 0.5) = %v, want nil", err)
-	}
-}
-
-func TestFacade_LastWins(t *testing.T) {
-	withDefault(t)
-	first, second := &fakeMetrics{}, &fakeMetrics{}
-	SetDefault(first)
-	if got := Default(); got != first {
-		t.Errorf("SetDefault(first) then Default() = %v, want first", got)
-	}
-	SetDefault(second)
-	if got := Default(); got != second {
-		t.Errorf("SetDefault(second) then Default() = %v, want second", got)
-	}
-}
-
-func TestFacade_StopDelegates(t *testing.T) {
-	t.Run("Stop delegates to the installed client", func(t *testing.T) {
-		withDefault(t)
-		var shut atomic.Int32
-		fakeMe := &fakeMetrics{onStop: func(context.Context) error {
-			shut.Add(1)
-			return nil
-		}}
-		SetDefault(fakeMe)
-
-		if err := Stop(context.Background()); err != nil {
-			t.Errorf("Stop() = %v, want nil", err)
-		}
-		if got := shut.Load(); got != 1 {
-			t.Errorf("Stop() delegated shutdown calls = %d, want 1", got)
-		}
-	})
-
-	t.Run("Stop propagates the installed client's error", func(t *testing.T) {
-		withDefault(t)
-		boom := errors.New("shutdown failed")
-		SetDefault(&fakeMetrics{onStop: func(context.Context) error { return boom }})
-		if err := Stop(context.Background()); !errors.Is(err, boom) {
-			t.Errorf("Stop() = %v, want %v", err, boom)
-		}
-	})
-}
-
-func TestFacade_SetDefaultNilResets(t *testing.T) {
-	withDefault(t)
-	override := &fakeMetrics{}
-	SetDefault(override)
-
-	SetDefault(nil)
-	if Default() == nil {
-		t.Fatal("SetDefault(nil) then Default() = nil, want non-nil")
-	}
-	if Default() == Client(override) {
-		t.Error("SetDefault(nil) then Default() still returns the cleared override, want the OTel global client")
-	}
-	if err := Add(context.Background(), Instrument{Name: "counter"}, 1, nil); err != nil {
-		t.Errorf("Add(counter, 1) after SetDefault(nil) = %v, want nil", err)
+		t.Errorf("RecordGauge(gauge, 0.5) before install = %v, want nil", err)
 	}
 }
 

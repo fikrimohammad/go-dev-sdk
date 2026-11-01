@@ -42,6 +42,7 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 	"github.com/fikrimohammad/go-dev-sdk/rest/server"
+	"go.opentelemetry.io/otel"
 )
 
 func main() {
@@ -50,18 +51,17 @@ func main() {
 
 	info := identity.Default()
 
-	tc, err := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317"})
+	tc, err := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
 		panic(err)
 	}
-	tracer.SetDefault(tc)
 	tracer.SetGlobal(tc) // provider + W3C TraceContext/Baggage propagator
 
-	mc, err := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317"})
+	mc, err := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
 		panic(err)
 	}
-	metrics.SetDefault(mc)
+	otel.SetMeterProvider(mc.Provider())
 
 	l, err := logs.New(info, logs.Config{Format: "json"})
 	if err != nil {
@@ -166,6 +166,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/fikrimohammad/go-dev-sdk/errs"
 	"github.com/fikrimohammad/go-dev-sdk/rest/server"
+	"go.opentelemetry.io/otel"
 )
 
 func registerWebhooks(srv *server.Server, secret []byte) {

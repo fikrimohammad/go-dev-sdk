@@ -326,7 +326,7 @@ func newClientWithExporter(ctx context.Context, info identity.Info, cfg Config, 
 	provider, err := newMeterProvider(ctx, info, cfg,
 		sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(cfg.ExportInterval)))
 	if err != nil {
-		_ = exporter.Shutdown(context.Background())
+		_ = exporter.Shutdown(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	return newInstrumentClient(provider, cfg.Scope, provider.Shutdown), nil
@@ -375,9 +375,6 @@ func (noopMetrics) Provider() metric.MeterProvider { return noopMeterProvider }
 
 func (noopMetrics) Stop(context.Context) error { return nil }
 
-// defaultOverride holds the client installed by SetDefault, or nil when none is.
-var defaultOverride atomic.Pointer[Client]
-
 // defaultCache pairs a meter provider with the client wrapping it, so Default
 // reuses the client (and its instrument cache) while the provider is unchanged.
 type defaultCache struct {
@@ -392,15 +389,12 @@ func Noop() Client {
 	return noopMetrics{}
 }
 
-// Default returns the client used by the package-level funcs: the SetDefault
-// override if set, otherwise a client for the current OTel global meter provider
-// (otel.GetMeterProvider), so installing a provider with otel.SetMeterProvider
-// routes SDK metrics with no other wiring. Before any install, the OTel global is
-// a no-op and measurements are dropped.
+// Default returns a client for the current OTel global meter provider
+// (otel.GetMeterProvider), resolved on every call. The package-level funcs record
+// through it, so installing a provider with otel.SetMeterProvider routes SDK
+// metrics with no other wiring. Before any install, the OTel global is a no-op
+// and measurements are dropped.
 func Default() Client {
-	if o := defaultOverride.Load(); o != nil {
-		return *o
-	}
 	p := otel.GetMeterProvider()
 	if !reflect.TypeOf(p).Comparable() {
 		// ponytail: uncomparable providers are wrapped per call (no instrument cache); fine for the rare value-typed provider.
@@ -412,17 +406,6 @@ func Default() Client {
 	c := &defaultCache{provider: p, client: Wrap(p)}
 	defaultCached.Store(c)
 	return c.client
-}
-
-// SetDefault installs m as an override that Default returns instead of the OTel
-// global client, replacing any override installed earlier. A nil m clears the
-// override. It is safe to call concurrently with measurement calls.
-func SetDefault(m Client) {
-	if m == nil {
-		defaultOverride.Store(nil)
-		return
-	}
-	defaultOverride.Store(&m)
 }
 
 // Add records a counter measurement through the default client.
@@ -443,11 +426,4 @@ func AddUpDown(ctx context.Context, instrument Instrument, value int64, attrs ma
 // RecordGauge records an instantaneous gauge value through the default client.
 func RecordGauge(ctx context.Context, instrument Instrument, value float64, attrs map[string]any) error {
 	return Default().RecordGauge(ctx, instrument, value, attrs)
-}
-
-// Stop flushes pending telemetry and shuts down the default exporter. It is
-// safe to call before SetDefault and multiple times; the underlying client is
-// responsible for idempotency.
-func Stop(ctx context.Context) error {
-	return Default().Stop(ctx)
 }

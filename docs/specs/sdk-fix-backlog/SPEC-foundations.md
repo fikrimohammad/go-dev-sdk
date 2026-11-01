@@ -66,7 +66,7 @@ Run inside each changed module (AGENTS.md verification, with lint run on the ful
 ```bash
 gofmt -l .
 go vet ./...
-go test -count=1 -shuffle=on -gcflags="all=-N -l" ./...
+go test -count=1 -shuffle=on ./...           # -gcflags dropped in T19: mockey left the repo
 golangci-lint run ./...                      # full tree, not --new-from-merge-base
 GOWORK=off go run ../.agents/skills/go-best-practices/scripts/gostyle.go $(go list -f '{{.Dir}}' ./...)
 go mod tidy -diff
@@ -280,7 +280,7 @@ on every exported identifier; sentinel errors prefixed with the package name; `e
 2. CI lints those five modules with `only-new-issues: false` through a
    `STRICT_LINT_MODULES` list in `ci.yml`. The other modules keep `only-new-issues: true`.
 3. All modules in `go.work`, confloader included, pass `go build`, `go vet`,
-   `go test -count=1 -shuffle=on -gcflags="all=-N -l"`, and `go mod tidy -diff`.
+   `go test -count=1 -shuffle=on`, and `go mod tidy -diff`.
 4. Every test in the Testing Strategy table exists and fails against `main`.
 5. `grep -rn 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
    finds nothing. `grep -rn goconvey .` (excluding `vendor/`) finds nothing.
