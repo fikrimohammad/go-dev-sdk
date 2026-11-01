@@ -293,13 +293,13 @@ identity. `SetDefault(nil)` clears the override. `Config.Insecure` becomes `bool
 redirected streams pass `Config.Writer` / `ErrorWriter` instead.
 
 **Acceptance criteria:**
-- [ ] `grep -rn 'SetStreams\|streamWriter' .` finds nothing.
-- [ ] With the stream vars gone, the logs tests no longer use mockey, so `go mod tidy`
+- [x] `grep -rn 'SetStreams\|streamWriter' .` finds nothing.
+- [x] With the stream vars gone, the logs tests no longer use mockey, so `go mod tidy`
       removes mockey and goconvey from `observability/go.mod` (moved here from T11).
-- [ ] Logs still route debug/info to Writer and warn/error to ErrorWriter (existing tests).
+- [x] Logs still route debug/info to Writer and warn/error to ErrorWriter (existing tests).
 
 **Verification:**
-- [ ] Observability checks pass; coverage ≥ 94.2%.
+- [x] Observability checks pass; coverage ≥ 94.2%.
 
 **Dependencies:** T9
 **Files likely touched:** `observability/logs/logs.go`, `observability/logs/logs_test.go`
@@ -389,7 +389,9 @@ and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated. Its
 and `observability/README.md` (the `Insecure | true (nil)` rows, about lines 164/176) document
 the new TLS default and set `Insecure: true` for a plaintext local collector.
 Fix the remaining full-tree findings (contextcheck, forbidigo, recvcheck, ireturn now
-allowed). Add `observability` to the strict list.
+allowed). Add `observability` to the strict list. mockey left the repo in T14, so also drop the
+mockey-only `-gcflags="all=-N -l"` from CI's test step, AGENTS.md's verification commands,
+and the comments that justify it. Confirm first with `grep -rn mockey --include=*.go .`.
 
 **Acceptance criteria:**
 - [ ] Spec criterion 5: `grep -rn 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`

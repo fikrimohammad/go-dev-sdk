@@ -30,12 +30,10 @@ type Config struct {
 	Level string `yaml:"level" json:"level"`
 	// GlobalKV contains fields attached to every record.
 	GlobalKV map[string]any `yaml:"global_kv" json:"global_kv"`
-	// Writer receives debug and info records. Nil uses the package stdout
-	// stream. The writer must be safe for concurrent use when logging is
+	// Writer receives debug and info records. Nil uses os.Stdout. The writer must be safe for concurrent use when logging is
 	// concurrent.
 	Writer io.Writer `yaml:"-" json:"-"`
-	// ErrorWriter receives warn and error records. Nil uses the package stderr
-	// stream. The writer must be safe for concurrent use when logging is
+	// ErrorWriter receives warn and error records. Nil uses os.Stderr. The writer must be safe for concurrent use when logging is
 	// concurrent.
 	ErrorWriter io.Writer `yaml:"-" json:"-"`
 }

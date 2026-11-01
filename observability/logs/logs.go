@@ -5,7 +5,6 @@ package logs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,48 +32,6 @@ type Logger interface {
 	Warn(ctx context.Context, msg string, args ...any)
 	Error(ctx context.Context, msg string, args ...any)
 }
-
-// stdout and stderr are the writers loggers route to. They are variables so
-// tests can redirect output by swapping them (e.g. mockey.MockValue).
-var (
-	stdout io.Writer = os.Stdout
-	stderr io.Writer = os.Stderr
-)
-
-// SetStreams redirects the package-level stdout/stderr writers. Streams are
-// resolved lazily by streamWriter on every Write, so this takes effect for any
-// already-installed logger. Pass a writer, or nil to restore the process
-// defaults.
-//
-// Deprecated: pass Config.Writer and Config.ErrorWriter to New instead.
-// SetStreams mutates package-level state and is not safe to call concurrently
-// with logging; it remains for tests and legacy callers.
-func SetStreams(stdoutWriter, stderrWriter io.Writer) {
-	if stdoutWriter == nil {
-		stdoutWriter = os.Stdout
-	}
-	if stderrWriter == nil {
-		stderrWriter = os.Stderr
-	}
-	stdout = stdoutWriter
-	stderr = stderrWriter
-}
-
-// streamWriter dereferences a stream variable on every Write so that output
-// follows redirection even when the handler was constructed earlier.
-type streamWriter struct{ w *io.Writer }
-
-func (sw streamWriter) Write(p []byte) (int, error) {
-	if sw.w == nil || *sw.w == nil {
-		return 0, errors.New("logs: writer is nil")
-	}
-	return (*sw.w).Write(p)
-}
-
-var (
-	stdoutWriter = streamWriter{w: &stdout}
-	stderrWriter = streamWriter{w: &stderr}
-)
 
 // streamHandler routes records by severity: debug and info go to stdout; warn
 // and error go to stderr.
@@ -196,10 +153,8 @@ func (l *slogLogger) Error(ctx context.Context, msg string, args ...any) {
 }
 
 // New builds a configured logger routing by severity to the configured
-// writers. Debug and info records go to Config.Writer (or the package stdout
-// stream when nil); warn and error records go to Config.ErrorWriter (or the
-// package stderr stream when nil). The returned Logger resolves the package
-// streams lazily, so output follows redirection even after construction. New
+// writers. Debug and info records go to Config.Writer, or os.Stdout when nil;
+// warn and error records go to Config.ErrorWriter, or os.Stderr when nil. New
 // returns an error if info has no service name or cfg is invalid.
 func New(info identity.Info, cfg Config) (Logger, error) {
 	if err := attributes.ValidateAppInfo(info); err != nil {
@@ -218,11 +173,11 @@ func New(info identity.Info, cfg Config) (Logger, error) {
 
 	output := cfg.Writer
 	if output == nil {
-		output = stdoutWriter
+		output = os.Stdout
 	}
 	errorOutput := cfg.ErrorWriter
 	if errorOutput == nil {
-		errorOutput = stderrWriter
+		errorOutput = os.Stderr
 	}
 	var handler slog.Handler = traceHandler{next: &streamHandler{
 		stdout: newHandler(cfg.Format, output, opts),
@@ -290,13 +245,13 @@ func parseLevel(value string) (slog.Level, error) {
 var defaultLogger atomic.Pointer[Logger]
 
 func init() {
-	SetDefault(newDefaultLogger())
+	SetDefault(newDefaultLogger(os.Stderr))
 }
 
-// newDefaultLogger returns a debug-level text logger writing to stderr.
-func newDefaultLogger() Logger {
+// newDefaultLogger returns a debug-level text logger writing to w.
+func newDefaultLogger(w io.Writer) Logger {
 	return &slogLogger{
-		log: slog.New(traceHandler{next: slog.NewTextHandler(stderrWriter, &slog.HandlerOptions{Level: slog.LevelDebug})}),
+		log: slog.New(traceHandler{next: slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})}),
 	}
 }
 
@@ -312,7 +267,7 @@ func Default() Logger {
 // is safe to call concurrently with logging calls.
 func SetDefault(l Logger) {
 	if l == nil {
-		l = newDefaultLogger()
+		l = newDefaultLogger(os.Stderr)
 	}
 	defaultLogger.Store(&l)
 }

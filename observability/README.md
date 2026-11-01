@@ -43,8 +43,8 @@ allowed to break between phases. Current contract changes worth noting:
 - Metric instrumentation scope defaults to `DefaultInstrumentationScope`, not
   the service name. Service identity remains in resource attributes.
 - Logs automatically add `trace_id` and `span_id` from a valid span context;
-  explicit values win. `Config.Writer`/`ErrorWriter` replace process-wide
-  `SetStreams` (which is deprecated).
+  explicit values win. `Config.Writer`/`ErrorWriter` choose the output streams
+  (default `os.Stdout`/`os.Stderr`).
 - Tracer `SetGlobal` installs the provider and the W3C TraceContext/Baggage
   propagator in one call. `SetGlobal` does not change the package default;
   call `SetDefault` separately.
@@ -85,7 +85,7 @@ logs.SetDefault(log)
 ```
 
 Pass `Config.Writer` and `Config.ErrorWriter` to send output to specific
-streams. `SetStreams` is deprecated and remains for tests and legacy callers.
+streams; nil means `os.Stdout` and `os.Stderr`.
 
 ### 3. Configure metrics
 
