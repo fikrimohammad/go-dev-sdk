@@ -65,9 +65,8 @@
 // begin, commit, and rollback are lifecycle operations and are not
 // instrumented.
 //
-// Tracing and metrics use the package-level defaults of the observability
-// packages ([tracer.Tracer], [metrics.Add], and [metrics.Record]) unless
-// overridden with [WithMetrics] or [WithTracer].
+// Tracing and metrics use the OTel global providers (otel.SetTracerProvider and
+// otel.SetMeterProvider) unless overridden with [WithMetrics] or [WithTracer].
 package db
 
 import (
@@ -119,7 +118,7 @@ type meta struct {
 	serverAddr string // server.address ("" when unknown)
 	serverPort int    // server.port (0 when unknown)
 
-	// metrics and tracer override the package-level defaults when non-nil.
+	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
 }
@@ -133,13 +132,13 @@ type options struct {
 }
 
 // WithMetrics injects a metrics client for the instrumented executions. A nil
-// client falls back to the package-level default set by [metrics.SetDefault].
+// client falls back to the OTel global meter provider (otel.SetMeterProvider).
 func WithMetrics(m metrics.Client) Option {
 	return func(o *options) { o.metrics = m }
 }
 
 // WithTracer injects a tracer client for the instrumented executions. A nil
-// client falls back to the package-level default set by [tracer.SetDefault].
+// client falls back to the OTel global tracer provider (otel.SetTracerProvider).
 func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
@@ -148,8 +147,8 @@ func WithTracer(t tracer.Client) Option {
 // from the resulting config (using Config.DSN when set, otherwise building a
 // driver-specific data source name), applies the pool settings, pings it, and
 // returns an instrumented [DB]. It returns an error if validation fails or the
-// database cannot be opened or pinged. Metrics and tracing use the
-// package-level defaults unless overridden with [WithMetrics] or [WithTracer].
+// database cannot be opened or pinged. Metrics and tracing use the OTel global
+// providers unless overridden with [WithMetrics] or [WithTracer].
 func Connect(cfg Config, opts ...Option) (DB, error) {
 	var o options
 	for _, opt := range opts {

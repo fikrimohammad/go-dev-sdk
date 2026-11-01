@@ -4,7 +4,7 @@
 // New builds a go-redis client from a Config, attaches an instrumentation
 // hook, pings the server to verify the connection, and returns an
 // instrumented Client. Metrics and tracing clients are injectable via
-// WithMetrics / WithTracer and fall back to the package-level defaults.
+// WithMetrics / WithTracer and fall back to the OTel global providers.
 //
 // The exported surface is minimal and consistent with the db package: the
 // ReadCommands, WriteCommands, and ScriptCommands interfaces group the commands,
@@ -28,8 +28,8 @@
 // Pipelines are recorded as a single span "PIPELINE" with
 // db.operation.batch.size set to the number of queued commands.
 //
-// Tracing and metrics use the package-level defaults of the observability
-// packages (tracer.Tracer / metrics.Add & metrics.Record).
+// Tracing and metrics use the OTel global providers (otel.SetTracerProvider and
+// otel.SetMeterProvider) unless overridden with [WithMetrics] or [WithTracer].
 package redis
 
 import (
@@ -111,7 +111,7 @@ type meta struct {
 	serverPort int    // server.port
 	namespace  string // db.namespace, the database index as a string
 
-	// metrics and tracer override the package-level defaults when non-nil.
+	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
 }
@@ -126,13 +126,13 @@ type options struct {
 }
 
 // WithMetrics injects a metrics client for the instrumented commands. A nil
-// client falls back to the package-level default (metrics.SetDefault).
+// client falls back to the OTel global meter provider (otel.SetMeterProvider).
 func WithMetrics(m metrics.Client) Option {
 	return func(o *options) { o.metrics = m }
 }
 
 // WithTracer injects a tracer client for the instrumented commands. A nil
-// client falls back to the package-level default (tracer.SetDefault).
+// client falls back to the OTel global tracer provider (otel.SetTracerProvider).
 func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }

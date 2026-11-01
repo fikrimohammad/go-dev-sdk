@@ -3,14 +3,18 @@ package redis
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
@@ -149,6 +153,39 @@ func setupInstrument() (*instrumentHook, *fakeMetrics, *recordingExporter) {
 			tracer:     tracer.Wrap(tp),
 		},
 	}, fm, ex
+}
+
+// setOTelProviders installs tp and mp as the OTel global providers for the
+// duration of the test. The previous globals are restored in t.Cleanup.
+func setOTelProviders(t *testing.T, tp trace.TracerProvider, mp metric.MeterProvider) {
+	t.Helper()
+	prevTP, prevMP := otel.GetTracerProvider(), otel.GetMeterProvider()
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		if otel.GetTracerProvider() != prevTP {
+			otel.SetTracerProvider(prevTP)
+		}
+		if otel.GetMeterProvider() != prevMP {
+			otel.SetMeterProvider(prevMP)
+		}
+	})
+}
+
+// collectedMetrics returns the names of the metrics r has collected so far.
+func collectedMetrics(t *testing.T, r *sdkmetric.ManualReader) []string {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := r.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	var names []string
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			names = append(names, m.Name)
+		}
+	}
+	return names
 }
 
 // --- tests -------------------------------------------------------------------------
@@ -328,14 +365,16 @@ func TestProcessPipelineHook(t *testing.T) {
 	}
 }
 
-func TestPackageDefaults_Fallback(t *testing.T) {
+func TestInstrumentHook_FallsBackToOTelGlobal(t *testing.T) {
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	tracer.SetDefault(tracer.Wrap(tp))
-	fm := &fakeMetrics{}
-	metrics.SetDefault(fm)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	setOTelProviders(t, tp, mp)
 
+	// No injected clients: the hook must fall back to the OTel globals.
 	h := &instrumentHook{meta: meta{serverAddr: "h", serverPort: 6379, namespace: "0"}}
 	cmd := redis.NewStringCmd(context.Background(), "get", "k")
 	hook := h.ProcessHook(func(_ context.Context, _ redis.Cmder) error { return nil })
@@ -344,11 +383,17 @@ func TestPackageDefaults_Fallback(t *testing.T) {
 		t.Fatalf("ProcessHook: %v", err)
 	}
 	if n := ex.count(); n != 1 {
-		t.Fatalf("spans = %d, want 1", n)
+		t.Fatalf("OTel global tracer spans = %d, want 1", n)
 	}
-	nc, nh := fm.nums()
-	if nc != 1 || nh != 1 {
-		t.Fatalf("metrics counts=%d hists=%d, want 1/1", nc, nh)
+	sp, _ := ex.last()
+	if sp.Name() != "GET" {
+		t.Fatalf("span name = %q, want GET", sp.Name())
+	}
+	names := collectedMetrics(t, reader)
+	for _, want := range []string{metricCount, metricDuration} {
+		if !slices.Contains(names, want) {
+			t.Errorf("OTel global meter provider collected %v, want %q among them", names, want)
+		}
 	}
 }
 

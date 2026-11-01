@@ -322,11 +322,11 @@ tests install an OTel span recorder or manual reader with `otel.Set*Provider`. D
 change from "(metrics.SetDefault)" to "the OTel global meter/tracer provider".
 
 **Acceptance criteria:**
-- [ ] No `metrics.SetDefault` / `tracer.SetDefault` in `db` or `redis`.
-- [ ] Each module still has a test proving fallback to the OTel global.
+- [x] No `metrics.SetDefault` / `tracer.SetDefault` in `db` or `redis`.
+- [x] Each module still has a test proving fallback to the OTel global.
 
 **Verification:**
-- [ ] Module checks pass in `db` and `redis` (lint new-from-merge-base); `-shuffle=on -count=3`.
+- [x] Module checks pass in `db` and `redis` (lint new-from-merge-base); `-shuffle=on -count=3`.
 
 **Dependencies:** T12, T13
 **Files likely touched:** `db/db_test.go`, `db/db.go`, `redis/redis_test.go`, `redis/redis.go`
