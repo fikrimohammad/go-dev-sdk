@@ -291,6 +291,68 @@ on every exported identifier; sentinel errors prefixed with the package name; `e
 7. `go doc -all` for each changed package shows no unresolved links or stale references
    (`SetDefault`, `Init`, `SetStreams`).
 
+## Amendment: repository conventions (owner feedback 2026-11-01)
+
+Status: approved by the owner 2026-11-01. The owner decided to apply these conventions to
+every module in this PR except confloader. confloader is being redesigned, so its redesign
+must follow them; that is recorded in docs/ideas/sdk-fix-backlog.md. The rules are also
+codified in AGENTS.md, so later code follows them.
+
+### Rules
+
+- **R1. Config methods are exported and uniform.** Every package `Config` has
+  `func (c Config) SetDefaults() Config` (fills zero values and returns the copy) and
+  `func (c Config) Validate() error` (reports every problem through `errors.Join`; nil when
+  usable). Both have value receivers, and constructors call
+  `cfg = cfg.SetDefaults(); err := cfg.Validate()`.
+- **R2. Every package with an exported API has `example_test.go`.** Examples live in package
+  `<pkg>_test` and follow godoc naming (`Example`, `ExampleNew`, `ExampleConfig_SetDefaults`,
+  `ExampleGroup_Go`, ...).
+  - Packages that run without external services have runnable examples with `// Output:`.
+  - Packages that need a database, Redis, S3, or NATS have compile-only examples with no
+    `// Output:`, so they compile but don't run.
+  - Out of scope: test-only root packages (`nats`, `rest`) and internal packages
+    (`rest/internal/semconv`), since neither has user-facing API.
+- **R3. A package's exported errors live in `errors.go`.** That covers exported sentinels
+  (`var ErrX = ...`), error aliases, and error types with their methods. Tests follow their
+  declarations, so error-type method tests go in `errors_test.go`. A package with no exported
+  errors has no `errors.go`.
+- **R4. All interface types live in `<pkg>.go`**, exported or not, where `<pkg>.go` is the
+  file named after the package (the `logs/logs.go` pattern). No `interfaces.go` files.
+
+### Changes per package
+
+| Package | R1 | R2 | R3 | R4 |
+| --- | --- | --- | --- | --- |
+| observability (root) | n/a | new: compile-only `Example` wiring logs, metrics, and tracer | n/a | n/a |
+| observability/attributes | n/a | new, runnable | `ErrMissingServiceName` → errors.go | ok |
+| observability/logs | export; already Joins | ok | `ErrInvalidLogFormat/Level` config.go → errors.go | ok |
+| observability/metrics | export; already Joins | ok | `ErrStopped`, `ErrInvalidMetricName`, `ErrInstrumentConflict` → errors.go | ok |
+| observability/tracer | export; already Joins | ok | none | ok |
+| errs | n/a | new, runnable | error.go → errors.go (and error_test.go → errors_test.go): the `Error` type is the package's custom error | n/a |
+| errgroup | n/a | new, runnable | `PanicError` + methods → errors.go, with method tests in errors_test.go | n/a |
+| identity | n/a | ok | `ErrName` → errors.go | n/a |
+| rest/client | export, and Join instead of first error | ok | `ErrInformationalResponse` → errors.go | ok |
+| rest/server | export, and Join instead of first error | ok | none | ok |
+| cron | n/a | new, runnable (context helpers) | ok | interfaces.go → cron.go |
+| cron/engine | ok; Join instead of first error | new, runnable (in-process Engine) | none (uses cron's) | ok |
+| db | ok | new, compile-only | none | interfaces.go → db.go |
+| redis | ok | new, compile-only | `Nil`, `TxFailedErr` → errors.go | interfaces.go → redis.go |
+| s3 | ok | new, compile-only | none | ok |
+| nats/consumer, nats/producer | ok | new, compile-only | ok | ok |
+
+### Success criteria (amendment)
+
+8. Every `Config` in scope has exported value-receiver `SetDefaults() Config` and
+   `Validate() error`. No unexported `setDefaults`/`validate`/`applyDefaults` remains outside
+   confloader, and every `Validate` uses `errors.Join`.
+9. Every in-scope package with exported API has `example_test.go`. `go test ./...` runs the
+   runnable examples, and `go vet` compiles the compile-only ones.
+10. Outside confloader, no exported error declaration lives anywhere but `errors.go`.
+11. No `interfaces.go` remains, and every `type X interface` (non-test) is in `<pkg>.go`.
+12. All earlier criteria still hold. Strict modules stay at 0 full-tree findings, and every
+    go.work module passes the module checks.
+
 ## Open Questions
 
 - Assumptions 1–6 above need the owner's confirmation or correction before

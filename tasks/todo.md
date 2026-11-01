@@ -420,3 +420,160 @@ and the comments that justify it. Confirm first with `grep -rn mockey --include=
 - [x] The PR body lists the breaking changes: SetDefault and the package Stop removed,
       Insecure defaults to TLS, SetStreams removed, PanicError, and the errs.Is semantics.
 - [ ] The PR is marked ready for review, and the owner reviews.
+
+---
+
+## Phase 5: repository conventions (spec amendment R1–R4)
+
+Shared acceptance for every Phase 5 task:
+- No behavior change except T22's errors.Join.
+- Tests follow moved declarations (mirror rule).
+- Strict modules stay at 0 full-tree lint findings; the others lint clean with
+  `--new-from-merge-base=main`.
+- Module checks pass in every module touched, and the test-wording grep is empty for
+  changed lines.
+- confloader is not touched.
+
+## Task 20: Codify R1–R4 (AGENTS.md, confloader redesign note)
+
+**Description:** Add R1–R4 to AGENTS.md's Non-negotiable invariants, in the file's style.
+Add a "confloader redesign must follow R1–R4" line to docs/ideas/sdk-fix-backlog.md
+(Not Doing → confloader).
+
+**Acceptance criteria:**
+- [ ] AGENTS.md states the four rules, matching the spec amendment's wording.
+- [ ] The idea doc records them as confloader redesign requirements.
+
+**Verification:**
+- [ ] `grep -n 'errors.go\|example_test.go\|interfaces.go\|SetDefaults' AGENTS.md` shows each rule.
+
+**Dependencies:** None
+**Files likely touched:** `AGENTS.md`, `docs/ideas/sdk-fix-backlog.md`
+**Estimated scope:** XS
+
+## Task 21: R1 in observability logs, metrics, tracer
+
+**Description:** Replace `(c *Config) setDefaults()` and `(c *Config) validate()` with
+exported value-receiver `SetDefaults() Config` and `Validate() error` (they already use
+errors.Join), with doc comments. `New` calls `cfg = cfg.SetDefaults()` and then
+`cfg.Validate()`. Rename the config tests to `TestConfig_SetDefaults` and
+`TestConfig_Validate`.
+
+**Acceptance criteria:**
+- [ ] No unexported setDefaults/validate in observability.
+- [ ] `go doc ./logs Config` (and the same for metrics and tracer) shows both methods.
+- [ ] Coverage meets each baseline (logs 97.9, metrics 93.8, tracer 92.9).
+
+**Verification:**
+- [ ] Module checks (strict) pass in observability.
+
+**Dependencies:** None
+**Files likely touched:** `observability/{logs,metrics,tracer}/{config.go,config_test.go}` and each package's main file (New)
+**Estimated scope:** M
+
+## Task 22: R1 in rest/client, rest/server, cron/engine (export, errors.Join)
+
+**Description:** rest/client and rest/server get the same R1 change as T21. Their
+`validate` returns the first error today; make it collect every problem with errors.Join.
+cron/engine's exported Validate also switches to errors.Join.
+
+**Acceptance criteria:**
+- [ ] Exported SetDefaults/Validate in all three, each Validate using errors.Join.
+- [ ] *(regression)* Each package has a Validate test with two invalid fields that asserts
+      `errors.Is` matches both. It fails on the first-error code.
+
+**Verification:**
+- [ ] Module checks pass in rest (strict) and cron.
+
+**Dependencies:** None
+**Files likely touched:** `rest/{client,server}/{config.go,config_test.go}`, the rest constructors, `cron/engine/{config.go,config_test.go}`
+**Estimated scope:** M
+
+## Task 23: R4: move interfaces into <pkg>.go (cron, db, redis)
+
+**Description:** Move the contents of `cron/interfaces.go` into a new `cron/cron.go`, of
+`db/interfaces.go` into `db/db.go`, and of `redis/interfaces.go` into `redis/redis.go`.
+Delete the interfaces.go files. Declarations, docs, and behavior don't change.
+
+**Acceptance criteria:**
+- [ ] `find . -name interfaces.go -not -path './vendor/*' -not -path './confloader/*'` prints nothing.
+- [ ] Every non-test `type X interface` is in `<pkg>.go`.
+
+**Verification:**
+- [ ] Module checks pass in cron, db, and redis; `go doc` output is unchanged apart from file order.
+
+**Dependencies:** None
+**Files likely touched:** `cron/interfaces.go` → `cron/cron.go`, `db/interfaces.go` → `db/db.go`, `redis/interfaces.go` → `redis/redis.go`
+**Estimated scope:** S
+
+## Task 24: R3: exported errors into errors.go
+
+**Description:** Move exported errors into each package's `errors.go`:
+- errgroup: `PanicError` and its methods. Unit tests for `PanicError.Error`/`Unwrap` go in
+  `errors_test.go`.
+- identity: `ErrName`.
+- attributes: `ErrMissingServiceName`.
+- logs: `ErrInvalidLogFormat` and `ErrInvalidLogLevel`, from config.go.
+- metrics: `ErrStopped`, `ErrInvalidMetricName`, and `ErrInstrumentConflict`.
+- rest/client: `ErrInformationalResponse`.
+- redis: `Nil` and `TxFailedErr`, from redis.go after T23.
+- errs: rename `error.go` → `errors.go` and `error_test.go` → `errors_test.go`.
+
+**Acceptance criteria:**
+- [ ] Spec criterion 10: outside confloader, no exported error declaration lives anywhere but `errors.go`.
+- [ ] No behavior change, and `go doc` lists the same identifiers.
+
+**Verification:**
+- [ ] Module checks pass in every touched module (four of them strict).
+
+**Dependencies:** T21, T22, T23
+**Files likely touched:** the `errors.go`/`errors_test.go` files listed above, plus the files the declarations move out of
+**Estimated scope:** M (many small moves)
+
+## Task 25: R2 runnable examples (errs, errgroup, attributes, cron, cron/engine, observability root)
+
+**Description:** Add `example_test.go` (package `<pkg>_test`):
+- errs: New, Wrap, WithMeta, errors.Is by code, and SlogAttr with a JSON handler on a buffer.
+- errgroup: Go/Wait, WithMaxConcurrency, and a panic surfacing as `*PanicError`.
+- attributes: NormalizeKey and ConvertMapsToKVs.
+- cron: WithFencingToken/FencingTokenFromContext.
+- cron/engine: New, Register, Trigger, and Stop, with the job printing.
+- observability root: a compile-only `Example` that wires logs, metrics, and tracer with
+  `Insecure: true`.
+
+Runnable examples have `// Output:`.
+
+**Acceptance criteria:**
+- [ ] Each example runs under `go test ./...` and its output matches.
+- [ ] `go doc -all` shows the examples.
+
+**Verification:**
+- [ ] Module checks pass in errs, errgroup, observability, and cron.
+
+**Dependencies:** T21, T22, T24
+**Files likely touched:** `errs/`, `errgroup/`, `observability/`, `observability/attributes/`, `cron/`, and `cron/engine/` `example_test.go`
+**Estimated scope:** M
+
+## Task 26: R2 compile-only examples (db, redis, s3, nats/consumer, nats/producer)
+
+**Description:** Add `example_test.go` showing realistic setup and use: Connect with
+NamedGetContext, and a transaction (db); New, Set/Get, Pipelined (redis); New, PutObject,
+PresignGetObject (s3); Register, Start, Shutdown with a handler (consumer); Register,
+Start, PublishSync (producer). There is no `// Output:`, because these need real servers.
+
+**Acceptance criteria:**
+- [ ] Each example compiles (`go vet ./...`) and appears in `go doc -all`.
+- [ ] No new dependencies.
+
+**Verification:**
+- [ ] Module checks pass in db, redis, s3, and nats.
+
+**Dependencies:** T23, T24
+**Files likely touched:** `db/`, `redis/`, `s3/`, `nats/consumer/`, `nats/producer/` `example_test.go`
+**Estimated scope:** M
+
+### Checkpoint E: conventions complete
+- [ ] Spec criteria 8–12 are checked, with evidence.
+- [ ] Opus review of T20–T26, with its fixes applied.
+- [ ] The PR body is updated (scope, and the R1 breaking change: exported config methods,
+      and Validate joining errors in rest and cron/engine). The owner then reviews.

@@ -103,6 +103,20 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Checkpoint D: complete; owner review
 
+### Phase 5: repository conventions (owner feedback 2026-11-01; spec amendment R1–R4)
+Wave 1 runs in parallel because the tasks touch disjoint files. Wave 2 waits for wave 1
+because it moves declarations out of the files wave 1 edits. Wave 3 adds examples once the
+API is final.
+- [ ] T20: Codify R1–R4 in AGENTS.md; record them as confloader redesign requirements (wave 1)
+- [ ] T21: R1 observability logs/metrics/tracer: export SetDefaults/Validate (wave 1)
+- [ ] T22: R1 rest/client, rest/server, cron/engine: export, and Join in Validate (wave 1)
+- [ ] T23: R4 cron, db, redis: move interfaces.go into <pkg>.go (wave 1)
+- [ ] T24: R3 errors.go in errgroup, identity, attributes, logs, metrics, rest/client, redis, errs (wave 2)
+- [ ] T25: R2 runnable examples: errs, errgroup, attributes, cron, cron/engine, plus a compile-only observability root example (wave 3)
+- [ ] T26: R2 compile-only examples: db, redis, s3, nats/consumer, nats/producer (wave 3)
+
+### Checkpoint E: conventions complete; Opus review; owner review
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
