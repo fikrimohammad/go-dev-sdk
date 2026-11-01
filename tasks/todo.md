@@ -5,7 +5,10 @@ Plan: [plan.md](plan.md). Spec: [SPEC-foundations](../docs/specs/sdk-fix-backlog
 **Module checks** (in every module a task touches; AGENTS.md verification):
 `gofmt -l .`, `go vet ./...`, `go test -count=1 -shuffle=on -gcflags="all=-N -l" ./...`,
 lint (full `golangci-lint run ./...` for strict modules; `--new-from-merge-base=main`
-otherwise), gostyle, and `go mod tidy -diff`.
+otherwise), gostyle, and `go mod tidy -diff`. A task that changes a module's go.mod must
+also run `go mod tidy -diff` in every module that requires it through a `replace`
+(observability → db, redis, s3, nats, cron, rest, confloader). Module-graph pruning makes
+their go.sum change too (missed in T11).
 
 **Test-wording check** (added after the Checkpoint A review: lint misses the
 "X should Y" style). In every module a task touches, this must print nothing:
