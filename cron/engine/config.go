@@ -33,13 +33,15 @@ func (c Config) SetDefaults() Config {
 	return c
 }
 
-// Validate verifies that the configuration values are valid.
+// Validate reports every problem with c, joined with errors.Join, or nil when c
+// is usable.
 func (c Config) Validate() error {
+	var errs []error
 	if c.GlobalTimeout < 0 {
-		return errors.New("cron: global_timeout must not be negative")
+		errs = append(errs, errors.New("cron: global_timeout must not be negative"))
 	}
 	if c.ShutdownTimeout < 0 {
-		return errors.New("cron: shutdown_timeout must not be negative")
+		errs = append(errs, errors.New("cron: shutdown_timeout must not be negative"))
 	}
-	return nil
+	return errors.Join(errs...)
 }

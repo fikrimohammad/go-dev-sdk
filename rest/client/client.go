@@ -99,8 +99,8 @@ func New(cfg Config, opts ...Option) (*hclient.Client, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+	cfg = cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	// WithTLSConfig is always applied. It also selects the standard dialer,

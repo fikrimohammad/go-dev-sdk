@@ -60,8 +60,8 @@ func WithTracer(t tracer.Client) Option {
 // New builds a Server from cfg, which is defaulted and validated first, and
 // applies opts. It returns an error if cfg is invalid.
 func New(cfg Config, opts ...Option) (*Server, error) {
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+	cfg = cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	s := &Server{

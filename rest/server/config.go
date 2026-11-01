@@ -1,12 +1,13 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"time"
 )
 
-// Defaults applied by Config.setDefaults when the corresponding field is zero.
+// Defaults applied by Config.SetDefaults when the corresponding field is zero.
 const (
 	defaultAddr            = ":3000"
 	defaultReadTimeout     = 30 * time.Second
@@ -28,8 +29,10 @@ type Config struct {
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" json:"shutdown_timeout"`
 }
 
-// setDefaults replaces each zero field with its default.
-func (c *Config) setDefaults() {
+// SetDefaults returns a copy of c with each zero field replaced by its default:
+// Addr ":3000", ReadTimeout 30s, WriteTimeout 30s, and ShutdownTimeout 10s.
+// Fields that are not zero are kept.
+func (c Config) SetDefaults() Config {
 	if c.Addr == "" {
 		c.Addr = defaultAddr
 	}
@@ -42,22 +45,24 @@ func (c *Config) setDefaults() {
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = defaultShutdownTimeout
 	}
+	return c
 }
 
-// validate reports whether the defaulted config is usable. Zero timeouts
-// were already replaced by defaults, so only negative values are rejected.
-func (c *Config) validate() error {
+// Validate reports every problem with c, joined with errors.Join, or nil when c
+// is usable. Call SetDefaults first; New does.
+func (c Config) Validate() error {
+	var errs []error
 	if _, _, err := net.SplitHostPort(c.Addr); err != nil {
-		return fmt.Errorf("rest/server: addr must be host:port: %w", err)
+		errs = append(errs, fmt.Errorf("rest/server: addr must be host:port: %w", err))
 	}
 	if c.ReadTimeout < 0 {
-		return fmt.Errorf("rest/server: read_timeout %v must not be negative", c.ReadTimeout)
+		errs = append(errs, fmt.Errorf("rest/server: read_timeout %v must not be negative", c.ReadTimeout))
 	}
 	if c.WriteTimeout < 0 {
-		return fmt.Errorf("rest/server: write_timeout %v must not be negative", c.WriteTimeout)
+		errs = append(errs, fmt.Errorf("rest/server: write_timeout %v must not be negative", c.WriteTimeout))
 	}
 	if c.ShutdownTimeout < 0 {
-		return fmt.Errorf("rest/server: shutdown_timeout %v must not be negative", c.ShutdownTimeout)
+		errs = append(errs, fmt.Errorf("rest/server: shutdown_timeout %v must not be negative", c.ShutdownTimeout))
 	}
-	return nil
+	return errors.Join(errs...)
 }

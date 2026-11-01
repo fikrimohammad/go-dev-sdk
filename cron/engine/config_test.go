@@ -36,3 +36,15 @@ func TestConfig_Validate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestConfig_Validate_ReportsEveryProblem(t *testing.T) {
+	cfg := Config{GlobalTimeout: -time.Second, ShutdownTimeout: -time.Second}
+	err := cfg.Validate()
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("Validate(%+v) error = %v, want an errors.Join error with two problems", cfg, err)
+	}
+	if n := len(joined.Unwrap()); n != 2 {
+		t.Errorf("Validate(%+v) reported %d problems, want 2: %v", cfg, n, err)
+	}
+}

@@ -478,12 +478,12 @@ errors.Join), with doc comments. `New` calls `cfg = cfg.SetDefaults()` and then
 cron/engine's exported Validate also switches to errors.Join.
 
 **Acceptance criteria:**
-- [ ] Exported SetDefaults/Validate in all three, each Validate using errors.Join.
-- [ ] *(regression)* Each package has a Validate test with two invalid fields that asserts
+- [x] Exported SetDefaults/Validate in all three, each Validate using errors.Join.
+- [x] *(regression)* Each package has a Validate test with two invalid fields that asserts
       `errors.Is` matches both. It fails on the first-error code.
 
 **Verification:**
-- [ ] Module checks pass in rest (strict) and cron.
+- [x] Module checks pass in rest (strict) and cron.
 
 **Dependencies:** None
 **Files likely touched:** `rest/{client,server}/{config.go,config_test.go}`, the rest constructors, `cron/engine/{config.go,config_test.go}`
@@ -496,11 +496,11 @@ cron/engine's exported Validate also switches to errors.Join.
 Delete the interfaces.go files. Declarations, docs, and behavior don't change.
 
 **Acceptance criteria:**
-- [ ] `find . -name interfaces.go -not -path './vendor/*' -not -path './confloader/*'` prints nothing.
-- [ ] Every non-test `type X interface` is in `<pkg>.go`.
+- [x] `find . -name interfaces.go -not -path './vendor/*' -not -path './confloader/*'` prints nothing.
+- [x] Every non-test `type X interface` is in `<pkg>.go`.
 
 **Verification:**
-- [ ] Module checks pass in cron, db, and redis; `go doc` output is unchanged apart from file order.
+- [x] Module checks pass in cron, db, and redis; `go doc` output is unchanged apart from file order.
 
 **Dependencies:** None
 **Files likely touched:** `cron/interfaces.go` → `cron/cron.go`, `db/interfaces.go` → `db/db.go`, `redis/interfaces.go` → `redis/redis.go`
