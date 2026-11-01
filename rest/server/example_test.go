@@ -20,27 +20,28 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 	"github.com/fikrimohammad/go-dev-sdk/rest/server"
+	"go.opentelemetry.io/otel"
 )
 
-// The server reads the package-level telemetry defaults, so a service sets
-// them once at startup and passes no options.
+// The server reads the OTel global providers, so a service registers them once
+// at startup and passes no options.
 func Example() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	info := identity.Default()
-	tc, err := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317"})
+	tc, err := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
 		logs.Error(ctx, "tracer", "error", err)
 		return
 	}
-	tracer.SetDefault(tc)
-	mc, err := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317"})
+	tracer.SetGlobal(tc)
+	mc, err := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
 		logs.Error(ctx, "metrics", "error", err)
 		return
 	}
-	metrics.SetDefault(mc)
+	otel.SetMeterProvider(mc.Provider())
 
 	srv, err := server.New(server.Config{Addr: ":8080"})
 	if err != nil {
@@ -64,11 +65,11 @@ func Example() {
 func ExampleNew() {
 	ctx := context.Background()
 	info := identity.Default()
-	tc, err := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317"})
+	tc, err := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
 		return
 	}
-	mc, err := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317"})
+	mc, err := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
 		return
 	}

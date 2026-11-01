@@ -92,7 +92,7 @@ func requestIDOf(c *app.RequestContext) string {
 // recovery see the span, and the span ends when the chain returns.
 func tracing(tc tracer.Client) app.HandlerFunc {
 	// A nil tc means the package-level default, looked up per call so a
-	// later tracer.SetDefault still applies.
+	// later otel.SetTracerProvider still applies.
 	var fixed trace.Tracer
 	if tc != nil {
 		fixed = tc.Tracer(tracerScope)
@@ -233,7 +233,7 @@ func boundErrsCode(c *app.RequestContext) (int, error) {
 func measure(mc metrics.Client) app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		// A nil mc means the package-level default, looked up per request so
-		// a later metrics.SetDefault still applies.
+		// a later otel.SetMeterProvider still applies.
 		m := mc
 		if m == nil {
 			m = metrics.Default()
