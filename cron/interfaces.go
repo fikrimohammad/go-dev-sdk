@@ -36,23 +36,3 @@ type Job struct {
 	Timeout     time.Duration // Per-job timeout override (zero = use GlobalTimeout)
 	Handler     HandlerFunc   // The executable function (required)
 }
-
-// JobInfo holds snapshot metadata for developer inspection.
-type JobInfo struct {
-	Name         string    `json:"name"`
-	Schedule     string    `json:"schedule"`
-	Description  string    `json:"description,omitempty"`
-	Timeout      string    `json:"timeout"`
-	NextRun      time.Time `json:"next_run"`
-	PrevRun      time.Time `json:"prev_run"`
-	LastStatus   string    `json:"last_status"` // "idle", "running", "success", "failed", "skipped"
-	LastDuration string    `json:"last_duration"`
-	LastError    string    `json:"last_error,omitempty"`
-}
-
-// JobRunner is the engine interface consumed by the dev server.
-type JobRunner interface {
-	Jobs() []JobInfo
-	Job(name string) (JobInfo, bool)
-	Trigger(ctx context.Context, name string) error
-}

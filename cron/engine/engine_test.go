@@ -100,19 +100,6 @@ func TestEngine_Trigger(t *testing.T) {
 	if !called.Load() {
 		t.Fatal("expected handler to have been called")
 	}
-
-	info, ok := eng.Job("manual-job")
-	if !ok {
-		t.Fatal("expected job info to exist")
-	}
-	if info.LastStatus != "success" {
-		t.Fatalf("expected status success, got %s", info.LastStatus)
-	}
-
-	jobs := eng.Jobs()
-	if len(jobs) != 1 || jobs[0].Name != "manual-job" {
-		t.Fatalf("unexpected Jobs() output: %v", jobs)
-	}
 }
 
 func TestEngine_TimeoutEnforcement(t *testing.T) {
