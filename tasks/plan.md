@@ -76,7 +76,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T6: consumer `Message` handler, `HandlerTimeout` heartbeat, `ErrNoRetry`, ack logging, panic innermost (N1, N8, N21, X1)
 
 ### Wave 4
-- [ ] T9: nats telemetry, both sides: messagingconv metrics, bounded attributes, `error.type` (N10, N11, X2–X6)
+- [x] T9: nats telemetry, both sides: messagingconv metrics, bounded attributes, `error.type` (N10, N11, X2–X6)
 
 ### Wave 5
 - [ ] T10: nats cleanup, docs, testing recipe, strict (N16, N17, N19)

@@ -22,9 +22,9 @@ Two subpackages:
 - **Trace propagation** — producers inject the W3C trace context into message
   headers (`traceparent`, `baggage`); consumers extract it, preserving trace continuity.
 - **Telemetry** — messaging-semantic-convention spans and metrics
-  (`messaging.publish.messages`, `messaging.process.messages`, and duration
-  histograms), with per-message attributes (topic/stream, tag, subject, keys, message id, body
-  size).
+  (`messaging.client.operation.duration`, `messaging.client.sent.messages`,
+  `messaging.process.duration`, `messaging.client.consumed.messages`), with per-message
+  attributes on spans only (subject, message id, body size, key, tag).
 - **Consume retry** — a `HandlerFunc` returning an error issues a `Nak` (or `NakWithDelay` when
   `RetryBackoff` is configured) so the broker redelivers.
 - **Native scheduling** — `PublishSyncWithDelay` uses NATS 2.12+ server-side message
@@ -135,13 +135,14 @@ if err := c.Shutdown(); err != nil { /* handle */ }
 
 ## Telemetry
 
-- **Producer spans**: `"{topic} publish"` with `SpanKindProducer`; message key / id
-  attached on completion. Metrics:
-  `messaging.publish.messages` (count), `messaging.publish.duration`
-  (histogram).
-- **Consumer spans**: `"{topic} process"` with `SpanKindConsumer`; attributes
-  include message id, tag, subject, body size, and `messaging.nats.client_group`.
-  Metrics: `messaging.process.messages`, `messaging.process.duration`.
+- **Producer spans**: `"publish {topic}"` with `SpanKindProducer`; message id
+  (PubAck sequence) is attached on completion when an ack exists. Metrics:
+  `messaging.client.operation.duration` (histogram, every outcome) and
+  `messaging.client.sent.messages` (counter, successes only).
+- **Consumer spans**: `"process {topic}"` with `SpanKindConsumer`; attributes
+  include stream sequence, tag, subject, body size, key, and delivery count. Metrics:
+  `messaging.process.duration` (histogram, every outcome) and
+  `messaging.client.consumed.messages` (counter, every delivery).
 - **Trace propagation**: W3C context injected by producers and extracted by
   consumers via message headers (`traceparent`).
 - Inject `WithMetrics` / `WithTracer` on `New` to override the package-level

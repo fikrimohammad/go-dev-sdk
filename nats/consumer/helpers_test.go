@@ -2,12 +2,17 @@ package consumer
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 )
@@ -139,4 +144,52 @@ func captureLogs(t *testing.T) *recordingLogger {
 	logs.SetDefault(rl)
 	t.Cleanup(func() { logs.SetDefault(prev) })
 	return rl
+}
+
+// collectMetrics reads every metric that reader has collected, keyed by name.
+func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
+	t.Helper()
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect() error = %v, want nil", err)
+	}
+	out := make(map[string]metricdata.Metrics)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			out[m.Name] = m
+		}
+	}
+	return out
+}
+
+// pointStrings returns one canonical "key=value" string per attribute set, sorted,
+// so data points can be compared without caring about their order.
+func pointStrings(sets ...attribute.Set) []string {
+	out := make([]string, 0, len(sets))
+	for _, s := range sets {
+		parts := make([]string, 0, s.Len())
+		for _, kv := range s.ToSlice() {
+			parts = append(parts, string(kv.Key)+"="+kv.Value.String())
+		}
+		slices.Sort(parts)
+		out = append(out, strings.Join(parts, ","))
+	}
+	slices.Sort(out)
+	return out
+}
+
+// mapStrings is pointStrings for expected attributes given as a map.
+func mapStrings(sets ...map[string]string) []string {
+	out := make([]string, 0, len(sets))
+	for _, m := range sets {
+		parts := make([]string, 0, len(m))
+		for k, v := range m {
+			parts = append(parts, k+"="+v)
+		}
+		slices.Sort(parts)
+		out = append(out, strings.Join(parts, ","))
+	}
+	slices.Sort(out)
+	return out
 }

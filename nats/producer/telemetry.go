@@ -2,14 +2,19 @@ package producer
 
 import (
 	"context"
+	"maps"
+	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/semconv/v1.43.0/messagingconv"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
@@ -18,22 +23,26 @@ const (
 	// tracerScope is the OTel instrumentation scope name.
 	tracerScope = "nats.producer"
 
-	// metricCount and metricDuration are the OTel metric names emitted per
-	// published message, following the messaging semantic conventions.
-	metricCount    = "messaging.publish.messages"
-	metricDuration = "messaging.publish.duration"
+	// attrSubject, attrKey, and attrTag are the NATS-specific span attributes.
+	attrSubject = "messaging.nats.subject"
+	attrKey     = "messaging.nats.message.key"
+	attrTag     = "messaging.nats.message.tag"
 )
 
 var (
-	metricCountInstrument = metrics.Instrument{
-		Name:        metricCount,
-		Unit:        "{message}",
-		Description: "Messages published",
+	// durationInstrument is messaging.client.operation.duration, recorded for every
+	// publish outcome.
+	durationInstrument = metrics.Instrument{
+		Name:        messagingconv.ClientOperationDuration{}.Name(),
+		Unit:        messagingconv.ClientOperationDuration{}.Unit(),
+		Description: messagingconv.ClientOperationDuration{}.Description(),
 	}
-	metricDurationInstrument = metrics.Instrument{
-		Name:        metricDuration,
-		Unit:        "s",
-		Description: "Message publish duration",
+
+	// sentInstrument is messaging.client.sent.messages, incremented on success only.
+	sentInstrument = metrics.Instrument{
+		Name:        messagingconv.ClientSentMessages{}.Name(),
+		Unit:        messagingconv.ClientSentMessages{}.Unit(),
+		Description: messagingconv.ClientSentMessages{}.Description(),
 	}
 )
 
@@ -45,145 +54,163 @@ type producerMeta struct {
 
 // meta carries the attributes held by every instrumented send.
 type meta struct {
-	serverAddr string
-	serverPort int
+	topic      string // messaging.destination.name
+	serverAddr string // server.address
+	serverPort int    // server.port
 
 	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
 }
 
-// tracerOr returns the configured tracer or one from the OTel global provider.
-func (m meta) tracerOr() trace.Tracer {
-	if m.tracer != nil {
-		return m.tracer.Tracer(tracerScope)
+// metricsClient returns the injected metrics client, or metrics.Default() when
+// none was injected. It is resolved per call so a later otel.SetMeterProvider
+// still applies.
+func (m meta) metricsClient() metrics.Client {
+	if m.metrics != nil {
+		return m.metrics
 	}
-	return tracer.Tracer(tracerScope)
+	return metrics.Default()
 }
 
-// publishSpanName is the span name for a published message, per the messaging
-// semantic conventions: "{destination} publish".
-func publishSpanName(topic string) string {
-	return topic + " publish"
+// tracerClient returns the injected tracer client, or tracer.Default() when none
+// was injected. It is resolved per call so a later otel.SetTracerProvider still
+// applies.
+func (m meta) tracerClient() tracer.Client {
+	if m.tracer != nil {
+		return m.tracer
+	}
+	return tracer.Default()
 }
 
-// publishAttrs builds the OTel messaging attributes for a published message.
-func (m meta) publishAttrs(topic, tag, key, subject string, bodyLen int) map[string]any {
+// baseAttrs returns the attributes shared by the metrics and the span of one
+// send: the system, operation, destination, and server.
+func (m meta) baseAttrs() map[string]any {
 	a := map[string]any{
-		"messaging.system":            "nats",
-		"messaging.operation":         "publish",
-		"messaging.destination.name":  topic,
-		"messaging.nats.subject":      subject,
-		"messaging.message.body.size": bodyLen,
+		string(otelsemconv.MessagingSystemKey):          "nats",
+		string(otelsemconv.MessagingOperationNameKey):   "publish",
+		string(otelsemconv.MessagingOperationTypeKey):   string(messagingconv.OperationTypeSend),
+		string(otelsemconv.MessagingDestinationNameKey): m.topic,
 	}
 	if m.serverAddr != "" {
-		a["server.address"] = m.serverAddr
-		a["server.port"] = m.serverPort
-	}
-	if tag != "" {
-		a["messaging.nats.message.tag"] = tag
-	}
-	if key != "" {
-		a["messaging.nats.message.keys"] = key
+		a[string(otelsemconv.ServerAddressKey)] = m.serverAddr
+		a[string(otelsemconv.ServerPortKey)] = m.serverPort
 	}
 	return a
 }
 
-// eventAttrs returns the full attribute set for a completed send event.
-func (m meta) eventAttrs(topic, tag, key, subject string, bodyLen int, msgID, etype string) map[string]any {
-	a := m.publishAttrs(topic, tag, key, subject, bodyLen)
-	if msgID != "" {
-		a["messaging.message.id"] = msgID
+// messageAttrs returns the span-only attributes of one message: its subject, body
+// size, and the key and tag when set.
+func messageAttrs(msg Message, subject string) map[string]any {
+	a := map[string]any{
+		attrSubject: subject,
+		string(otelsemconv.MessagingMessageBodySizeKey): len(msg.Body),
 	}
-	a["error.type"] = etype
+	if msg.Key != "" {
+		a[attrKey] = msg.Key
+	}
+	if msg.Tag != "" {
+		a[attrTag] = msg.Tag
+	}
 	return a
 }
 
-// instrumentPublish records one PRODUCER span and one count + duration pair
-// around a synchronous send. The trace context of the span is injected into msg
-// before fn sends it, so the consumer's span is a child of this one. The
-// sequence / msgID, when available, is attached.
+// withAttrs returns a copy of base with extra added. base is not modified.
+func withAttrs(base, extra map[string]any) map[string]any {
+	a := maps.Clone(base)
+	maps.Copy(a, extra)
+	return a
+}
+
+// startSpan opens the PRODUCER span for a send, named "publish <topic>", with the
+// given start attributes.
+func (m meta) startSpan(ctx context.Context, attrs map[string]any) (context.Context, trace.Span) {
+	return m.tracerClient().Tracer(tracerScope).Start(ctx, "publish "+m.topic,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(tracer.Attrs(attrs)...),
+	)
+}
+
+// finish sets the outcome of one send on span, ends it, and records its metrics.
+// The message id is set when ack is non-nil, and error.type when err is non-nil.
+func (m meta) finish(ctx context.Context, span trace.Span, start time.Time, base map[string]any, ack *jetstream.PubAck, err error) {
+	outcome := make(map[string]any, 2)
+	etype := ""
+	if ack != nil {
+		outcome[string(otelsemconv.MessagingMessageIDKey)] = strconv.FormatUint(ack.Sequence, 10)
+	}
+	if err != nil {
+		etype = wire.ErrorType(err)
+		span.SetStatus(codes.Error, err.Error())
+		outcome[string(otelsemconv.ErrorTypeKey)] = etype
+	}
+	span.SetAttributes(tracer.Attrs(outcome)...)
+	span.End()
+
+	m.record(ctx, start, base, etype)
+}
+
+// instrumentPublish records one PRODUCER span and its metrics around a synchronous
+// send of msg to subject. The trace context of the span is injected into nm before
+// fn sends it, so the consumer's span is a child of this one.
 func (m meta) instrumentPublish(
 	ctx context.Context,
-	topic, tag, key, subject string,
-	bodyLen int,
-	msg *nats.Msg,
+	msg Message,
+	subject string,
+	nm *nats.Msg,
 	fn func(context.Context) (*jetstream.PubAck, error),
 ) (*jetstream.PubAck, error) {
 	start := time.Now()
-	ctx, span := m.tracerOr().Start(ctx, publishSpanName(topic),
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(tracer.Attrs(m.publishAttrs(topic, tag, key, subject, bodyLen))...),
-	)
-	injectTraceContext(ctx, msg)
+	base := m.baseAttrs()
+	ctx, span := m.startSpan(ctx, withAttrs(base, messageAttrs(msg, subject)))
+	injectTraceContext(ctx, nm)
+
 	result, err := fn(ctx)
-
-	msgID := key
-	etype := ""
-	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		etype = err.Error()
-	}
-
-	span.SetAttributes(tracer.Attrs(m.eventAttrs(topic, tag, key, subject, bodyLen, msgID, etype))...)
-	span.End()
-
-	m.record(ctx, start, topic, tag, key, subject, bodyLen, msgID, etype)
+	m.finish(ctx, span, start, base, result, err)
 	return result, err
 }
 
-// instrumentPublishAsync records one PRODUCER span spanning the whole async
-// send: it is opened before PublishAsync and closed when the send callback fires.
-// Like instrumentPublish, it injects the span's trace context into msg.
+// instrumentPublishAsync records one PRODUCER span spanning the whole async send:
+// it is opened before send and closed when the send callback fires, and its
+// metrics are recorded then. Like instrumentPublish, it injects the span's trace
+// context into nm.
 func (m meta) instrumentPublishAsync(
 	ctx context.Context,
-	topic, tag, key, subject string,
-	bodyLen int,
-	msg *nats.Msg,
+	msg Message,
+	subject string,
+	nm *nats.Msg,
 	send func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error,
 	callback func(context.Context, *jetstream.PubAck, error),
 ) error {
 	start := time.Now()
-	ctx, span := m.tracerOr().Start(ctx, publishSpanName(topic),
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(tracer.Attrs(m.publishAttrs(topic, tag, key, subject, bodyLen))...),
-	)
-	injectTraceContext(ctx, msg)
+	base := m.baseAttrs()
+	ctx, span := m.startSpan(ctx, withAttrs(base, messageAttrs(msg, subject)))
+	injectTraceContext(ctx, nm)
 
 	wrapped := func(cctx context.Context, result *jetstream.PubAck, sendErr error) {
-		defer span.End()
-
-		msgID := key
-		etype := ""
-		if sendErr != nil {
-			span.SetStatus(codes.Error, sendErr.Error())
-			etype = sendErr.Error()
-		}
-		span.SetAttributes(tracer.Attrs(m.eventAttrs(topic, tag, key, subject, bodyLen, msgID, etype))...)
-		m.record(ctx, start, topic, tag, key, subject, bodyLen, msgID, etype)
-
+		m.finish(ctx, span, start, base, result, sendErr)
 		callback(cctx, result, sendErr)
 	}
 
 	if err := send(ctx, wrapped); err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(tracer.Attrs(m.eventAttrs(topic, tag, key, subject, bodyLen, "", err.Error()))...)
-		span.End()
-		m.record(ctx, start, topic, tag, key, subject, bodyLen, "", err.Error())
+		m.finish(ctx, span, start, base, nil, err)
 		return err
 	}
 	return nil
 }
 
-// record emits the count and duration metrics for a single send event.
-func (m meta) record(ctx context.Context, start time.Time, topic, tag, key, subject string, bodyLen int, msgID, etype string) {
-	attrs := m.eventAttrs(topic, tag, key, subject, bodyLen, msgID, etype)
-	if m.metrics != nil {
-		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = m.metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
-	} else {
-		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
+// record emits messaging.client.operation.duration for one send, with error.type
+// when etype is set. It also increments messaging.client.sent.messages, but only
+// for a successful send.
+func (m meta) record(ctx context.Context, start time.Time, base map[string]any, etype string) {
+	attrs := base
+	if etype != "" {
+		attrs = withAttrs(base, map[string]any{string(otelsemconv.ErrorTypeKey): etype})
+	}
+	c := m.metricsClient()
+	_ = c.Record(ctx, durationInstrument, time.Since(start).Seconds(), attrs)
+	if etype == "" {
+		_ = c.Add(ctx, sentInstrument, 1, attrs)
 	}
 }
 

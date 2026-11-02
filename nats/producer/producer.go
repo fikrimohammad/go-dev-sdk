@@ -295,7 +295,7 @@ func (p *Producer) PublishSyncWithDelay(ctx context.Context, msg Message, delay 
 // the data subject the message is delivered to, which is nm.Subject for a plain
 // publish and the schedule target for a delayed one.
 func (p *Producer) publishSync(ctx context.Context, msg Message, nm *nats.Msg, target string) error {
-	_, err := p.metaFor(msg.Topic).instrumentPublish(ctx, msg.Topic, msg.Tag, msg.Key, target, len(msg.Body), nm,
+	_, err := p.metaFor(msg.Topic).instrumentPublish(ctx, msg, target, nm,
 		func(ctx context.Context) (*jetstream.PubAck, error) {
 			return p.sendSync(ctx, msg.Topic, nm)
 		})
@@ -316,7 +316,7 @@ func (p *Producer) PublishAsync(ctx context.Context, msg Message,
 	}
 
 	nm := buildMsg(msg)
-	return p.metaFor(msg.Topic).instrumentPublishAsync(ctx, msg.Topic, msg.Tag, msg.Key, nm.Subject, len(msg.Body), nm, func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error {
+	return p.metaFor(msg.Topic).instrumentPublishAsync(ctx, msg, nm.Subject, nm, func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error {
 		pd, pending, err := p.acquire(msg.Topic)
 		if err != nil {
 			return err
@@ -450,7 +450,7 @@ func (p *Producer) metaFor(topic string) meta {
 	if p.run != nil {
 		pm = p.run.producerMeta[topic]
 	}
-	return meta{serverAddr: pm.serverAddr, serverPort: pm.serverPort, metrics: p.metrics, tracer: p.tracer}
+	return meta{topic: topic, serverAddr: pm.serverAddr, serverPort: pm.serverPort, metrics: p.metrics, tracer: p.tracer}
 }
 
 // producerFor returns the started producer for topic or ErrProducerNotFound.

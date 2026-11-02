@@ -3,6 +3,8 @@ package producer
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -10,17 +12,27 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
 var errSend = errors.New("send failed")
+
+// metric names as the messaging semantic conventions define them.
+const (
+	metricSent     = "messaging.client.sent.messages"
+	metricDuration = "messaging.client.operation.duration"
+)
 
 // --- fake metrics client -----------------------------------------------------------
 
@@ -170,48 +182,52 @@ func TestPublishSync_Success(t *testing.T) {
 	if !ok {
 		t.Fatal("no count recorded")
 	}
-	if count.name != metricCount || count.value != 1 {
+	if count.name != metricSent || count.value != 1 {
 		t.Fatalf("count = %+v", count)
 	}
-	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration {
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != metricDuration {
 		t.Fatalf("hist = %+v", hist)
 	}
-	wantCountAttrs := map[string]any{
-		"messaging.system":            "nats",
-		"messaging.operation":         "publish",
-		"messaging.destination.name":  "reporting",
-		"messaging.nats.subject":      "reporting.export_report_process",
-		"messaging.message.body.size": 5,
-		"server.address":              "localhost",
-		"server.port":                 4222,
-		"messaging.nats.message.tag":  "export_report_process",
-		"messaging.nats.message.keys": "key-1",
-		"messaging.message.id":        "key-1",
-		"error.type":                  "",
+	wantMetricAttrs := map[string]any{
+		"messaging.system":           "nats",
+		"messaging.operation.name":   "publish",
+		"messaging.operation.type":   "send",
+		"messaging.destination.name": "reporting",
+		"server.address":             "localhost",
+		"server.port":                4222,
 	}
-	assertAttrs(t, count.attrs, wantCountAttrs)
+	for _, rec := range []metricRec{count, hist} {
+		assertAttrs(t, rec.attrs, wantMetricAttrs)
+		if len(rec.attrs) != len(wantMetricAttrs) {
+			t.Fatalf("%s attrs = %v, want only %v", rec.name, rec.attrs, wantMetricAttrs)
+		}
+	}
 
 	sp, ok := ex.last()
 	if !ok {
 		t.Fatal("no span recorded")
 	}
-	if sp.Name() != "reporting publish" || sp.SpanKind() != trace.SpanKindProducer {
+	if sp.Name() != "publish reporting" || sp.SpanKind() != trace.SpanKindProducer {
 		t.Fatalf("span name=%q kind=%v", sp.Name(), sp.SpanKind())
 	}
 	wantSpanAttrs := map[string]any{
 		"messaging.system":            "nats",
-		"messaging.operation":         "publish",
+		"messaging.operation.name":    "publish",
+		"messaging.operation.type":    "send",
 		"messaging.destination.name":  "reporting",
 		"messaging.nats.subject":      "reporting.export_report_process",
 		"messaging.message.body.size": "5",
 		"server.address":              "localhost",
 		"server.port":                 "4222",
 		"messaging.nats.message.tag":  "export_report_process",
-		"messaging.nats.message.keys": "key-1",
-		"messaging.message.id":        "key-1",
-		"error.type":                  "",
+		"messaging.nats.message.key":  "key-1",
+		"messaging.message.id":        "100",
 	}
 	assertAttrs(t, spanAttrs(sp), wantSpanAttrs)
+	if _, ok := spanAttrs(sp)["error.type"]; ok {
+		t.Error("success span has error.type, want none")
+	}
 	if sp.Status().Code == codes.Error {
 		t.Fatalf("status = %v, want not error", sp.Status().Code)
 	}
@@ -233,7 +249,7 @@ func TestPublishSync_Error(t *testing.T) {
 	if sp.Status().Code != codes.Error {
 		t.Fatalf("status = %v, want error", sp.Status().Code)
 	}
-	assertAttrs(t, spanAttrs(sp), map[string]any{"error.type": "producer: sync send to topic reporting: send failed"})
+	assertAttrs(t, spanAttrs(sp), map[string]any{"error.type": "_OTHER"})
 }
 
 func TestPublishSyncWithDelay_Success(t *testing.T) {
@@ -277,7 +293,7 @@ func TestPublishAsync_FullLifecycle(t *testing.T) {
 	if !ok {
 		t.Fatal("no span recorded")
 	}
-	assertAttrs(t, spanAttrs(sp), map[string]any{"messaging.message.id": "k"})
+	assertAttrs(t, spanAttrs(sp), map[string]any{"messaging.message.id": "1", "messaging.nats.message.key": "k"})
 	if _, ok := fm.lastCount(); !ok {
 		t.Fatal("no count recorded")
 	}
@@ -330,5 +346,107 @@ func TestPublish_TraceParenting(t *testing.T) {
 	}
 	if got, want := parts[2], sp.SpanContext().SpanID().String(); got != want {
 		t.Errorf("span id = %q, want %q", got, want)
+	}
+}
+
+// TestPublish_MetricAttributes is a regression test. The metrics must be the
+// messagingconv instruments with the metric attribute set only: no message id,
+// key, tag, subject, or body size. The sent counter counts successes only.
+func TestPublish_MetricAttributes(t *testing.T) {
+	ctx := context.Background()
+	mock := &mockProducer{sendSyncFunc: func(_ context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
+		if msg.Header.Get(wire.HeaderKey) == "k2" {
+			return nil, &jetstream.APIError{ErrorCode: 10071}
+		}
+		return &jetstream.PubAck{Stream: "orders", Sequence: 42}, nil
+	}}
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(ctx) })
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(ctx) })
+
+	p, err := New(testAppInfo, WithMetrics(metrics.Wrap(mp)), WithTracer(tracer.Wrap(tp)))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	startStubbed(t, p, map[string]jsProducer{"orders": mock})
+
+	if err := p.PublishSync(ctx, Message{Topic: "orders", Tag: "created", Key: "k1", Body: []byte("hello")}); err != nil {
+		t.Fatalf("PublishSync(k1) error = %v, want nil", err)
+	}
+	if err := p.PublishSync(ctx, Message{Topic: "orders", Tag: "created", Key: "k2", Body: []byte("hello")}); err == nil {
+		t.Fatal("PublishSync(k2) error = nil, want error")
+	}
+
+	got := collectMetrics(t, reader)
+	wantNames := []string{"messaging.client.operation.duration", "messaging.client.sent.messages"}
+	if names := slices.Sorted(maps.Keys(got)); !slices.Equal(names, wantNames) {
+		t.Fatalf("metric names = %v, want %v", names, wantNames)
+	}
+
+	dur := got["messaging.client.operation.duration"]
+	if dur.Unit != "s" {
+		t.Errorf("duration unit = %q, want %q", dur.Unit, "s")
+	}
+	hist, ok := dur.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("duration data = %T, want metricdata.Histogram[float64]", dur.Data)
+	}
+	base := map[string]string{
+		"messaging.system":           "nats",
+		"messaging.operation.name":   "publish",
+		"messaging.operation.type":   "send",
+		"messaging.destination.name": "orders",
+		"server.address":             "localhost",
+		"server.port":                "4222",
+	}
+	failed := maps.Clone(base)
+	failed["error.type"] = "10071"
+	durSets := make([]attribute.Set, 0, len(hist.DataPoints))
+	for _, dp := range hist.DataPoints {
+		durSets = append(durSets, dp.Attributes)
+	}
+	if gotSets, want := pointStrings(durSets...), mapStrings(base, failed); !slices.Equal(gotSets, want) {
+		t.Errorf("duration attributes = %v, want %v", gotSets, want)
+	}
+
+	sent := got["messaging.client.sent.messages"]
+	if sent.Unit != "{message}" {
+		t.Errorf("sent unit = %q, want %q", sent.Unit, "{message}")
+	}
+	sum, ok := sent.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("sent data = %T, want metricdata.Sum[int64]", sent.Data)
+	}
+	if len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != 1 {
+		t.Fatalf("sent points = %+v, want one point with value 1", sum.DataPoints)
+	}
+	if gotSets, want := pointStrings(sum.DataPoints[0].Attributes), mapStrings(base); !slices.Equal(gotSets, want) {
+		t.Errorf("sent attributes = %v, want %v", gotSets, want)
+	}
+
+	if len(ex.spans) != 2 {
+		t.Fatalf("spans = %d, want 2", len(ex.spans))
+	}
+	okSpan, badSpan := ex.spans[0], ex.spans[1]
+	if okSpan.Name() != "publish orders" || okSpan.SpanKind() != trace.SpanKindProducer {
+		t.Fatalf("span name=%q kind=%v, want %q kind=%v", okSpan.Name(), okSpan.SpanKind(), "publish orders", trace.SpanKindProducer)
+	}
+	assertAttrs(t, spanAttrs(okSpan), map[string]any{
+		"messaging.message.id":        "42",
+		"messaging.nats.message.key":  "k1",
+		"messaging.nats.message.tag":  "created",
+		"messaging.nats.subject":      "orders.created",
+		"messaging.message.body.size": "5",
+	})
+	if badSpan.Name() != "publish orders" {
+		t.Fatalf("failed span name = %q, want %q", badSpan.Name(), "publish orders")
+	}
+	assertAttrs(t, spanAttrs(badSpan), map[string]any{"error.type": "10071"})
+	if _, ok := spanAttrs(badSpan)["messaging.message.id"]; ok {
+		t.Error("failed span has messaging.message.id, want none without an ack")
 	}
 }

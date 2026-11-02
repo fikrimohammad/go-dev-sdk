@@ -294,13 +294,13 @@ and the connection setup:
 - X6 helpers.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestPublish_MetricAttributes` and `TestProcess_MetricAttributes`: the exact
+- [x] *(regression)* `TestPublish_MetricAttributes` and `TestProcess_MetricAttributes`: the exact
       names, units, and instrument types, and the exact attribute sets on success and failure.
       No id, key, tag, subject, body size, or message on metrics.
-- [ ] *(regression)* `TestErrorType` (both packages): every class above.
+- [x] *(regression)* `TestErrorType` (both packages): every class above.
 
 **Verification:**
-- [ ] nats module checks; coverage ≥ baselines.
+- [x] nats module checks; coverage ≥ baselines.
 
 **Dependencies:** T5, T6 · **Files:** `nats/producer/telemetry.go`, `nats/producer/telemetry_test.go`, `nats/consumer/middleware.go`, `nats/consumer/middleware_test.go` · **Scope:** M
 
