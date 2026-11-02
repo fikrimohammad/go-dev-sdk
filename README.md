@@ -42,19 +42,26 @@ GitHub Actions workflows live in `.github/workflows/`:
 - **`ci.yml`** — on PR + push to main. Discovers every Go module and runs a
   matrix job per module: `gofmt`, `golangci-lint` (config at repo root,
   `.golangci.yml`), `go vet`, `go test` (plus `-race`), and a
-  `go mod tidy -diff` check. Modules in `STRICT_LINT_MODULES` are linted on the
-  full tree.
+  `go mod tidy -diff` check. Every module except those in `LAX_MODULES` (today
+  only `confloader`) is linted on the full tree and checked by gostyle.
+  gostyle also has its own test job.
 - **`coverage-report.yml`** — on PR. Runs tests with coverage per module and
   posts a per-module coverage table as a PR comment.
+- **`db-integration`** job in `ci.yml` runs the MySQL and PostgreSQL integration
+  tests against service containers.
 - **`release.yml`** — manual only (`workflow_dispatch`); nothing is tagged on
-  push. Tags one module on main with the version you give:
-  `gh workflow run release.yml -f module=observability -f version=v0.2.0`. It
-  refuses a major that doesn't match the module path and any version that
-  already exists as a tag or in proxy.golang.org.
+  push. Run `gh workflow run release.yml` on main. It releases the version in
+  `VERSION`, tags every module at that version in one atomic push, and then
+  checks that each module installs from proxy.golang.org. It refuses a version
+  that already exists as a tag or in proxy.golang.org.
 
 CI does not rely on `go.work` (it is gitignored); each module builds standalone
 via its `replace` directives.
 
 ## Versioning
 
-Modules are tagged independently (`observability/v0.2.0`, ...), by hand, with `release.yml`. All modules are in development (v0), so any release may break the API. Cross-module dependencies use `require` + `replace` directives pointing at sibling directories during development.
+All modules share one version, set in `VERSION` (currently `v0.1.0`). Every
+sibling `require` must equal it, and CI checks this. Each release tags every
+module as `<module>/<version>`. All modules are in development (v0), so any
+release may break the API. Never reuse a version: fix a bad release forward
+with a new patch version. See `AGENTS.md` for the full release steps.

@@ -8,10 +8,10 @@
 # owner, so a violation is reported once. Design rules that no linter can check
 # live in the go-best-practices skill.
 #
-# Existing code predates these rules. CI lints modules in STRICT_LINT_MODULES
-# (.github/workflows/ci.yml) on the full tree and reports only new issues for the
-# rest; locally run `golangci-lint run --new-from-merge-base=main ./...`, or
-# `golangci-lint run ./...` in a strict module.
+# CI lints every module on the full tree (`golangci-lint run ./...`) except the
+# modules in LAX_MODULES (.github/workflows/ci.yml), which report only new issues;
+# locally, run `golangci-lint run ./...` in a module, or
+# `golangci-lint run --new-from-merge-base=main ./...` in a lax module.
 
 version: "2"
 

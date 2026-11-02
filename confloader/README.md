@@ -28,7 +28,7 @@ on read.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/confloader
+go get github.com/fikrimohammad/go-servicekit/confloader@v0.1.0
 ```
 
 ## How values are stored

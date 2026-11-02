@@ -32,7 +32,7 @@ per executed statement, for **MySQL and PostgreSQL**.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/db
+go get github.com/fikrimohammad/go-servicekit/db@v0.1.0
 ```
 
 The PostgreSQL driver is a regular module dependency, so `Driver: "pgx"` (or

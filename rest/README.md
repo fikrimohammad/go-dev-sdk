@@ -9,7 +9,7 @@ calls with safe retries, deadlines that hold, and the same telemetry. It never
 sends trace context, request IDs, or baggage to a vendor.
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/rest
+go get github.com/fikrimohammad/go-servicekit/rest@v0.1.0
 ```
 
 Packages:

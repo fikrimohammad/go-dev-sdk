@@ -31,7 +31,7 @@ executed command.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/redis
+go get github.com/fikrimohammad/go-servicekit/redis@v0.1.0
 ```
 
 ## Step-by-step

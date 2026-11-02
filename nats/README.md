@@ -16,8 +16,7 @@ Two packages:
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/nats/producer
-go get github.com/fikrimohammad/go-servicekit/nats/consumer
+go get github.com/fikrimohammad/go-servicekit/nats@v0.1.0
 ```
 
 ## Producer

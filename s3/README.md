@@ -14,7 +14,7 @@ client with standard AWS SDK types and automatic OpenTelemetry tracing + metrics
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/s3
+go get github.com/fikrimohammad/go-servicekit/s3@v0.1.0
 ```
 
 ## Step-by-step

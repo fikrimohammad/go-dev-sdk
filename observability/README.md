@@ -60,7 +60,7 @@ for every module.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/observability
+go get github.com/fikrimohammad/go-servicekit/observability@v0.1.0
 ```
 
 > Each signal imports `github.com/fikrimohammad/go-servicekit/observability/logs`,

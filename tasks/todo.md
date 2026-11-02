@@ -217,7 +217,7 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 **Acceptance criteria:**
 - [x] CI is green on the PR, with every new job present.
 - [x] The db job's log shows the integration tests ran, not skipped.
-- [ ] Precision is checked again: gostyle reports 0 on every non-lax module after T5–T8.
+- [x] Precision is checked again: gostyle reports 0 on every non-lax module after T5–T8.
 
 **Dependencies:** T3, T4, T5, T7, T8 · **Files:** `.github/workflows/ci.yml` · **Scope:** S
 
@@ -234,8 +234,8 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 - The backlog's key assumptions are ticked, with evidence links.
 
 **Acceptance criteria:**
-- [ ] The docs match the code and CI.
-- [ ] `grep go-dev-sdk` is clean, as in T2.
+- [x] The docs match the code and CI.
+- [x] `grep go-dev-sdk` is clean, as in T2.
 
 **Dependencies:** T9 · **Files:** `AGENTS.md`, `.agents/skills/*/SKILL.md`, `*/README.md`, `docs/ideas/sdk-fix-backlog.md` · **Scope:** S
 

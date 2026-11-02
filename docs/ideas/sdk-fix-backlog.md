@@ -228,20 +228,22 @@ Tags: [B] bug, [T] telemetry/semconv, [A] API/design, [C] cleanup/lint.
 
 ## Key Assumptions to Validate
 
-- [ ] An OTel global provider captured at init forwards to the provider installed later.
-      Test: Wrap(otel.GetMeterProvider()), then SetMeterProvider(manual reader), record, assert.
+- [x] An OTel global provider captured at init forwards to the provider installed later.
+      Validated in PR 1 (#16): metrics.Default and tracer.Default resolve the OTel global
+      provider per call, and the test is in observability.
 - [x] Users can test db, redis, s3, and nats code without SDK mock interfaces.
       Validated 2026-11-01 by the probe (see Testing Users' Code).
-- [ ] A gostyle AST rule can catch message-valued error.type and per-event metric attributes
-      with an acceptable false-positive rate. Test: prototype it against today's code first.
-- [ ] PR 3 stays reviewable. Test: if it exceeds ~1.5k lines of non-test diff, split it into
-      nats consumer and nats producer + cron.
+- [x] A gostyle AST rule can catch message-valued error.type and per-event metric attributes
+      with an acceptable false-positive rate. Validated in PR 4 (#19): recall at 411bb72 and
+      216b2aa is db 2, redis 6, nats 6, and cron 2. Precision is 0 findings on s3 at 411bb72
+      and on every module in the branch. Redis has one gostyle:ignore, with a reason.
+- [x] PR 3 stays reviewable. Shipped as #18.
 
 ## Not Doing (and Why)
 
 - confloader: its API and its cache warming/eviction logic are being redesigned (still in
   brainstorm), so it gets compile-only changes from PR 1 and stays on only-new-issues lint.
-  The redesign is a release gate. Carry these review findings into it: the error handler
+  The redesign still gates v1.0.0; it doesn't block v0.1.0. Carry these review findings into it: the error handler
   runs under the entry lock (deadlock confirmed by a probe), errors are compared with ==
   instead of errors.Is, the poll loop uses an uncancellable context.Background(), and
   ErrProviderConnect, ErrInvalidGetterType, ErrRootFolder, ErrStale, and AllowedProviders
@@ -251,13 +253,16 @@ Tags: [B] bug, [T] telemetry/semconv, [A] API/design, [C] cleanup/lint.
   ErrNotFound outside an errors.go.
 - Shared telemetry helper: not chosen. The same fix lands in each module instead.
 - O5 (attribute-conversion allocations): no profile shows it matters yet.
-- Rewriting the existing unexported test seams to use real transports: about 4.3k lines of
-  tests. Tracked as an issue. New tests for N9/N18 and other lifecycle fixes do use the
-  embedded server, since the stubs demonstrably hide real bugs.
-- Release/versioning repair: a separate track (see Open Questions).
+- Rewriting the existing unexported test seams to use real transports: done in PR 4 (#19).
+  The db, redis, s3, and nats unit tests run on sqlmock, miniredis, gofakes3, and the
+  embedded nats-server; the stubs and seams are deleted, except the few kept with a reason.
+- Release/versioning repair: done in PR 4 (#19). One VERSION covers all modules, and
+  release.yml tags them atomically and verifies each one installs from the proxy. See
+  Open Questions.
 
 ## Open Questions
 
-- Modules require errs/observability at a zero pseudo-version and identity v1.0.0 (tag
-  deleted), and only resolve through replace directives. No module is installable outside
-  this repo. Fix in a release track before the dummy consumer moves off the workspace?
+- Resolved in PR 4: the repository is renamed to github.com/fikrimohammad/go-servicekit,
+  and every module starts at v0.1.0, with sibling requires at that version. PR 4 tags
+  nothing. The owner's v0.1.0 release proves installability: release.yml's verify-install
+  job installs each module from the proxy. The release runbook is in AGENTS.md.

@@ -23,7 +23,7 @@ convention of an `Err` prefix on the `ErrName` sentinel.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-servicekit/identity
+go get github.com/fikrimohammad/go-servicekit/identity@v0.1.0
 ```
 
 ## Resolution

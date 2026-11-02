@@ -17,6 +17,10 @@
 
 ## Installation
 
+```bash
+go get github.com/fikrimohammad/go-servicekit/cron@v0.1.0
+```
+
 ```go
 import (
 	"github.com/fikrimohammad/go-servicekit/cron"
