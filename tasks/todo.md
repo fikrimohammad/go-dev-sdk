@@ -334,6 +334,6 @@ and the connection setup:
 ### Checkpoint B: complete
 - [x] SPEC-messaging success criteria 1–8 are verified with evidence.
 - [x] Final Opus review, with its fixes applied.
-- [ ] The PR body (prepared by the orchestrator) lists every API break and every renamed or
+- [x] The PR body (prepared by the orchestrator) lists every API break and every renamed or
       dropped metric and attribute. The owner updates it and marks the PR ready, or tells the
       orchestrator to.

@@ -81,7 +81,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 ### Wave 5
 - [x] T10: nats cleanup, docs, testing recipe, strict (N16, N17, N19)
 
-### Checkpoint B: final Opus review (fixes applied); PR description drafted; owner review pending
+### Checkpoint B: final Opus review (fixes applied); PR description published; marked ready for owner review
 
 ## Risks and Mitigations
 
