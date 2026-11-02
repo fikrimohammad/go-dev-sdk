@@ -40,11 +40,11 @@ capability-map link, the backlog-doc sync, this plan, and the task list. Open a 
 body links the spec.
 
 **Acceptance criteria:**
-- [ ] One `docs:` commit holds them.
-- [ ] A draft PR targets `main`.
+- [x] One `docs:` commit holds them.
+- [x] A draft PR targets `main`.
 
 **Verification:**
-- [ ] `gh pr view --json isDraft` reports true.
+- [x] `gh pr view --json isDraft` reports true.
 
 **Dependencies:** None · **Files:** `docs/**`, `tasks/*` · **Scope:** XS
 
@@ -66,13 +66,13 @@ and the connection setup:
   the orchestrator promotes it after the agent stops.
 
 **Acceptance criteria:**
-- [ ] Table tests cover `StreamConfig`, `DataSubjects`, `ScheduleSubject` (unique across
+- [x] Table tests cover `StreamConfig`, `DataSubjects`, `ScheduleSubject` (unique across
       calls), `PatchStream`, and `ServerAddrPort`. For `PatchStream`: operator `MaxAge` and
       `Replicas` are kept, subjects are de-duplicated, and an existing extra subject is kept.
-- [ ] The package comment and doc comments follow Go Doc Comments.
+- [x] The package comment and doc comments follow Go Doc Comments.
 
 **Verification:**
-- [ ] nats module checks (lint new-from-merge-base); `go test ./internal/...` covers 90% or more.
+- [x] nats module checks (lint new-from-merge-base); `go test ./internal/...` covers 90% or more.
 
 **Dependencies:** T1 · **Files:** `nats/internal/wire/wire.go`, `nats/internal/wire/wire_test.go`, `nats/go.mod` (orchestrator) · **Scope:** S
 

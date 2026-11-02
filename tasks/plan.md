@@ -59,10 +59,10 @@ finding.
 Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Phase 0: Setup
-- [ ] T1: Commit the spec and plan, and open a draft PR
+- [x] T1: Commit the spec and plan, and open a draft PR (#18)
 
 ### Wave 1 (parallel)
-- [ ] T2: `nats/internal/wire`: stream layout, headers, connect options, server address (N7, N15, N18)
+- [x] T2: `nats/internal/wire`: stream layout, headers, connect options, server address (N7, N15, N18)
 - [ ] T7: cron lifecycle: lock, contexts, middleware order, errors (C2, C3, C4, C5, X1, X7)
 
 ### Wave 2 (parallel)
