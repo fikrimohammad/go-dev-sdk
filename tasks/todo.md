@@ -190,10 +190,10 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 - No go.mod change: nats-server is already a test dependency.
 
 **Acceptance criteria:**
-- [ ] Coverage stays at or above: consumer 93.3%, producer 96.4%, wire 95.8%.
-- [ ] PR 3's regression tests still exist and still fail when their fix is reverted
+- [x] Coverage stays at or above: consumer 93.3%, producer 96.4%, wire 95.8%.
+- [x] PR 3's regression tests still exist and still fail when their fix is reverted
       (spot-check).
-- [ ] Timing tests pass with `-count=3`.
+- [x] Timing tests pass with `-count=3`.
 
 **Verification:** nats module checks.
 

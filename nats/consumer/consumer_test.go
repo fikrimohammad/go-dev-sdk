@@ -5,10 +5,10 @@ import (
 	"errors"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/fikrimohammad/go-servicekit/identity"
@@ -171,45 +171,45 @@ func TestConsumerRegisterDifferentGroups(t *testing.T) {
 	}
 }
 
+// TestConsumerRegisterDoesNotDial checks that Register stores the config without
+// dialing: no client connects and no stream is created.
 func TestConsumerRegisterDoesNotDial(t *testing.T) {
 	t.Parallel()
 
+	ns := startTestNATSServer(t)
 	c, err := New(testAppInfo)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	var dials atomic.Int32
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		dials.Add(1)
-		return &mockConsumer{}, nil
-	}
-
-	cfg := Config{Endpoints: []string{"localhost:4222"}, Topic: "test-topic", Group: "test-group"}
+	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders", Group: "billing"}
 	handler := func(ctx context.Context, msg Message) error { return nil }
 	if err := c.Register(cfg, handler); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
 
-	if got := dials.Load(); got != 0 {
-		t.Errorf("factory calls after Register = %d, want 0", got)
+	if got := ns.NumClients(); got != 0 {
+		t.Fatalf("Register() clients = %d, want 0", got)
+	}
+	nc := connectTestClient(t, ns)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+	if _, err := js.Stream(context.Background(), "orders"); !errors.Is(err, jetstream.ErrStreamNotFound) {
+		t.Errorf("Register() stream error = %v, want %v", err, jetstream.ErrStreamNotFound)
 	}
 }
 
 func TestConsumerStartIdempotent(t *testing.T) {
 	t.Parallel()
 
+	ns := startTestNATSServer(t)
 	c, err := New(testAppInfo)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	registerTwo(t, c)
-
-	var creates atomic.Int32
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		creates.Add(1)
-		return &mockConsumer{}, nil
-	}
+	registerTwo(t, c, ns)
 
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -217,28 +217,22 @@ func TestConsumerStartIdempotent(t *testing.T) {
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start() second call error = %v", err)
 	}
+	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
 
-	if got := creates.Load(); got != 2 {
-		t.Errorf("factory calls = %d, want 2", got)
+	if got := ns.NumClients(); got != 2 {
+		t.Errorf("Start() clients = %d, want 2 (one per consumer)", got)
 	}
 }
 
 func TestConsumerShutdownIdempotent(t *testing.T) {
 	t.Parallel()
 
+	ns := startTestNATSServer(t)
 	c, err := New(testAppInfo)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	registerTwo(t, c)
-
-	var shutdowns atomic.Int32
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		return &mockConsumer{shutdownFunc: func(context.Context) error {
-			shutdowns.Add(1)
-			return nil
-		}}, nil
-	}
+	registerTwo(t, c, ns)
 
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -249,12 +243,11 @@ func TestConsumerShutdownIdempotent(t *testing.T) {
 	if err := c.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown() second call error = %v", err)
 	}
-
-	if got := shutdowns.Load(); got != 2 {
-		t.Errorf("consumer Shutdown calls = %d, want 2", got)
-	}
+	waitClients(t, ns, 0)
 }
 
+// TestConsumerStartError checks that Start fails with the context error when the
+// server cannot be reached within its context.
 func TestConsumerStartError(t *testing.T) {
 	t.Parallel()
 
@@ -262,144 +255,145 @@ func TestConsumerStartError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	registerTwo(t, c)
-
-	wantErr := errors.New("connect failed")
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		return nil, wantErr
+	cfg := Config{Endpoints: []string{deadEndpoint}, Topic: "orders", Group: "billing"}
+	if err := c.Register(cfg, func(context.Context, Message) error { return nil }); err != nil {
+		t.Fatalf("Register() error = %v", err)
 	}
 
-	err = c.Start(context.Background())
-	if !errors.Is(err, wantErr) {
-		t.Errorf("Start() error = %v, want %v", err, wantErr)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := c.Start(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Start() error = %v, want %v", err, context.DeadlineExceeded)
 	}
 }
 
+// TestConsumerShutdownError checks that Shutdown returns the context error when a
+// handler is still running at its deadline.
 func TestConsumerShutdownError(t *testing.T) {
 	t.Parallel()
 
+	ns := startTestNATSServer(t)
 	c, err := New(testAppInfo)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	registerTwo(t, c)
 
-	wantErr := errors.New("shutdown failed")
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		return &mockConsumer{shutdownErr: wantErr}, nil
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	entered := make(chan struct{}, 1)
+	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders", Group: "billing"}
+	if err := c.Register(cfg, func(context.Context, Message) error {
+		entered <- struct{}{}
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
 	}
-
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	if err := connectTestClient(t, ns).Publish("orders", []byte("stuck")); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	<-entered
 
-	err = c.Shutdown(context.Background())
-	if !errors.Is(err, wantErr) {
-		t.Errorf("Shutdown() error = %v, want %v", err, wantErr)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := c.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown() error = %v, want %v", err, context.DeadlineExceeded)
 	}
 }
 
 func TestConsumerRegisterWithHandler(t *testing.T) {
 	t.Parallel()
 
+	ns := startTestNATSServer(t)
 	c, err := New(testAppInfo)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	var handlerCalled atomic.Bool
-	handler := func(ctx context.Context, msg Message) error {
-		handlerCalled.Store(true)
+	handled := make(chan struct{}, 1)
+	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders", Group: "billing"}
+	if err := c.Register(cfg, func(ctx context.Context, msg Message) error {
+		handled <- struct{}{}
 		return nil
-	}
-
-	cfg := Config{
-		Endpoints: []string{"localhost:4222"},
-		Topic:     "test-topic",
-		Group:     "test-group",
-	}
-
-	var registeredHandler func(msg jetstream.Msg)
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		return &mockConsumer{
-			consumeFunc: func(h func(msg jetstream.Msg)) error {
-				registeredHandler = h
-				return nil
-			},
-		}, nil
-	}
-
-	if err := c.Register(cfg, handler); err != nil {
+	}); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	if registeredHandler == nil {
-		t.Fatal("Consume() was not called on factory consumer")
+	if err := connectTestClient(t, ns).Publish("orders", []byte("hi")); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	select {
+	case <-handled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler was not called")
+	}
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 
-	msg := &mockMsg{data: []byte("test"), meta: &jetstream.MsgMetadata{NumDelivered: 1}}
-	registeredHandler(msg)
-
-	if !handlerCalled.Load() {
-		t.Error("handler was not called")
+	// The successful handler acked the message, so nothing is left unacked. The
+	// durable consumer is named after the app, the topic, and the group.
+	js, err := jetstream.New(connectTestClient(t, ns))
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
 	}
-	if !msg.acked {
-		t.Error("message was not acked")
+	cons, err := js.Consumer(context.Background(), "orders", "test-app_orders_billing")
+	if err != nil {
+		t.Fatalf("Consumer() error = %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, err := cons.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info() error = %v", err)
+		}
+		if info.NumAckPending == 0 {
+			if info.Delivered.Consumer != 1 {
+				t.Errorf("delivered = %d, want 1", info.Delivered.Consumer)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("NumAckPending = %d after the handler returned, want 0", info.NumAckPending)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
+// TestConsumerStartRollbackOnFailure checks that a failed Start leaves no connection
+// open. One consumer's server is reachable and the other's is not. Start visits the
+// consumers in map order, so the reachable one is connected only when it comes
+// first; either way its connection must be closed when Start fails.
 func TestConsumerStartRollbackOnFailure(t *testing.T) {
 	t.Parallel()
 
+	ns := startTestNATSServer(t)
 	c, err := New(testAppInfo)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	registerTwo(t, c)
-
-	failing := c.buildGroupName("topic2", "group2")
-	var (
-		mu       sync.Mutex
-		created  []string
-		shutdown []string
-	)
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		mu.Lock()
-		created = append(created, durableName)
-		mu.Unlock()
-
-		cn := &mockConsumer{shutdownFunc: func(context.Context) error {
-			mu.Lock()
-			defer mu.Unlock()
-			shutdown = append(shutdown, durableName)
-			return nil
-		}}
-		if durableName == failing {
-			cn.consumeErr = errors.New("subscribe failed")
-		}
-		return cn, nil
+	handler := func(ctx context.Context, msg Message) error { return nil }
+	if err := c.Register(Config{Endpoints: []string{ns.ClientURL()}, Topic: "topic1", Group: "group1"}, handler); err != nil {
+		t.Fatalf("Register(topic1) error = %v", err)
+	}
+	if err := c.Register(Config{Endpoints: []string{deadEndpoint}, Topic: "topic2", Group: "group2"}, handler); err != nil {
+		t.Fatalf("Register(topic2) error = %v", err)
 	}
 
-	err = c.Start(context.Background())
-	if err == nil {
+	// Start runs in name order, so topic1 connects before topic2 fails, and
+	// the rollback must close topic1's connection.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := c.Start(ctx); err == nil {
 		t.Fatal("Start() error = nil, want error")
 	}
-
-	// Map order is random, so the failing consumer may run before or after the
-	// other one. Either way, every consumer that was created must be shut down.
-	mu.Lock()
-	defer mu.Unlock()
-	slices.Sort(created)
-	slices.Sort(shutdown)
-	if !slices.Equal(shutdown, created) {
-		t.Errorf("shutdown = %v, want every created consumer %v", shutdown, created)
-	}
-	if !slices.Contains(shutdown, failing) {
-		t.Errorf("shutdown = %v, want failing consumer %s shut down", shutdown, failing)
-	}
+	waitClients(t, ns, 0)
 	if c.started {
 		t.Error("started = true after Start() failure, want false")
 	}
@@ -453,18 +447,13 @@ func TestConsumerRegisterNilHandler(t *testing.T) {
 func TestShutdown_WithoutStart(t *testing.T) {
 	t.Parallel()
 
+	ns := startTestNATSServer(t)
 	c, err := New(testAppInfo)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	var creates atomic.Int32
-	c.consumerFactory = func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-		creates.Add(1)
-		return &mockConsumer{}, nil
-	}
-
-	cfg := Config{Endpoints: []string{"localhost:4222"}, Topic: "test-topic", Group: "test-group"}
+	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "test-topic", Group: "test-group"}
 	if err := c.Register(cfg, func(ctx context.Context, msg Message) error { return nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -472,8 +461,8 @@ func TestShutdown_WithoutStart(t *testing.T) {
 	if err := c.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown() error = %v, want nil", err)
 	}
-	if got := creates.Load(); got != 0 {
-		t.Errorf("factory calls = %d, want 0", got)
+	if got := ns.NumClients(); got != 0 {
+		t.Errorf("Shutdown() clients = %d, want 0", got)
 	}
 }
 
@@ -592,15 +581,15 @@ func TestConsumer_DefaultFilterSkipsSchedules(t *testing.T) {
 	}
 }
 
-// registerTwo registers two consumers on different topics so lifecycle tests have
-// more than one durable consumer to act on.
-func registerTwo(t *testing.T, c *Consumer) {
+// registerTwo registers two consumers on different topics of ns, so lifecycle tests
+// have more than one durable consumer to act on.
+func registerTwo(t *testing.T, c *Consumer, ns *natsserver.Server) {
 	t.Helper()
 
 	handler := func(ctx context.Context, msg Message) error { return nil }
 	for _, cfg := range []Config{
-		{Endpoints: []string{"localhost:4222"}, Topic: "topic1", Group: "group1"},
-		{Endpoints: []string{"localhost:4222"}, Topic: "topic2", Group: "group2"},
+		{Endpoints: []string{ns.ClientURL()}, Topic: "topic1", Group: "group1"},
+		{Endpoints: []string{ns.ClientURL()}, Topic: "topic2", Group: "group2"},
 	} {
 		if err := c.Register(cfg, handler); err != nil {
 			t.Fatalf("Register(%s) error = %v", cfg.Topic, err)

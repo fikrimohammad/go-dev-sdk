@@ -76,7 +76,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 ### Checkpoint A: rule recall and precision shown; Haiku review of T1–T6 (done)
 ### Wave 2 (parallel)
 - [x] T7: s3 tests on gofakes3; delete the API stubs and seams
-- [ ] T8: nats tests on the embedded server; delete the jsProducer/jsConsumer seams and mocks, except justified stubs
+- [x] T8: nats tests on the embedded server; delete the jsProducer/jsConsumer seams and mocks, except justified stubs
 
 ### Checkpoint A2: Haiku review of T7–T8
 ### Wave 3

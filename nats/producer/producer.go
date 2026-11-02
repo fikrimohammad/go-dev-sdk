@@ -21,39 +21,32 @@ import (
 	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
-// jsProducer defines the subset of NATS JetStream publisher operations used by this package.
-type jsProducer interface {
-	Publish(ctx context.Context, msg *nats.Msg) (*jetstream.PubAck, error)
-	PublishAsync(ctx context.Context, msg *nats.Msg, cb func(ctx context.Context, ack *jetstream.PubAck, err error)) error
-	// Drain closes the connection after pending publishes are flushed. It closes
-	// the connection at once if ctx ends first.
-	Drain(ctx context.Context) error
-	// Close closes the connection without flushing.
-	Close()
-}
-
-// producerFactory connects to the server for cfg and ensures the stream exists. It
-// is bounded by ctx.
-type producerFactory func(ctx context.Context, cfg Config) (jsProducer, error)
-
-type defaultJSProducer struct {
+// streamProducer is the JetStream publisher of one topic, on its own NATS
+// connection.
+type streamProducer struct {
 	nc *nats.Conn
 	js jetstream.JetStream
 }
 
-func (p *defaultJSProducer) Drain(ctx context.Context) error {
+// drain closes the connection after pending publishes are flushed. It closes the
+// connection at once if ctx ends first.
+func (p *streamProducer) drain(ctx context.Context) error {
 	return wire.Drain(ctx, p.nc)
 }
 
-func (p *defaultJSProducer) Close() {
+// close closes the connection without flushing.
+func (p *streamProducer) close() {
 	p.nc.Close()
 }
 
-func (p *defaultJSProducer) Publish(ctx context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
+// publish sends msg and waits for the server's ack.
+func (p *streamProducer) publish(ctx context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
 	return p.js.PublishMsg(ctx, msg)
 }
 
-func (p *defaultJSProducer) PublishAsync(ctx context.Context, msg *nats.Msg, cb func(ctx context.Context, ack *jetstream.PubAck, err error)) error {
+// publishAsync hands msg to the transport and calls cb once the ack arrives or
+// the send fails.
+func (p *streamProducer) publishAsync(ctx context.Context, msg *nats.Msg, cb func(ctx context.Context, ack *jetstream.PubAck, err error)) error {
 	ackF, err := p.js.PublishMsgAsync(msg)
 	if err != nil {
 		return err
@@ -73,9 +66,9 @@ func (p *defaultJSProducer) PublishAsync(ctx context.Context, msg *nats.Msg, cb 
 	return nil
 }
 
-// defaultProducerFactory connects to the first reachable server in cfg.Endpoints
-// and ensures the stream for cfg.Topic exists.
-func defaultProducerFactory(ctx context.Context, cfg Config) (jsProducer, error) {
+// dialProducer connects to the first reachable server in cfg.Endpoints and
+// ensures the stream for cfg.Topic exists. It is bounded by ctx.
+func dialProducer(ctx context.Context, cfg Config) (*streamProducer, error) {
 	nc, err := wire.Connect(ctx, cfg.Topic, wire.Options{
 		Endpoints:       cfg.Endpoints,
 		Timeout:         cfg.Timeout,
@@ -102,7 +95,7 @@ func defaultProducerFactory(ctx context.Context, cfg Config) (jsProducer, error)
 		return nil, fmt.Errorf("producer: ensure stream %s: %w", cfg.Topic, err)
 	}
 
-	return &defaultJSProducer{nc: nc, js: js}, nil
+	return &streamProducer{nc: nc, js: js}, nil
 }
 
 // ensureStream creates the stream for topic when it is missing. An existing stream
@@ -186,8 +179,6 @@ type Client interface {
 //  4. Use PublishSync/PublishAsync to send messages
 //  5. Call Shutdown(ctx) when done
 type Producer struct {
-	producerFactory producerFactory
-
 	metrics metrics.Client
 	tracer  tracer.Client
 
@@ -202,7 +193,7 @@ type Producer struct {
 // WaitGroup, so a callback left over from an earlier cycle cannot affect a later
 // one.
 type run struct {
-	producers    map[string]jsProducer // connected producers, keyed by topic
+	producers    map[string]*streamProducer // connected producers, keyed by topic
 	producerMeta map[string]producerMeta
 	// pending counts the async publishes whose callbacks have not returned yet.
 	pending *sync.WaitGroup
@@ -230,10 +221,9 @@ func New(info identity.Info, opts ...Option) (*Producer, error) {
 	}
 
 	return &Producer{
-		producerFactory: defaultProducerFactory,
-		metrics:         o.metrics,
-		tracer:          o.tracer,
-		configs:         make(map[string]Config),
+		metrics: o.metrics,
+		tracer:  o.tracer,
+		configs: make(map[string]Config),
 	}, nil
 }
 
@@ -330,7 +320,7 @@ func (p *Producer) PublishAsync(ctx context.Context, msg Message,
 			defer pending.Done()
 			cb(cctx, ack, sendErr)
 		}
-		if err := pd.PublishAsync(ctx, nm, done); err != nil {
+		if err := pd.publishAsync(ctx, nm, done); err != nil {
 			pending.Done()
 			return fmt.Errorf("producer: async publish to topic %s: %w", msg.Topic, err)
 		}
@@ -356,11 +346,11 @@ func (p *Producer) Start(ctx context.Context) error {
 		cfgs = append(cfgs, cfg)
 	}
 
-	pds := make([]jsProducer, len(cfgs))
+	pds := make([]*streamProducer, len(cfgs))
 	g, gctx := errgroup.WithContext(ctx)
 	for i, cfg := range cfgs {
 		g.Go(func() error {
-			pd, err := p.producerFactory(gctx, cfg)
+			pd, err := dialProducer(gctx, cfg)
 			if err != nil {
 				return fmt.Errorf("producer: start topic %s: %w", cfg.Topic, err)
 			}
@@ -371,14 +361,14 @@ func (p *Producer) Start(ctx context.Context) error {
 	if err := g.Wait(); err != nil {
 		for _, pd := range pds {
 			if pd != nil {
-				pd.Close()
+				pd.close()
 			}
 		}
 		return err
 	}
 
 	r := &run{
-		producers:    make(map[string]jsProducer, len(cfgs)),
+		producers:    make(map[string]*streamProducer, len(cfgs)),
 		producerMeta: make(map[string]producerMeta, len(cfgs)),
 		pending:      &sync.WaitGroup{},
 	}
@@ -416,14 +406,14 @@ func (p *Producer) Shutdown(ctx context.Context) error {
 	case <-pendingDone:
 	case <-ctx.Done():
 		for _, pd := range r.producers {
-			pd.Close()
+			pd.close()
 		}
 		return ctx.Err()
 	}
 
 	var errs []error
 	for topic, pd := range r.producers {
-		if err := pd.Drain(ctx); err != nil {
+		if err := pd.drain(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("producer: shutdown topic %s: %w", topic, err))
 		}
 	}
@@ -437,7 +427,7 @@ func (p *Producer) sendSync(ctx context.Context, topic string, msg *nats.Msg) (*
 		return nil, err
 	}
 
-	result, err := pd.Publish(ctx, msg)
+	result, err := pd.publish(ctx, msg)
 	if err != nil {
 		return nil, fmt.Errorf("producer: sync send to topic %s: %w", topic, err)
 	}
@@ -458,7 +448,7 @@ func (p *Producer) metaFor(topic string) meta {
 }
 
 // producerFor returns the started producer for topic or ErrProducerNotFound.
-func (p *Producer) producerFor(topic string) (jsProducer, error) {
+func (p *Producer) producerFor(topic string) (*streamProducer, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -473,7 +463,7 @@ func (p *Producer) producerFor(topic string) (jsProducer, error) {
 // acquire returns the started producer for topic and counts one pending async
 // publish in the current run. The caller must call Done on the returned WaitGroup
 // once the callback has returned, or right away if the publish fails.
-func (p *Producer) acquire(topic string) (jsProducer, *sync.WaitGroup, error) {
+func (p *Producer) acquire(topic string) (*streamProducer, *sync.WaitGroup, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 

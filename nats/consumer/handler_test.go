@@ -233,14 +233,14 @@ func TestHandler_NoMetadataIsNakked(t *testing.T) {
 				return nil
 			})
 
-			msg := &mockMsg{subject: "reporting.export", data: []byte("hi"), metaErr: tc.metaErr}
+			msg := &unmetaMsg{metaErr: tc.metaErr}
 			if err := a.HandleMsg(context.Background(), msg); err == nil {
 				t.Fatal("HandleMsg() error = nil, want error")
 			}
 			if called.Load() {
 				t.Fatal("handler was called, want it skipped")
 			}
-			if !msg.nacked {
+			if !msg.nacked.Load() {
 				t.Fatal("message was not nacked")
 			}
 
@@ -261,13 +261,15 @@ func TestHandler_NoMetadataIsNakked(t *testing.T) {
 	}
 }
 
-// regression: a failed ack is logged at Warn and noted on the process span.
+// regression: a failed ack is logged at Warn and noted on the process span. The
+// connection is closed before the handler returns, so the ack cannot reach the
+// server.
 func TestSettle_ErrorIsLogged(t *testing.T) {
 	rl := captureLogs(t)
 	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error { return nil })
 
-	msg := testMsg("hello")
-	msg.ackErr = errors.New("ack timed out")
+	msg, f := deliveredReport(t, "hello")
+	f.nc.Close()
 	if err := a.HandleMsg(context.Background(), msg); err != nil {
 		t.Fatalf("HandleMsg() error = %v", err)
 	}
@@ -285,8 +287,8 @@ func TestSettle_ErrorIsLogged(t *testing.T) {
 	if got := rec.arg("sequence"); got != uint64(1) {
 		t.Errorf("sequence = %v, want 1", got)
 	}
-	if got := rec.arg("error"); got != "ack timed out" {
-		t.Errorf("error = %v, want ack timed out", got)
+	if got := rec.arg("error"); got != nats.ErrConnectionClosed.Error() {
+		t.Errorf("error = %v, want %v", got, nats.ErrConnectionClosed)
 	}
 
 	sp, ok := ex.last()
@@ -298,7 +300,7 @@ func TestSettle_ErrorIsLogged(t *testing.T) {
 			continue
 		}
 		for _, kv := range ev.Attributes {
-			if string(kv.Key) == "error.message" && kv.Value.AsString() == "ack timed out" {
+			if string(kv.Key) == "error.message" && kv.Value.AsString() == nats.ErrConnectionClosed.Error() {
 				return
 			}
 		}
@@ -413,7 +415,8 @@ func TestHandler_ZeroHeartbeatIntervalRuns(t *testing.T) {
 	})
 	a.heartbeatEvery = 0
 
-	if err := a.HandleMsg(context.Background(), testMsg("hi")); err != nil {
+	msg, _ := deliveredReport(t, "hi")
+	if err := a.HandleMsg(context.Background(), msg); err != nil {
 		t.Fatalf("HandleMsg() error = %v", err)
 	}
 	if !called.Load() {
@@ -435,17 +438,21 @@ func TestHandler_CanceledContextNaksWithoutRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	msg := testMsg("late")
+	msg, f := deliveredReport(t, "late")
 	if err := a.HandleMsg(ctx, msg); !errors.Is(err, context.Canceled) {
 		t.Fatalf("HandleMsg() error = %v, want %v", err, context.Canceled)
 	}
 	if called.Load() {
 		t.Fatal("handler was called, want it skipped")
 	}
-	if !msg.nacked {
-		t.Fatal("message was not nacked")
+
+	// A nak with no backoff brings the message back at once, well inside the 2 s
+	// RetryBackoff that setupAdapter configured.
+	again, ok := f.next(t, time.Second)
+	if !ok {
+		t.Fatal("message was not redelivered at once after the nak")
 	}
-	if msg.nakDelay != 0 {
-		t.Errorf("nak delay = %v, want 0", msg.nakDelay)
+	if got := deliveries(t, again); got != 2 {
+		t.Errorf("deliveries = %d, want 2", got)
 	}
 }

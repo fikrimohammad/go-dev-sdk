@@ -2,14 +2,16 @@ package producer
 
 import (
 	"context"
-	"errors"
 	"maps"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -20,13 +22,10 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-servicekit/nats/internal/wire"
 	"github.com/fikrimohammad/go-servicekit/observability/attributes"
 	"github.com/fikrimohammad/go-servicekit/observability/metrics"
 	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
-
-var errSend = errors.New("send failed")
 
 // metric names as the messaging semantic conventions define them.
 const (
@@ -148,9 +147,9 @@ func assertAttrs(t *testing.T, got, want map[string]any) {
 
 // --- fake: producer setup ----------------------------------------------------------
 
-// setupProducer builds a Producer registered with a mock producer and capturing
-// metrics and tracer clients.
-func setupProducer(t *testing.T, mock *mockProducer) (*Producer, *fakeMetrics, *recordingExporter) {
+// setupProducer starts a Producer for topic on ns with capturing metrics and
+// tracer clients.
+func setupProducer(t *testing.T, ns *natsserver.Server, topic string) (*Producer, *fakeMetrics, *recordingExporter) {
 	t.Helper()
 
 	ex := &recordingExporter{}
@@ -158,21 +157,32 @@ func setupProducer(t *testing.T, mock *mockProducer) (*Producer, *fakeMetrics, *
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	fm := &fakeMetrics{}
 
-	p, err := New(testAppInfo, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	startStubbed(t, p, map[string]jsProducer{"reporting": mock})
+	p := startJetStreamProducer(t, ns, topic, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
 	return p, fm, ex
+}
+
+// serverAttrs returns the server.address and server.port a producer on ns reports,
+// read from the URL the producer dials.
+func serverAttrs(t *testing.T, ns *natsserver.Server) (string, int) {
+	t.Helper()
+
+	u, err := url.Parse(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("port of %s error = %v", u, err)
+	}
+	return u.Hostname(), port
 }
 
 // --- tests -------------------------------------------------------------------------
 
 func TestPublishSync_Success(t *testing.T) {
-	mock := &mockProducer{sendSyncFunc: func(ctx context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
-		return &jetstream.PubAck{Stream: "reporting", Sequence: 100}, nil
-	}}
-	p, fm, ex := setupProducer(t, mock)
+	ns := startJetStreamServer(t)
+	p, fm, ex := setupProducer(t, ns, "reporting")
+	host, port := serverAttrs(t, ns)
 
 	if err := p.PublishSync(context.Background(), Message{Topic: "reporting", Tag: "export_report_process", Key: "key-1", Body: []byte("hello")}); err != nil {
 		t.Fatalf("PublishSync: %v", err)
@@ -194,8 +204,8 @@ func TestPublishSync_Success(t *testing.T) {
 		"messaging.operation.name":   "publish",
 		"messaging.operation.type":   "send",
 		"messaging.destination.name": "reporting",
-		"server.address":             "localhost",
-		"server.port":                4222,
+		"server.address":             host,
+		"server.port":                port,
 	}
 	for _, rec := range []metricRec{count, hist} {
 		assertAttrs(t, rec.attrs, wantMetricAttrs)
@@ -218,11 +228,11 @@ func TestPublishSync_Success(t *testing.T) {
 		"messaging.destination.name":  "reporting",
 		"messaging.nats.subject":      "reporting.export_report_process",
 		"messaging.message.body.size": "5",
-		"server.address":              "localhost",
-		"server.port":                 "4222",
+		"server.address":              host,
+		"server.port":                 strconv.Itoa(port),
 		"messaging.nats.message.tag":  "export_report_process",
 		"messaging.nats.message.key":  "key-1",
-		"messaging.message.id":        "100",
+		"messaging.message.id":        "1",
 	}
 	assertAttrs(t, spanAttrs(sp), wantSpanAttrs)
 	if _, ok := spanAttrs(sp)["error.type"]; ok {
@@ -234,8 +244,12 @@ func TestPublishSync_Success(t *testing.T) {
 }
 
 func TestPublishSync_Error(t *testing.T) {
-	mock := &mockProducer{sendSyncErr: errSend}
-	p, _, ex := setupProducer(t, mock)
+	ns := startJetStreamServer(t)
+	p, _, ex := setupProducer(t, ns, "reporting")
+	js := jsContext(t, ns)
+	if err := js.DeleteStream(context.Background(), "reporting"); err != nil {
+		t.Fatalf("DeleteStream() error = %v", err)
+	}
 
 	err := p.PublishSync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")})
 	if err == nil {
@@ -253,8 +267,8 @@ func TestPublishSync_Error(t *testing.T) {
 }
 
 func TestPublishSyncWithDelay_Success(t *testing.T) {
-	mock := &mockProducer{}
-	p, fm, ex := setupProducer(t, mock)
+	ns := startJetStreamServer(t)
+	p, fm, ex := setupProducer(t, ns, "reporting")
 
 	if err := p.PublishSyncWithDelay(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")}, time.Minute); err != nil {
 		t.Fatalf("PublishSyncWithDelay: %v", err)
@@ -263,29 +277,34 @@ func TestPublishSyncWithDelay_Success(t *testing.T) {
 	if _, ok := fm.lastCount(); !ok {
 		t.Fatal("no count recorded")
 	}
-	if _, ok := ex.last(); !ok {
+	sp, ok := ex.last()
+	if !ok {
 		t.Fatal("no span recorded")
 	}
+	assertAttrs(t, spanAttrs(sp), map[string]any{"messaging.nats.subject": "reporting.tag"})
 }
 
 func TestPublishAsync_FullLifecycle(t *testing.T) {
-	called := false
-	mock := &mockProducer{sendAsyncFunc: func(ctx context.Context, msg *nats.Msg, cb func(context.Context, *jetstream.PubAck, error)) error {
-		cb(ctx, &jetstream.PubAck{Stream: "reporting", Sequence: 1}, nil)
-		return nil
-	}}
-	p, fm, ex := setupProducer(t, mock)
+	ns := startJetStreamServer(t)
+	p, fm, ex := setupProducer(t, ns, "reporting")
 
+	done := make(chan *jetstream.PubAck, 1)
 	err := p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "k", Body: []byte("hello")}, func(ctx context.Context, result *jetstream.PubAck, err error) {
-		called = true
-		if result == nil || result.Sequence != 1 {
-			t.Errorf("callback result = %+v", result)
+		if err != nil {
+			t.Errorf("callback error = %v, want nil", err)
 		}
+		done <- result
 	})
 	if err != nil {
 		t.Fatalf("PublishAsync: %v", err)
 	}
-	if !called {
+
+	select {
+	case result := <-done:
+		if result == nil || result.Sequence != 1 {
+			t.Fatalf("callback result = %+v, want sequence 1", result)
+		}
+	case <-time.After(5 * time.Second):
 		t.Fatal("callback was not invoked")
 	}
 
@@ -300,10 +319,10 @@ func TestPublishAsync_FullLifecycle(t *testing.T) {
 }
 
 func TestPublishAsync_SendError(t *testing.T) {
-	mock := &mockProducer{sendAsyncErr: errSend}
-	p, _, ex := setupProducer(t, mock)
+	ns := startJetStreamServer(t)
+	p, _, ex := setupProducer(t, ns, "reporting")
 
-	err := p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")}, nil)
+	err := p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: make([]byte, 2<<20)}, nil)
 	if err == nil {
 		t.Fatal("error = nil, want non-nil")
 	}
@@ -317,17 +336,13 @@ func TestPublishAsync_SendError(t *testing.T) {
 	}
 }
 
-// TestPublish_TraceParenting checks that the traceparent on the sent message names
-// the producer span, so the consumer's span is its child.
+// TestPublish_TraceParenting checks that the traceparent stored with the message
+// names the producer span, so the consumer's span is its child.
 func TestPublish_TraceParenting(t *testing.T) {
 	useTraceContextPropagator(t)
 
-	var captured *nats.Msg
-	mock := &mockProducer{sendSyncFunc: func(_ context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
-		captured = msg
-		return &jetstream.PubAck{}, nil
-	}}
-	p, _, ex := setupProducer(t, mock)
+	ns := startJetStreamServer(t)
+	p, _, ex := setupProducer(t, ns, "reporting")
 
 	if err := p.PublishSync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "key", Body: []byte("hello")}); err != nil {
 		t.Fatalf("PublishSync: %v", err)
@@ -336,8 +351,9 @@ func TestPublish_TraceParenting(t *testing.T) {
 	if !ok {
 		t.Fatal("no span recorded")
 	}
+	stored := readMsgs(t, jsContext(t, ns), "reporting", "reporting.tag", 1)[0]
 
-	parts := strings.Split(captured.Header.Get("traceparent"), "-")
+	parts := strings.Split(stored.Header.Get("traceparent"), "-")
 	if len(parts) != 4 {
 		t.Fatalf("traceparent = %q, want 4 fields", strings.Join(parts, "-"))
 	}
@@ -351,15 +367,13 @@ func TestPublish_TraceParenting(t *testing.T) {
 
 // TestPublish_MetricAttributes is a regression test. The metrics must be the
 // messagingconv instruments with the metric attribute set only: no message id,
-// key, tag, subject, or body size. The sent counter counts successes only.
+// key, tag, subject, or body size. The sent counter counts successes only. The
+// second publish fails inside the server, because its message exceeds the stream's
+// MaxMsgSize, so the failure carries a real JetStream error code.
 func TestPublish_MetricAttributes(t *testing.T) {
 	ctx := context.Background()
-	mock := &mockProducer{sendSyncFunc: func(_ context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
-		if msg.Header.Get(wire.HeaderKey) == "k2" {
-			return nil, &jetstream.APIError{ErrorCode: 10071}
-		}
-		return &jetstream.PubAck{Stream: "orders", Sequence: 42}, nil
-	}}
+	ns := startJetStreamServer(t)
+	createStream(t, ns, jetstream.StreamConfig{Name: "orders", Subjects: []string{"orders"}, MaxMsgSize: 128})
 
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -368,16 +382,13 @@ func TestPublish_MetricAttributes(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
 	t.Cleanup(func() { _ = tp.Shutdown(ctx) })
 
-	p, err := New(testAppInfo, WithMetrics(metrics.Wrap(mp)), WithTracer(tracer.Wrap(tp)))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	startStubbed(t, p, map[string]jsProducer{"orders": mock})
+	p := startJetStreamProducer(t, ns, "orders", WithMetrics(metrics.Wrap(mp)), WithTracer(tracer.Wrap(tp)))
+	host, port := serverAttrs(t, ns)
 
 	if err := p.PublishSync(ctx, Message{Topic: "orders", Tag: "created", Key: "k1", Body: []byte("hello")}); err != nil {
 		t.Fatalf("PublishSync(k1) error = %v, want nil", err)
 	}
-	if err := p.PublishSync(ctx, Message{Topic: "orders", Tag: "created", Key: "k2", Body: []byte("hello")}); err == nil {
+	if err := p.PublishSync(ctx, Message{Topic: "orders", Tag: "created", Key: "k2", Body: make([]byte, 256)}); err == nil {
 		t.Fatal("PublishSync(k2) error = nil, want error")
 	}
 
@@ -400,11 +411,11 @@ func TestPublish_MetricAttributes(t *testing.T) {
 		"messaging.operation.name":   "publish",
 		"messaging.operation.type":   "send",
 		"messaging.destination.name": "orders",
-		"server.address":             "localhost",
-		"server.port":                "4222",
+		"server.address":             host,
+		"server.port":                strconv.Itoa(port),
 	}
 	failed := maps.Clone(base)
-	failed["error.type"] = "10071"
+	failed["error.type"] = "10054"
 	durSets := make([]attribute.Set, 0, len(hist.DataPoints))
 	for _, dp := range hist.DataPoints {
 		durSets = append(durSets, dp.Attributes)
@@ -436,7 +447,7 @@ func TestPublish_MetricAttributes(t *testing.T) {
 		t.Fatalf("span name=%q kind=%v, want %q kind=%v", okSpan.Name(), okSpan.SpanKind(), "publish orders", trace.SpanKindProducer)
 	}
 	assertAttrs(t, spanAttrs(okSpan), map[string]any{
-		"messaging.message.id":        "42",
+		"messaging.message.id":        "1",
 		"messaging.nats.message.key":  "k1",
 		"messaging.nats.message.tag":  "created",
 		"messaging.nats.subject":      "orders.created",
@@ -445,7 +456,7 @@ func TestPublish_MetricAttributes(t *testing.T) {
 	if badSpan.Name() != "publish orders" {
 		t.Fatalf("failed span name = %q, want %q", badSpan.Name(), "publish orders")
 	}
-	assertAttrs(t, spanAttrs(badSpan), map[string]any{"error.type": "10071"})
+	assertAttrs(t, spanAttrs(badSpan), map[string]any{"error.type": "10054"})
 	if _, ok := spanAttrs(badSpan)["messaging.message.id"]; ok {
 		t.Error("failed span has messaging.message.id, want none without an ack")
 	}
