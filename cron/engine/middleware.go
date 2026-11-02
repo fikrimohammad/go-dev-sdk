@@ -7,6 +7,7 @@ import (
 	"net"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -35,6 +36,13 @@ const (
 
 	// attrJobFencingToken is the fencing token attribute, on the span only.
 	attrJobFencingToken = "cron.job.fencing_token"
+
+	// attrJobSkipReason is the skip reason on the cron.job.skipped event:
+	// "disabled", "lock_held", or "running".
+	attrJobSkipReason = "cron.job.skip_reason"
+
+	// eventJobSkipped is the span event that records a skipped run.
+	eventJobSkipped = "cron.job.skipped"
 
 	// errorTypeTimeout is the error.type for a deadline or a timeout.
 	errorTypeTimeout = "timeout"
@@ -65,10 +73,29 @@ type meta struct {
 	trigger string // "scheduled" or "manual"
 	timeout time.Duration
 
+	// inFlight is the engine's set of job names that are running. The overlap
+	// guard uses it, and a nil set disables the guard.
+	inFlight *sync.Map
+
 	toggler cron.Toggler
 	locker  cron.Locker
 	metrics metrics.Client
 	tracer  tracer.Client
+}
+
+// runInfo holds per-run values that an inner middleware sets and the logger
+// reads after the run. The logger puts it in the context.
+type runInfo struct {
+	fencingToken string
+}
+
+// runInfoKey is the context key for the run's runInfo.
+type runInfoKey struct{}
+
+// runInfoFrom returns the run's runInfo, or nil when the logger did not set one.
+func runInfoFrom(ctx context.Context) *runInfo {
+	info, _ := ctx.Value(runInfoKey{}).(*runInfo)
+	return info
 }
 
 // metricsClient returns the injected metrics client, or metrics.Default() when
@@ -102,6 +129,28 @@ func (m meta) baseAttrs(err error) map[string]any {
 		attrs[string(otelsemconv.ErrorTypeKey)] = errorType(err)
 	}
 	return attrs
+}
+
+// skipReason returns the skip reason for a skip sentinel: "disabled",
+// "lock_held", or "running". It reports false for any other error, including nil.
+func skipReason(err error) (string, bool) {
+	switch {
+	case errors.Is(err, cron.ErrJobDisabled):
+		return "disabled", true
+	case errors.Is(err, cron.ErrLockHeld):
+		return "lock_held", true
+	case errors.Is(err, cron.ErrJobRunning):
+		return "running", true
+	default:
+		return "", false
+	}
+}
+
+// isSkip reports whether err is a skip sentinel. A skipped run is not a failure
+// and is not measured.
+func isSkip(err error) bool {
+	_, ok := skipReason(err)
+	return ok
 }
 
 // errorType classifies err for error.type. It never returns err.Error(),
@@ -160,11 +209,30 @@ func (m meta) tracerMW(next cron.HandlerFunc) cron.HandlerFunc {
 
 		err := next(ctx)
 
+		// A skip is not a failure: the status stays unset, and the event says why.
+		if reason, ok := skipReason(err); ok {
+			span.AddEvent(eventJobSkipped, trace.WithAttributes(attribute.String(attrJobSkipReason, reason)))
+			return err
+		}
 		if err != nil {
 			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(tracer.Attrs(m.baseAttrs(err))...)
 		}
-		span.SetAttributes(tracer.Attrs(m.baseAttrs(err))...)
 		return err
+	}
+}
+
+// overlapMW skips the run when the same job is already running on this engine.
+// The skip is returned as cron.ErrJobRunning, so the logger and tracer record it.
+func (m meta) overlapMW(next cron.HandlerFunc) cron.HandlerFunc {
+	return func(ctx context.Context) error {
+		if m.inFlight != nil {
+			if _, loaded := m.inFlight.LoadOrStore(m.job.Name, struct{}{}); loaded {
+				return cron.ErrJobRunning
+			}
+			defer m.inFlight.Delete(m.job.Name)
+		}
+		return next(ctx)
 	}
 }
 
@@ -196,6 +264,9 @@ func (m meta) lockerMW(next cron.HandlerFunc) cron.HandlerFunc {
 				}
 				return fmt.Errorf("cron: lock job %q: %w", m.job.Name, lockErr)
 			}
+			if token == nil {
+				return fmt.Errorf("cron: lock job %q: locker returned no token", m.job.Name)
+			}
 			// Release even when ctx is canceled, and keep its trace values. A
 			// failed unlock doesn't change the job's outcome: the lock expires
 			// with its TTL, so the failure is only noted on the span.
@@ -208,10 +279,15 @@ func (m meta) lockerMW(next cron.HandlerFunc) cron.HandlerFunc {
 				}
 			}()
 
+			fence := token.FencingToken()
 			// The span is started outside this middleware, so the token is set on it
-			// here rather than read back when the span ends.
-			trace.SpanFromContext(ctx).SetAttributes(attribute.String(attrJobFencingToken, token.FencingToken()))
-			ctx = cron.WithFencingToken(ctx, token.FencingToken())
+			// here rather than read back when the span ends. The logger reads it
+			// from the run info after the run.
+			trace.SpanFromContext(ctx).SetAttributes(attribute.String(attrJobFencingToken, fence))
+			if info := runInfoFrom(ctx); info != nil {
+				info.fencingToken = fence
+			}
+			ctx = cron.WithFencingToken(ctx, fence)
 		}
 		return next(ctx)
 	}
@@ -222,6 +298,10 @@ func (m meta) metricsMW(next cron.HandlerFunc) cron.HandlerFunc {
 		start := time.Now()
 		err := next(ctx)
 
+		// A skipped run is logged and traced, not measured.
+		if isSkip(err) {
+			return err
+		}
 		duration := time.Since(start).Seconds()
 		_ = m.metricsClient().Record(ctx, metricJobDurationInstrument, duration, m.baseAttrs(err))
 		return err
@@ -233,6 +313,8 @@ func (m meta) loggerMW(next cron.HandlerFunc) cron.HandlerFunc {
 		start := time.Now()
 		logs.Info(ctx, "cron job started", "job", m.job.Name, "trigger", m.trigger)
 
+		info := &runInfo{}
+		ctx = context.WithValue(ctx, runInfoKey{}, info)
 		err := next(ctx)
 
 		duration := time.Since(start)
@@ -241,8 +323,8 @@ func (m meta) loggerMW(next cron.HandlerFunc) cron.HandlerFunc {
 			"trigger", m.trigger,
 			"duration", duration,
 		}
-		if token, ok := cron.FencingTokenFromContext(ctx); ok {
-			attrs = append(attrs, "fencing_token", token)
+		if info.fencingToken != "" {
+			attrs = append(attrs, "fencing_token", info.fencingToken)
 		}
 		if id := tracer.TraceIDFrom(ctx); id != "" {
 			attrs = append(attrs, "trace_id", id)
@@ -250,7 +332,7 @@ func (m meta) loggerMW(next cron.HandlerFunc) cron.HandlerFunc {
 		switch {
 		case err == nil:
 			logs.Info(ctx, "cron job completed", attrs...)
-		case errors.Is(err, cron.ErrJobDisabled), errors.Is(err, cron.ErrLockHeld), errors.Is(err, cron.ErrJobRunning):
+		case isSkip(err):
 			logs.Info(ctx, "cron job skipped", append(attrs, "reason", err.Error())...)
 		default:
 			logs.Error(ctx, "cron job failed", append(attrs, "error", err)...)
@@ -260,17 +342,20 @@ func (m meta) loggerMW(next cron.HandlerFunc) cron.HandlerFunc {
 }
 
 // buildChain wraps the raw handler in the middleware sequence:
-// tracer -> logger -> toggler -> distributed locker -> metrics -> panic recovery -> handler.
+// tracer -> logger -> overlap guard -> toggler -> metrics -> distributed locker -> panic recovery -> handler.
 // Panic recovery is innermost, so a panic is traced, logged, and measured as a
-// failed run. Only the logger logs the outcome: the toggler and locker return
-// their errors, and a skip is logged at Info and a failure at Error.
+// failed run. Metrics sit outside the locker, so a lock-backend failure is
+// measured, while the skip sentinels are not. Only the logger logs the outcome:
+// a skip is logged at Info and a failure at Error.
 func (m meta) buildChain(handler cron.HandlerFunc) cron.HandlerFunc {
 	return m.tracerMW(
 		m.loggerMW(
-			m.togglerMW(
-				m.lockerMW(
+			m.overlapMW(
+				m.togglerMW(
 					m.metricsMW(
-						m.panicRecovery(handler),
+						m.lockerMW(
+							m.panicRecovery(handler),
+						),
 					),
 				),
 			),

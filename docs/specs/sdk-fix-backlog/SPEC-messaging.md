@@ -153,6 +153,15 @@ These are the motivating bugs:
     - Only the logger logs an outcome. The toggler and locker return their errors
       (`ErrJobDisabled`, `ErrLockHeld`, or a wrapped lock failure) without logging them (C4).
     - The logger logs a skip at Info, not Error.
+    - *Amended 2026-11-02 (owner, Checkpoint A):* the cron chain is tracer → logger →
+      overlap guard → toggler → metrics → locker → panic recovery → handler.
+      - Metrics sit outside the locker, so a lock-backend failure is measured with
+        `error.type`.
+      - The skip sentinels (`ErrJobDisabled`, `ErrLockHeld`, `ErrJobRunning`) are never
+        measured. A skip leaves the span status unset and records a `cron.job.skipped` event.
+      - The overlap guard is a middleware, so an overrun is logged.
+      - An outermost recover in `runJob` keeps a panicking Toggler or Locker from crashing
+        the process.
 14. **cron telemetry** (C1). cron jobs have no semconv. These names are custom and
     `cron.`-namespaced:
     - The `cron.job.runs` counter is dropped, as in data-clients: the count is the histogram's.

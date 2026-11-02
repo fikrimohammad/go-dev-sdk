@@ -3,7 +3,9 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"sync"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/cron"
+	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 )
 
@@ -534,5 +537,304 @@ func TestUnlock_FailureKeepsJobOutcome(t *testing.T) {
 	}
 	if !slices.ContainsFunc(spans[0].Events, func(e sdktrace.Event) bool { return e.Name == "cron.unlock.error" }) {
 		t.Errorf("span events = %v, want a cron.unlock.error event", spans[0].Events)
+	}
+}
+
+// recordedLog is one record seen by recordingLogger.
+type recordedLog struct {
+	level string
+	msg   string
+	args  []any
+}
+
+// arg returns the value that follows key in the record's key/value args.
+func (r recordedLog) arg(key string) any {
+	for i := 0; i+1 < len(r.args); i += 2 {
+		if r.args[i] == key {
+			return r.args[i+1]
+		}
+	}
+	return nil
+}
+
+// recordingLogger implements logs.Logger and keeps every record.
+type recordingLogger struct {
+	mu   sync.Mutex
+	recs []recordedLog
+}
+
+func (r *recordingLogger) add(level, msg string, args []any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recs = append(r.recs, recordedLog{level: level, msg: msg, args: args})
+}
+
+func (r *recordingLogger) Debug(_ context.Context, msg string, args ...any) {
+	r.add("DEBUG", msg, args)
+}
+
+func (r *recordingLogger) Info(_ context.Context, msg string, args ...any) {
+	r.add("INFO", msg, args)
+}
+
+func (r *recordingLogger) Warn(_ context.Context, msg string, args ...any) {
+	r.add("WARN", msg, args)
+}
+
+func (r *recordingLogger) Error(_ context.Context, msg string, args ...any) {
+	r.add("ERROR", msg, args)
+}
+
+// find returns the first record with the given level and message.
+func (r *recordingLogger) find(level, msg string) (recordedLog, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.recs {
+		if rec.level == level && rec.msg == msg {
+			return rec, true
+		}
+	}
+	return recordedLog{}, false
+}
+
+// captureLogs makes the default logger record into the returned value until
+// the test ends.
+func captureLogs(t *testing.T) *recordingLogger {
+	t.Helper()
+	rl := &recordingLogger{}
+	prev := logs.Default()
+	logs.SetDefault(rl)
+	t.Cleanup(func() { logs.SetDefault(prev) })
+	return rl
+}
+
+// TestTracer_SkipIsNotError checks that a skipped run leaves the span status
+// unset, sets no error.type, and records a cron.job.skipped event with its
+// reason.
+func TestTracer_SkipIsNotError(t *testing.T) {
+	tests := []struct {
+		name       string
+		toggler    cron.Toggler
+		locker     cron.Locker
+		wantErr    error
+		wantReason string
+	}{
+		{
+			name:       "disabled",
+			toggler:    &fakeToggler{enabled: false},
+			wantErr:    cron.ErrJobDisabled,
+			wantReason: "disabled",
+		},
+		{
+			name:       "lock held",
+			locker:     &fakeLocker{err: cron.ErrLockHeld},
+			wantErr:    cron.ErrLockHeld,
+			wantReason: "lock_held",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			m := meta{
+				job:     cron.Job{Name: "skip-job"},
+				trigger: "scheduled",
+				timeout: time.Minute,
+				toggler: tc.toggler,
+				locker:  tc.locker,
+				tracer:  providerTracer{tp: tp},
+			}
+
+			err := m.buildChain(func(context.Context) error { return nil })(context.Background())
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("chain() error got %v, want %v", err, tc.wantErr)
+			}
+
+			spans := exporter.GetSpans()
+			if len(spans) != 1 {
+				t.Fatalf("spans got %d, want 1", len(spans))
+			}
+			span := spans[0]
+			if code := span.Status.Code; code != codes.Unset {
+				t.Errorf("span status got %v, want %v", code, codes.Unset)
+			}
+			if _, ok := attrMap(span.Attributes)["error.type"]; ok {
+				t.Errorf("span attributes got error.type, want none")
+			}
+			idx := slices.IndexFunc(span.Events, func(e sdktrace.Event) bool { return e.Name == "cron.job.skipped" })
+			if idx < 0 {
+				t.Fatalf("span events got %v, want a cron.job.skipped event", span.Events)
+			}
+			if got := attrMap(span.Events[idx].Attributes)["cron.job.skip_reason"]; got != tc.wantReason {
+				t.Errorf("cron.job.skip_reason got %q, want %q", got, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestOverlap_SkipIsLogged checks that a second concurrent trigger returns
+// ErrJobRunning, logs the skip at Info, and records it on its span.
+func TestOverlap_SkipIsLogged(t *testing.T) {
+	logRec := captureLogs(t)
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	eng, err := New(Config{}, WithTracer(providerTracer{tp: tp}))
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	started := make(chan struct{})
+	block := make(chan struct{})
+	err = eng.Register(cron.Job{
+		Name:     "overlap-job",
+		Schedule: "@hourly",
+		Handler: func(context.Context) error {
+			close(started)
+			<-block
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		_ = eng.Trigger(context.Background(), "overlap-job")
+	})
+	<-started
+
+	err = eng.Trigger(context.Background(), "overlap-job")
+	close(block)
+	wg.Wait()
+	if !errors.Is(err, cron.ErrJobRunning) {
+		t.Fatalf("overlapping Trigger() got %v, want ErrJobRunning", err)
+	}
+
+	rec, ok := logRec.find("INFO", "cron job skipped")
+	if !ok {
+		t.Fatal("log got no INFO \"cron job skipped\" record, want one")
+	}
+	if got := rec.arg("reason"); got != cron.ErrJobRunning.Error() {
+		t.Errorf("skip log reason got %v, want %q", got, cron.ErrJobRunning.Error())
+	}
+
+	recorded := false
+	for _, s := range exporter.GetSpans() {
+		recorded = recorded || slices.ContainsFunc(s.Events, func(e sdktrace.Event) bool { return e.Name == "cron.job.skipped" })
+	}
+	if !recorded {
+		t.Fatal("no span recorded the cron.job.skipped event, want the overlapping run's span")
+	}
+}
+
+// TestMetrics_LockBackendFailureMeasured checks that a lock-backend failure is
+// measured with error.type, and that a held lock is not measured.
+func TestMetrics_LockBackendFailureMeasured(t *testing.T) {
+	tests := []struct {
+		name      string
+		lockErr   error
+		wantCount int
+		wantType  string
+	}{
+		{
+			name:      "lock backend failure",
+			lockErr:   errors.New("redis connection refused"),
+			wantCount: 1,
+			wantType:  "_OTHER",
+		},
+		{
+			name:      "lock held",
+			lockErr:   cron.ErrLockHeld,
+			wantCount: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			m := meta{
+				job:     cron.Job{Name: "lock-metric-job"},
+				trigger: "scheduled",
+				timeout: time.Minute,
+				locker:  &fakeLocker{err: tc.lockErr},
+				metrics: rec,
+				tracer:  providerTracer{tp: sdktrace.NewTracerProvider()},
+			}
+
+			_ = m.buildChain(func(context.Context) error { return nil })(context.Background())
+
+			var samples []metricRecord
+			for _, r := range rec.records {
+				if r.name == "cron.job.duration" {
+					samples = append(samples, r)
+				}
+			}
+			if len(samples) != tc.wantCount {
+				t.Fatalf("cron.job.duration samples got %d, want %d", len(samples), tc.wantCount)
+			}
+			if tc.wantCount == 1 {
+				if got := samples[0].attrs["error.type"]; got != tc.wantType {
+					t.Errorf("cron.job.duration error.type got %v, want %q", got, tc.wantType)
+				}
+			}
+		})
+	}
+}
+
+// TestLogger_FencingToken checks that the completed-run log carries the fencing
+// token that the locker took.
+func TestLogger_FencingToken(t *testing.T) {
+	logRec := captureLogs(t)
+	m := meta{
+		job:     cron.Job{Name: "fence-log-job"},
+		trigger: "manual",
+		timeout: time.Minute,
+		locker:  &fakeLocker{token: &fakeLockToken{token: "fence-7"}},
+	}
+
+	if err := m.buildChain(func(context.Context) error { return nil })(context.Background()); err != nil {
+		t.Fatalf("chain() got err %v, want nil", err)
+	}
+
+	rec, ok := logRec.find("INFO", "cron job completed")
+	if !ok {
+		t.Fatal("log got no INFO \"cron job completed\" record, want one")
+	}
+	if got := rec.arg("fencing_token"); got != "fence-7" {
+		t.Errorf("completed log fencing_token got %v, want %q", got, "fence-7")
+	}
+}
+
+// timeoutError is a net.Error whose Timeout reports true.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return false }
+
+// TestErrorType checks the error.type classification of each failure class.
+func TestErrorType(t *testing.T) {
+	var _ net.Error = timeoutError{}
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, want: "timeout"},
+		{name: "wrapped deadline", err: fmt.Errorf("lock: %w", context.DeadlineExceeded), want: "timeout"},
+		{name: "canceled", err: context.Canceled, want: "canceled"},
+		{name: "net timeout", err: timeoutError{}, want: "timeout"},
+		{name: "wrapped coded", err: fmt.Errorf("run: %w", codedError{code: 4001}), want: "4001"},
+		{name: "panic", err: fmt.Errorf("%w: boom", errPanic), want: "panic"},
+		{name: "other", err: errors.New("boom"), want: "_OTHER"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := errorType(tc.err); got != tc.want {
+				t.Errorf("errorType(%v) got %q, want %q", tc.err, got, tc.want)
+			}
+		})
 	}
 }

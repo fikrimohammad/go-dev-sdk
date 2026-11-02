@@ -8,11 +8,13 @@ package engine
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
 	robfigcron "github.com/robfig/cron/v3"
 
 	"github.com/fikrimohammad/go-dev-sdk/cron"
+	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
@@ -163,7 +165,21 @@ func (e *Engine) Trigger(ctx context.Context, jobName string) error {
 	return e.runJob(ctx, job, "manual")
 }
 
-func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string) error {
+func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string) (err error) {
+	// Outermost guard: a panic from a Toggler, Locker, or Unlock would otherwise
+	// crash the process on a scheduled run. Handler panics are recovered inside
+	// the chain, so this only sees the panics the chain does not own.
+	defer func() {
+		if r := recover(); r != nil {
+			logs.Error(parentCtx, "cron job panicked",
+				"job", job.Name,
+				"trigger", trigger,
+				"panic", r,
+				"stack", string(debug.Stack()))
+			err = fmt.Errorf("%w: %v", errPanic, r)
+		}
+	}()
+
 	// Guard against starting jobs during or after shutdown.
 	e.mu.RLock()
 	if e.stopping {
@@ -193,20 +209,15 @@ func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string)
 		}
 	}()
 
-	// Skip-on-overlap protection: only 1 in-flight execution per job name locally.
-	if _, loaded := e.inFlight.LoadOrStore(job.Name, struct{}{}); loaded {
-		return cron.ErrJobRunning
-	}
-	defer e.inFlight.Delete(job.Name)
-
 	m := meta{
-		job:     job,
-		trigger: trigger,
-		timeout: timeout,
-		toggler: e.toggler,
-		locker:  e.locker,
-		metrics: e.metrics,
-		tracer:  e.tracer,
+		job:      job,
+		trigger:  trigger,
+		timeout:  timeout,
+		inFlight: &e.inFlight,
+		toggler:  e.toggler,
+		locker:   e.locker,
+		metrics:  e.metrics,
+		tracer:   e.tracer,
 	}
 
 	return m.buildChain(job.Handler)(ctx)
@@ -254,6 +265,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
+		e.stopCancel()
 		return nil
 	case <-ctx.Done():
 		// Canceling stopCtx cancels every active run through its stop watcher.

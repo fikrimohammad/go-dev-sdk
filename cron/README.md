@@ -5,7 +5,7 @@
 ## Features
 
 - **Robfig Cron v3 Integration**: Schedule recurring jobs with 5-field standard expressions (`0 * * * *`), 6-field seconds expressions (`*/15 * * * * *`), and descriptors (`@hourly`, `@every 30s`).
-- **Fixed Middleware Chain**: every run passes through tracer, logger, toggler, distributed locker, metrics, and panic recovery, in that order, before the handler (see [Middleware order](#middleware-order)).
+- **Fixed Middleware Chain**: every run passes through tracer, logger, overlap guard, toggler, metrics, distributed locker, and panic recovery, in that order, before the handler (see [Middleware order](#middleware-order)).
 - **Multi-Replica Safe**: Distributed locking with fencing tokens prevents concurrent job execution across replicas.
 - **Skip-on-Overlap Protection**: If a job execution runs past its next trigger, new triggers are skipped cleanly to prevent race conditions and duplicate processing.
 - **Fail-Safe Policies**:
@@ -96,13 +96,16 @@ func main() {
 
 Each run is wrapped in this chain, outermost first:
 
-1. **Tracer**: starts the `cron.<job name>` span and records the outcome on it.
-2. **Logger**: logs the start, then the outcome. A skip is logged at Info, a failure at Error.
-3. **Toggler**: returns `cron.ErrJobDisabled` when the job is disabled. A toggler error fails open: the job runs, and the error is noted on the span.
-4. **Distributed locker**: takes the lock, sets the fencing token in the context, and releases the lock after the run. A lock error other than `cron.ErrLockHeld` fails closed.
-5. **Metrics**: records `cron.job.duration`.
-6. **Panic recovery**: turns a panic into an error, so the run is traced, logged, and measured as a failure.
-7. **Handler**: your `cron.HandlerFunc`.
+1. **Tracer**: starts the `cron.<job name>` span and records the outcome on it. A skipped run leaves the span status unset and records a `cron.job.skipped` event.
+2. **Logger**: logs the start, then the outcome. A skip is logged at Info, a failure at Error. The completed and failed lines carry the fencing token.
+3. **Overlap guard**: returns `cron.ErrJobRunning` when the same job is already running on this engine.
+4. **Toggler**: returns `cron.ErrJobDisabled` when the job is disabled. A toggler error fails open: the job runs, and the error is noted on the span.
+5. **Metrics**: records `cron.job.duration` for every run except a skip. A lock-backend failure is measured with `error.type`.
+6. **Distributed locker**: takes the lock, sets the fencing token in the context, and releases the lock after the run. A lock error other than `cron.ErrLockHeld` fails closed.
+7. **Panic recovery**: turns a handler panic into an error, so the run is traced, logged, and measured as a failure.
+8. **Handler**: your `cron.HandlerFunc`.
+
+The engine also recovers a panic from the toggler, the locker, or an unlock, and returns it as an error with the stack logged at Error, so a scheduled run never crashes the process.
 
 ---
 
@@ -116,11 +119,14 @@ Each run is wrapped in this chain, outermost first:
 
 - `cron.job.trigger` is `scheduled` or `manual`.
 - `error.type` is the `errs` code for an `*errs.Error` (for example `4001`), `timeout` for a deadline or a network timeout, `canceled`, `panic` for a recovered panic, or `_OTHER` for anything else. The error message is never used as a value.
+- A skipped run (disabled, lock held, or already running) is not measured. The logger and the span record it instead.
 - The fencing token is not a metric attribute, because it changes on every run.
 
 ### Spans
 
 Each run is one internal span named `cron.<job name>`. It carries the same `cron.job.name` and `cron.job.trigger` attributes, plus `error.type` on failure and `cron.job.fencing_token` when the run holds a lock. A failed run sets the span status to error.
+
+A skipped run is not a failure. Its span status stays unset, it has no `error.type`, and it records a `cron.job.skipped` event with the attribute `cron.job.skip_reason`: `disabled`, `lock_held`, or `running`.
 
 ---
 

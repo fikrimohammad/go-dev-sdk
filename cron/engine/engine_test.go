@@ -371,3 +371,64 @@ func TestEngine_Options(t *testing.T) {
 		t.Fatal("toggler or locker = nil, want both set")
 	}
 }
+
+// panickingToggler is a cron.Toggler whose IsEnabled panics.
+type panickingToggler struct{}
+
+func (panickingToggler) IsEnabled(context.Context, string) (bool, error) {
+	panic("toggler exploded")
+}
+
+// TestRunJob_PanickingTogglerDoesNotCrash checks that a panic or a nil lock
+// token outside the handler comes back as an error from Trigger, not a crash.
+func TestRunJob_PanickingTogglerDoesNotCrash(t *testing.T) {
+	tests := []struct {
+		name         string
+		opts         []Option
+		wantPanicLog bool
+	}{
+		{name: "toggler panics", opts: []Option{WithToggler(panickingToggler{})}, wantPanicLog: true},
+		{name: "locker returns nil token", opts: []Option{WithLocker(&fakeLocker{})}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logRec := captureLogs(t)
+			eng, err := New(Config{}, tc.opts...)
+			if err != nil {
+				t.Fatalf("failed to create engine: %v", err)
+			}
+			err = eng.Register(cron.Job{
+				Name:     "panic-job",
+				Schedule: "@hourly",
+				Handler:  func(context.Context) error { return nil },
+			})
+			if err != nil {
+				t.Fatalf("register failed: %v", err)
+			}
+
+			if err := eng.Trigger(context.Background(), "panic-job"); err == nil {
+				t.Fatal("Trigger() got nil error, want the failure")
+			}
+			_, panicLogged := logRec.find("ERROR", "cron job panicked")
+			if panicLogged != tc.wantPanicLog {
+				t.Errorf("ERROR \"cron job panicked\" logged got %t, want %t", panicLogged, tc.wantPanicLog)
+			}
+		})
+	}
+}
+
+// TestEngine_StopCancelsStopContext checks that a successful Stop releases the
+// engine lifetime context.
+func TestEngine_StopCancelsStopContext(t *testing.T) {
+	eng, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	eng.Start()
+	if err := eng.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() got err %v, want nil", err)
+	}
+	if err := eng.stopCtx.Err(); !errors.Is(err, context.Canceled) {
+		t.Errorf("stopCtx Err() got %v, want %v", err, context.Canceled)
+	}
+}
