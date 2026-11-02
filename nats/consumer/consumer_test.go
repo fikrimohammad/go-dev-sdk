@@ -607,3 +607,41 @@ func registerTwo(t *testing.T, c *Consumer) {
 		}
 	}
 }
+
+// regression: Start must return within its context when every server is
+// unreachable, instead of waiting out the AckWait-sized dial timeout.
+func TestStart_BoundedByContext(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cfg := Config{
+		Endpoints: []string{"nats://10.255.255.1:4222", "nats://10.255.255.2:4222"},
+		Topic:     "orders",
+		Group:     "billing",
+	}
+	if err := c.Register(cfg, func(context.Context, []byte) error { return nil }); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- c.Start(ctx) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Start() error = nil, want non-nil")
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("Start() took %v, want about 300ms", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start() did not return within 10s of a 300ms context")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -748,6 +749,182 @@ func TestProducerShutdownError(t *testing.T) {
 
 	err = p.Shutdown(context.Background())
 	if err == nil {
-		t.Error("Shutdown() expected error, got nil")
+		t.Error("Shutdown() error = nil, want non-nil")
+	}
+}
+
+// regression: Start must return within its context when every server is
+// unreachable, instead of waiting out one full dial timeout per server.
+func TestStart_BoundedByContext(t *testing.T) {
+	t.Parallel()
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := p.Register(Config{
+		Endpoints: []string{"nats://10.255.255.1:4222", "nats://10.255.255.2:4222"},
+		Topic:     "orders",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- p.Start(ctx) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Start() error = nil, want non-nil")
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("Start() took %v, want about 300ms", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start() did not return within 10s of a 300ms context")
+	}
+}
+
+// regression: a second Start/Shutdown cycle must not share the pending-callback
+// WaitGroup of the first run. A callback left pending by run one must not hold
+// Shutdown of run two.
+func TestPublishAsync_AcrossRuns(t *testing.T) {
+	t.Parallel()
+
+	cbs := make(chan func(context.Context, *jetstream.PubAck, error), 2)
+	stub := func() *mockProducer {
+		return &mockProducer{sendAsyncFunc: func(_ context.Context, _ *nats.Msg, cb func(context.Context, *jetstream.PubAck, error)) error {
+			cbs <- cb
+			return nil
+		}}
+	}
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.producerFactory = stubFactory(map[string]jsProducer{"orders": stub()})
+	if err := p.Register(testConfig("orders")); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	// Run one: the ack never arrives, so Shutdown hits its deadline.
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start() run one error = %v", err)
+	}
+	if err := p.PublishAsync(context.Background(), "orders", "", "", []byte("one"), nil); err != nil {
+		t.Fatalf("PublishAsync() run one error = %v", err)
+	}
+	firstCb := <-cbs
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := p.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown() run one error = %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	// Run two: its only publish is acked, so Shutdown must return nil.
+	p.producerFactory = stubFactory(map[string]jsProducer{"orders": stub()})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start() run two error = %v", err)
+	}
+	if err := p.PublishAsync(context.Background(), "orders", "", "", []byte("two"), nil); err != nil {
+		t.Fatalf("PublishAsync() run two error = %v", err)
+	}
+	(<-cbs)(context.Background(), &jetstream.PubAck{}, nil)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	if err := p.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() run two error = %v, want nil", err)
+	}
+
+	// Release the run-one callback so its waiter goroutine finishes.
+	firstCb(context.Background(), &jetstream.PubAck{}, nil)
+}
+
+// TestDefaultDrain_Deadline checks that the default producer drain closes the
+// connection and returns the context error when a delivery handler blocks the
+// drain past its deadline.
+func TestDefaultDrain_Deadline(t *testing.T) {
+	t.Parallel()
+
+	ns := startJetStreamServer(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("nats.Connect() error = %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	t.Cleanup(func() { close(release) })
+	if _, err := nc.Subscribe("blocked", func(*nats.Msg) {
+		entered <- struct{}{}
+		<-release
+	}); err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	if err := nc.Publish("blocked", []byte("hold")); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	<-entered
+
+	pd := &defaultJSProducer{nc: nc, js: js}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := pd.Drain(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Drain() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if !nc.IsClosed() {
+		t.Error("Drain() returned with the connection open, want it closed")
+	}
+}
+
+// TestStart_RejectsIncompatibleStream checks that Start fails with the topic and
+// the incompatible setting when an existing stream cannot take schedules.
+func TestStart_RejectsIncompatibleStream(t *testing.T) {
+	t.Parallel()
+
+	ns := startJetStreamServer(t)
+	ctx := context.Background()
+
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("nats.Connect() error = %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:      "orders",
+		Subjects:  []string{"orders"},
+		DenyPurge: true,
+	}); err != nil {
+		t.Fatalf("CreateStream() error = %v", err)
+	}
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := p.Register(Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders"}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	err = p.Start(ctx)
+	const want = "orders: wire: stream orders: DenyPurge is incompatible with message schedules"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Start() error = %v, want it to contain %q", err, want)
 	}
 }

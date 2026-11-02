@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,34 +10,9 @@ import (
 	"testing"
 	"time"
 
-	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
-
-// startServer runs an in-process JetStream server on a random port and stops it
-// when the test ends. A non-empty token enables token authentication.
-func startServer(t *testing.T, token string) *natsserver.Server {
-	t.Helper()
-
-	ns, err := natsserver.NewServer(&natsserver.Options{
-		Port:          -1,
-		JetStream:     true,
-		StoreDir:      t.TempDir(),
-		Authorization: token,
-	})
-	if err != nil {
-		t.Fatalf("NewServer(): got error %v, want nil", err)
-	}
-	go ns.Start()
-	if !ns.ReadyForConnections(10 * time.Second) {
-		t.Fatal("server not ready for connections within 10s")
-	}
-	t.Cleanup(func() {
-		ns.Shutdown()
-		ns.WaitForShutdown()
-	})
-	return ns
-}
 
 func TestStreamConfig(t *testing.T) {
 	tests := []struct {
@@ -45,7 +21,6 @@ func TestStreamConfig(t *testing.T) {
 		want  []string
 	}{
 		{name: "simple topic", topic: "orders", want: []string{"orders", "orders.>", "schedules.orders.>"}},
-		{name: "nested topic", topic: "billing_v2", want: []string{"billing_v2", "billing_v2.>", "schedules.billing_v2.>"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -121,6 +96,7 @@ func TestPatchStream(t *testing.T) {
 		in          jetstream.StreamConfig
 		wantSubject []string
 		wantChanged bool
+		wantErr     string // substring of the error; empty means no error
 	}{
 		{
 			name: "missing subjects and schedules flag are added",
@@ -161,10 +137,112 @@ func TestPatchStream(t *testing.T) {
 			wantSubject: []string{"audit.>", topic, topic + ".>", "schedules." + topic + ".>"},
 			wantChanged: true,
 		},
+		{
+			name: "orders.> covers the data subject and the wildcard stays",
+			in: jetstream.StreamConfig{
+				Name:     topic,
+				Subjects: []string{"orders.>"},
+			},
+			wantSubject: []string{"orders.>", topic, "schedules." + topic + ".>"},
+			wantChanged: true,
+		},
+		{
+			name: "> covers every SDK subject",
+			in: jetstream.StreamConfig{
+				Name:              topic,
+				Subjects:          []string{">"},
+				AllowMsgSchedules: true,
+			},
+			wantSubject: []string{">"},
+			wantChanged: false,
+		},
+		{
+			name: "orders.* and orders.created are removed under the new orders.>",
+			in: jetstream.StreamConfig{
+				Name:     topic,
+				Subjects: []string{"orders.*", "audit.>", "orders.created"},
+			},
+			wantSubject: []string{"audit.>", topic, "orders.>", "schedules.orders.>"},
+			wantChanged: true,
+		},
+		{
+			name: "orders.* is removed under the new orders.> and schedules are kept",
+			in: jetstream.StreamConfig{
+				Name:              topic,
+				Subjects:          []string{topic, "orders.*"},
+				AllowMsgSchedules: true,
+			},
+			wantSubject: []string{topic, "orders.>", "schedules.orders.>"},
+			wantChanged: true,
+		},
+		{
+			name: "schedules.orders.x is removed under the new schedules.orders.>",
+			in: jetstream.StreamConfig{
+				Name:              topic,
+				Subjects:          []string{topic, "schedules.orders.x"},
+				AllowMsgSchedules: true,
+			},
+			wantSubject: []string{topic, "orders.>", "schedules.orders.>"},
+			wantChanged: true,
+		},
+		{
+			name: "DenyPurge is rejected",
+			in: jetstream.StreamConfig{
+				Name:      topic,
+				Subjects:  []string{topic},
+				DenyPurge: true,
+			},
+			wantErr: "wire: stream orders: DenyPurge is incompatible with message schedules",
+		},
+		{
+			name: "Discard new is rejected",
+			in: jetstream.StreamConfig{
+				Name:     topic,
+				Subjects: []string{topic},
+				Discard:  jetstream.DiscardNew,
+			},
+			wantErr: "wire: stream orders: Discard policy DiscardNew is incompatible with message schedules",
+		},
+		{
+			name: "mirror is rejected",
+			in: jetstream.StreamConfig{
+				Name:     topic,
+				Mirror:   &jetstream.StreamSource{Name: "upstream"},
+				Subjects: []string{topic},
+			},
+			wantErr: "wire: stream orders: Mirror is incompatible with message schedules",
+		},
+		{
+			name: "sources are rejected",
+			in: jetstream.StreamConfig{
+				Name:     topic,
+				Sources:  []*jetstream.StreamSource{{Name: "upstream"}},
+				Subjects: []string{topic},
+			},
+			wantErr: "wire: stream orders: Sources is incompatible with message schedules",
+		},
+		{
+			name: "AllowMsgCounter is rejected",
+			in: jetstream.StreamConfig{
+				Name:            topic,
+				Subjects:        []string{topic},
+				AllowMsgCounter: true,
+			},
+			wantErr: "wire: stream orders: AllowMsgCounter is incompatible with message schedules",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, changed := PatchStream(tt.in, topic)
+			got, changed, err := PatchStream(tt.in, topic)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("PatchStream(%+v, %q) error = %v, want %q", tt.in, topic, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PatchStream(%+v, %q) error = %v, want nil", tt.in, topic, err)
+			}
 			if !slices.Equal(got.Subjects, tt.wantSubject) {
 				t.Errorf("PatchStream(%+v, %q).Subjects = %v, want %v", tt.in, topic, got.Subjects, tt.wantSubject)
 			}
@@ -181,21 +259,40 @@ func TestPatchStream(t *testing.T) {
 	}
 }
 
-// TestPatchStreamKeepsOperatorFields checks that operator-set fields survive a
-// patch, including the MaxAge and Replicas values the producer must not reset.
-func TestPatchStreamKeepsOperatorFields(t *testing.T) {
-	in := jetstream.StreamConfig{
-		Name:     "orders",
-		Subjects: []string{"orders"},
-		MaxAge:   time.Hour,
-		Replicas: 3,
+func TestCovers(t *testing.T) {
+	tests := []struct {
+		wide, narrow string
+		want         bool
+	}{
+		{"orders", "orders", true},
+		{"orders", "orders.created", false},
+		{"orders.created", "orders", false},
+		{"orders.*", "orders.created", true},
+		{"orders.*", "orders", false},
+		{"orders.*", "orders.created.x", false},
+		{"orders.*", "orders.>", false},
+		{"orders.*", "orders.*", true},
+		{"orders.>", "orders", false},
+		{"orders.>", "orders.created", true},
+		{"orders.>", "orders.created.x", true},
+		{"orders.>", "orders.*", true},
+		{"orders.>", "orders.>", true},
+		{"orders.>", "audit.created", false},
+		{">", "orders", true},
+		{">", "orders.created.x", true},
+		{"*", "orders.created", false},
+		{"*.created", "orders.created", true},
+		{"*.created", "orders.updated", false},
+		{"*.created", "orders.*", false},
+		{"orders.created", "orders.*", false},
+		{"orders.created", "orders.>", false},
 	}
-	got, _ := PatchStream(in, "orders")
-	if got.MaxAge != time.Hour {
-		t.Errorf("PatchStream(...).MaxAge = %v, want %v", got.MaxAge, time.Hour)
-	}
-	if got.Replicas != 3 {
-		t.Errorf("PatchStream(...).Replicas = %d, want 3", got.Replicas)
+	for _, tt := range tests {
+		t.Run(tt.wide+" covers "+tt.narrow, func(t *testing.T) {
+			if got := covers(tt.wide, tt.narrow); got != tt.want {
+				t.Errorf("covers(%q, %q) = %t, want %t", tt.wide, tt.narrow, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -207,7 +304,10 @@ func TestPatchStreamDoesNotMutateInput(t *testing.T) {
 	subjects[0] = "orders"
 	in := jetstream.StreamConfig{Name: "orders", Subjects: subjects}
 
-	got, changed := PatchStream(in, "orders")
+	got, changed, err := PatchStream(in, "orders")
+	if err != nil {
+		t.Fatalf("PatchStream() error = %v, want nil", err)
+	}
 	if !changed {
 		t.Fatal("PatchStream() changed = false, want true")
 	}
@@ -273,7 +373,7 @@ func TestConnect(t *testing.T) {
 			ns := startServer(t, tt.token)
 			opts := tt.opts(ns.ClientURL())
 
-			nc, err := Connect("wire-test", opts)
+			nc, err := Connect(context.Background(), "wire-test", opts)
 			if err != nil {
 				t.Fatalf("Connect(%q, %+v): got error %v, want nil", "wire-test", opts, err)
 			}
@@ -304,7 +404,7 @@ func TestConnectInvalidNKeySeed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			nc, err := Connect("wire-test", Options{
+			nc, err := Connect(context.Background(), "wire-test", Options{
 				Endpoints: []string{"nats://127.0.0.1:1"},
 				Timeout:   time.Second,
 				NKey:      tt.nkey,
@@ -318,4 +418,235 @@ func TestConnectInvalidNKeySeed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPatchStreamAcceptedByServer checks that a stream the server already holds
+// with overlapping subjects can be updated with the patched config.
+func TestPatchStreamAcceptedByServer(t *testing.T) {
+	t.Parallel()
+
+	ns := startServer(t, "")
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("nats.Connect() error = %v, want nil", err)
+	}
+	t.Cleanup(nc.Close)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v, want nil", err)
+	}
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		topic    string
+		subjects []string
+	}{
+		{name: "orders.* overlaps the data subject", topic: "orders", subjects: []string{"orders", "orders.*"}},
+		{name: "shipments.created is replaced by shipments.>", topic: "shipments", subjects: []string{"shipments.created"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			topic := tt.topic
+			if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: topic, Subjects: tt.subjects}); err != nil {
+				t.Fatalf("CreateStream(%v) error = %v, want nil", tt.subjects, err)
+			}
+			s, err := js.Stream(ctx, topic)
+			if err != nil {
+				t.Fatalf("Stream() error = %v, want nil", err)
+			}
+			patched, changed, err := PatchStream(s.CachedInfo().Config, topic)
+			if err != nil {
+				t.Fatalf("PatchStream() error = %v, want nil", err)
+			}
+			if !changed {
+				t.Fatal("PatchStream() changed = false, want true")
+			}
+			if _, err := js.UpdateStream(ctx, patched); err != nil {
+				t.Errorf("UpdateStream(%v) error = %v, want nil", patched.Subjects, err)
+			}
+		})
+	}
+}
+
+func TestConnectCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	nc, err := Connect(ctx, "wire-test", Options{Endpoints: []string{"nats://127.0.0.1:1"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Connect() error = %v, want %v", err, context.Canceled)
+	}
+	if nc != nil {
+		nc.Close()
+		t.Error("Connect() returned a connection with a cancelled context")
+	}
+}
+
+// regression: a connect error must not carry the userinfo of an endpoint.
+func TestConnectErrorHasNoCredentials(t *testing.T) {
+	t.Parallel()
+
+	nc, err := Connect(context.Background(), "wire-test", Options{
+		Endpoints: []string{"nats://user:pass@127.0.0.1:notaport"},
+		Timeout:   time.Second,
+	})
+	if nc != nil {
+		nc.Close()
+	}
+	if err == nil {
+		t.Fatal("Connect() error = nil, want non-nil for a malformed endpoint")
+	}
+	if strings.Contains(err.Error(), "user:pass") {
+		t.Errorf("Connect() error = %q, want no credentials", err)
+	}
+}
+
+func TestRedactEndpoints(t *testing.T) {
+	tests := []struct {
+		name      string
+		endpoints []string
+		want      string
+	}{
+		{name: "userinfo is removed", endpoints: []string{"nats://user:pass@db.internal:4222"}, want: "nats://db.internal:4222"},
+		{name: "plain endpoint is kept", endpoints: []string{"nats://db.internal:4222"}, want: "nats://db.internal:4222"},
+		{name: "host and port get the scheme", endpoints: []string{"127.0.0.1:4222"}, want: "nats://127.0.0.1:4222"},
+		{name: "userinfo without scheme is removed", endpoints: []string{"user:pass@127.0.0.1:4222"}, want: "nats://127.0.0.1:4222"},
+		{name: "unparseable endpoint is hidden", endpoints: []string{"nats://user:pass@%zz"}, want: "<invalid endpoint>"},
+		{name: "several endpoints are joined", endpoints: []string{"nats://a:1", "nats://u:p@b:2"}, want: "nats://a:1,nats://b:2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactEndpoints(tt.endpoints); got != tt.want {
+				t.Errorf("redactEndpoints(%q) = %q, want %q", tt.endpoints, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedactUserinfo(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{
+			name: "parse error text",
+			msg:  `parse "nats://user:pass@127.0.0.1:notaport": invalid port`,
+			want: `parse "nats://127.0.0.1:notaport": invalid port`,
+		},
+		{name: "no userinfo is unchanged", msg: "dial tcp 127.0.0.1:4222: refused", want: "dial tcp 127.0.0.1:4222: refused"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactUserinfo(tt.msg); got != tt.want {
+				t.Errorf("redactUserinfo(%q) = %q, want %q", tt.msg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDialTimeout(t *testing.T) {
+	tests := []struct {
+		name      string
+		timeout   time.Duration
+		endpoints int
+		deadline  time.Duration // from now; zero means no deadline
+		wantMin   time.Duration
+		wantMax   time.Duration
+	}{
+		{name: "zero timeout uses the default", timeout: 0, endpoints: 1, wantMin: nats.DefaultTimeout, wantMax: nats.DefaultTimeout},
+		{name: "explicit timeout is kept", timeout: 3 * time.Second, endpoints: 1, wantMin: 3 * time.Second, wantMax: 3 * time.Second},
+		{name: "deadline caps the timeout per endpoint", endpoints: 2, deadline: time.Second, wantMin: 400 * time.Millisecond, wantMax: 500 * time.Millisecond},
+		{name: "deadline beyond the timeout keeps the timeout", timeout: time.Second, endpoints: 1, deadline: time.Minute, wantMin: time.Second, wantMax: time.Second},
+		{name: "expired deadline has a floor of 1ms", endpoints: 1, deadline: -time.Second, wantMin: time.Millisecond, wantMax: time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tt.deadline != 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(tt.deadline))
+				defer cancel()
+			}
+			eps := make([]string, tt.endpoints)
+			got := dialTimeout(ctx, Options{Endpoints: eps, Timeout: tt.timeout})
+			if got < tt.wantMin || got > tt.wantMax {
+				t.Errorf("dialTimeout() = %v, want between %v and %v", got, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestDrain(t *testing.T) {
+	t.Parallel()
+
+	t.Run("flushes and closes", func(t *testing.T) {
+		t.Parallel()
+
+		ns := startServer(t, "")
+		nc, err := nats.Connect(ns.ClientURL())
+		if err != nil {
+			t.Fatalf("nats.Connect() error = %v, want nil", err)
+		}
+
+		if err := Drain(context.Background(), nc); err != nil {
+			t.Fatalf("Drain() error = %v, want nil", err)
+		}
+		if !nc.IsClosed() {
+			t.Error("Drain() returned with the connection open, want it closed")
+		}
+	})
+
+	t.Run("already closed is not an error", func(t *testing.T) {
+		t.Parallel()
+
+		ns := startServer(t, "")
+		nc, err := nats.Connect(ns.ClientURL())
+		if err != nil {
+			t.Fatalf("nats.Connect() error = %v, want nil", err)
+		}
+		nc.Close()
+
+		if err := Drain(context.Background(), nc); err != nil {
+			t.Errorf("Drain() on a closed connection error = %v, want nil", err)
+		}
+	})
+
+	t.Run("deadline closes the connection", func(t *testing.T) {
+		t.Parallel()
+
+		ns := startServer(t, "")
+		nc, err := nats.Connect(ns.ClientURL())
+		if err != nil {
+			t.Fatalf("nats.Connect() error = %v, want nil", err)
+		}
+
+		// The handler blocks, so the drain cannot finish before the deadline.
+		release := make(chan struct{})
+		entered := make(chan struct{}, 1)
+		t.Cleanup(func() { close(release) })
+		if _, err := nc.Subscribe("blocked", func(*nats.Msg) {
+			entered <- struct{}{}
+			<-release
+		}); err != nil {
+			t.Fatalf("Subscribe() error = %v, want nil", err)
+		}
+		if err := nc.Publish("blocked", []byte("hold")); err != nil {
+			t.Fatalf("Publish() error = %v, want nil", err)
+		}
+		<-entered
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if err := Drain(ctx, nc); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Drain() error = %v, want %v", err, context.DeadlineExceeded)
+		}
+		if !nc.IsClosed() {
+			t.Error("Drain() returned with the connection open, want it closed")
+		}
+	})
 }

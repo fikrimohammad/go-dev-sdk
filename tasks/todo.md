@@ -203,7 +203,7 @@ and the connection setup:
 **Dependencies:** T7 · **Files:** `cron/engine/middleware.go`, `cron/engine/middleware_test.go`, `cron/engine/config.go`, `cron/*.go` docs, `cron/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 
 ### Checkpoint A: Opus review of T1–T4, T7, T8
-- [ ] The spec criteria hold for cron, and the lifecycle criteria hold for nats; CI is green;
+- [x] The spec criteria hold for cron, and the lifecycle criteria hold for nats; CI is green;
       review fixes are applied.
 
 ## Task 5: producer Message API, headers, delayed publish, trace parenting

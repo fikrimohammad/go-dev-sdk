@@ -70,7 +70,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T4: consumer lifecycle: `Register` without I/O, `Start(ctx)`, bounded `Shutdown(ctx)`, data-subject filter, `DeliverNew` (N2, N3, N4, N14, N18 filter)
 - [x] T8: cron telemetry, docs, recipe, strict (C1, C6, X2–X6, N19)
 
-### Checkpoint A: Opus review of T1–T4, T7, T8
+### Checkpoint A: Opus review of T1–T4, T7, T8 (done; fixes in 4df0457 and the nats fix commit)
 ### Wave 3 (parallel)
 - [ ] T5: producer `Message` API, SDK headers, delayed publish, trace parenting (N5, N9, N13, N18, N20)
 - [ ] T6: consumer `Message` handler, `HandlerTimeout` heartbeat, `ErrNoRetry`, ack logging, panic innermost (N1, N8, N21, X1)

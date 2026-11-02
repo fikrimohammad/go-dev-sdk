@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -71,7 +70,7 @@ func (c *defaultJSConsumer) Shutdown(ctx context.Context) error {
 		c.nc.Close()
 		return err
 	}
-	return c.drainConn(ctx)
+	return wire.Drain(ctx, c.nc)
 }
 
 // quiesce stops new deliveries and waits for the handlers already running. Once
@@ -99,33 +98,13 @@ func (c *defaultJSConsumer) quiesce(ctx context.Context) error {
 	}
 }
 
-// drainConn drains the connection and waits until it is closed. nats.Conn.Drain
-// is asynchronous, so the wait polls IsClosed. ctx bounds the wait.
-func (c *defaultJSConsumer) drainConn(ctx context.Context) error {
-	if err := c.nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
-		c.nc.Close()
-		return fmt.Errorf("consumer: drain connection: %w", err)
-	}
-
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for !c.nc.IsClosed() {
-		select {
-		case <-ctx.Done():
-			c.nc.Close()
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
-	return nil
-}
-
 // defaultConsumerFactory connects, ensures the stream exists, and creates or
 // updates the durable consumer. On error it closes the connection it opened.
 func defaultConsumerFactory(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
-	nc, err := wire.Connect(durableName, wire.Options{
+	// The dial timeout is left to wire, which caps it by ctx. cfg.Timeout is the
+	// AckWait-sized ack timeout, not a dial timeout.
+	nc, err := wire.Connect(ctx, durableName, wire.Options{
 		Endpoints:       cfg.Endpoints,
-		Timeout:         cfg.Timeout,
 		Token:           cfg.Token,
 		Username:        cfg.Username,
 		Password:        cfg.Password,

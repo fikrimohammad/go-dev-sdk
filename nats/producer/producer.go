@@ -39,24 +39,7 @@ type defaultJSProducer struct {
 }
 
 func (p *defaultJSProducer) Drain(ctx context.Context) error {
-	if p.nc.IsClosed() {
-		return nil
-	}
-
-	closed := make(chan struct{})
-	p.nc.SetClosedHandler(func(*nats.Conn) { close(closed) })
-	if err := p.nc.Drain(); err != nil {
-		p.nc.Close()
-		return fmt.Errorf("producer: drain: %w", err)
-	}
-
-	select {
-	case <-closed:
-		return nil
-	case <-ctx.Done():
-		p.nc.Close()
-		return ctx.Err()
-	}
+	return wire.Drain(ctx, p.nc)
 }
 
 func (p *defaultJSProducer) Close() {
@@ -90,7 +73,7 @@ func (p *defaultJSProducer) PublishAsync(ctx context.Context, msg *nats.Msg, cb 
 // defaultProducerFactory connects to the first reachable server in cfg.Endpoints
 // and ensures the stream for cfg.Topic exists.
 func defaultProducerFactory(ctx context.Context, cfg Config) (jsProducer, error) {
-	nc, err := wire.Connect(cfg.Topic, wire.Options{
+	nc, err := wire.Connect(ctx, cfg.Topic, wire.Options{
 		Endpoints:       cfg.Endpoints,
 		Timeout:         cfg.Timeout,
 		Token:           cfg.Token,
@@ -132,7 +115,10 @@ func ensureStream(ctx context.Context, js jetstream.JetStream, topic string) err
 		return err
 	}
 
-	patched, changed := wire.PatchStream(s.CachedInfo().Config, topic)
+	patched, changed, err := wire.PatchStream(s.CachedInfo().Config, topic)
+	if err != nil {
+		return err // already names the stream; the caller adds the producer prefix
+	}
 	if !changed {
 		return nil
 	}
@@ -189,14 +175,21 @@ type Producer struct {
 	metrics metrics.Client
 	tracer  tracer.Client
 
-	// pending counts the async publishes whose callbacks have not returned yet.
-	pending sync.WaitGroup
+	mu      sync.RWMutex
+	configs map[string]Config // registered configs, keyed by topic
+	// run holds the state of the current Start, or nil before Start and after
+	// Shutdown.
+	run *run
+}
 
-	mu           sync.RWMutex
-	started      bool
-	configs      map[string]Config     // registered configs, keyed by topic
-	producers    map[string]jsProducer // connected producers, set by Start
+// run is the state of one Start/Shutdown cycle. Each cycle has its own pending
+// WaitGroup, so a callback left over from an earlier cycle cannot affect a later
+// one.
+type run struct {
+	producers    map[string]jsProducer // connected producers, keyed by topic
 	producerMeta map[string]producerMeta
+	// pending counts the async publishes whose callbacks have not returned yet.
+	pending *sync.WaitGroup
 }
 
 var _ Client = (*Producer)(nil)
@@ -235,7 +228,7 @@ func (p *Producer) Register(cfg Config) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.started {
+	if p.run != nil {
 		return errors.New("producer: cannot register after Start")
 	}
 
@@ -300,17 +293,17 @@ func (p *Producer) PublishAsync(ctx context.Context, topic, tag, key string, mes
 	msg := p.buildMsg(ctx, topic, tag, key, message)
 	targetSubject := msg.Subject
 	return p.metaFor(topic).instrumentPublishAsync(ctx, topic, tag, key, targetSubject, len(message), func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error {
-		pd, err := p.acquire(topic)
+		pd, pending, err := p.acquire(topic)
 		if err != nil {
 			return err
 		}
 
 		done := func(cctx context.Context, ack *jetstream.PubAck, sendErr error) {
-			defer p.pending.Done()
+			defer pending.Done()
 			cb(cctx, ack, sendErr)
 		}
 		if err := pd.PublishAsync(ctx, msg, done); err != nil {
-			p.pending.Done()
+			pending.Done()
 			return fmt.Errorf("producer: async publish to topic %s: %w", topic, err)
 		}
 
@@ -326,7 +319,7 @@ func (p *Producer) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.started {
+	if p.run != nil {
 		return nil
 	}
 
@@ -356,14 +349,17 @@ func (p *Producer) Start(ctx context.Context) error {
 		return err
 	}
 
-	p.producers = make(map[string]jsProducer, len(cfgs))
-	p.producerMeta = make(map[string]producerMeta, len(cfgs))
-	for i, cfg := range cfgs {
-		p.producers[cfg.Topic] = pds[i]
-		addr, port := wire.ServerAddrPort(cfg.Endpoints)
-		p.producerMeta[cfg.Topic] = producerMeta{serverAddr: addr, serverPort: port}
+	r := &run{
+		producers:    make(map[string]jsProducer, len(cfgs)),
+		producerMeta: make(map[string]producerMeta, len(cfgs)),
+		pending:      &sync.WaitGroup{},
 	}
-	p.started = true
+	for i, cfg := range cfgs {
+		r.producers[cfg.Topic] = pds[i]
+		addr, port := wire.ServerAddrPort(cfg.Endpoints)
+		r.producerMeta[cfg.Topic] = producerMeta{serverAddr: addr, serverPort: port}
+	}
+	p.run = r
 	return nil
 }
 
@@ -373,33 +369,32 @@ func (p *Producer) Start(ctx context.Context) error {
 // no-op. It is idempotent.
 func (p *Producer) Shutdown(ctx context.Context) error {
 	p.mu.Lock()
-	if !p.started {
+	r := p.run
+	if r == nil {
 		p.mu.Unlock()
 		return nil
 	}
-	p.started = false
-	producers := p.producers
-	p.producers = nil
+	p.run = nil
 	p.mu.Unlock()
 
-	// No Add can run now: acquire needs the producers map that was just cleared.
+	// No Add can run now: acquire needs the run that was just cleared.
 	pendingDone := make(chan struct{})
 	go func() {
-		p.pending.Wait()
+		r.pending.Wait()
 		close(pendingDone)
 	}()
 
 	select {
 	case <-pendingDone:
 	case <-ctx.Done():
-		for _, pd := range producers {
+		for _, pd := range r.producers {
 			pd.Close()
 		}
 		return ctx.Err()
 	}
 
 	var errs []error
-	for topic, pd := range producers {
+	for topic, pd := range r.producers {
 		if err := pd.Drain(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("producer: shutdown topic %s: %w", topic, err))
 		}
@@ -427,7 +422,10 @@ func (p *Producer) metaFor(topic string) meta {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	pm := p.producerMeta[topic]
+	var pm producerMeta
+	if p.run != nil {
+		pm = p.run.producerMeta[topic]
+	}
 	return meta{serverAddr: pm.serverAddr, serverPort: pm.serverPort, metrics: p.metrics, tracer: p.tracer}
 }
 
@@ -436,26 +434,28 @@ func (p *Producer) producerFor(topic string) (jsProducer, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	pd, ok := p.producers[topic]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrProducerNotFound, topic)
+	if p.run != nil {
+		if pd, ok := p.run.producers[topic]; ok {
+			return pd, nil
+		}
 	}
-	return pd, nil
+	return nil, fmt.Errorf("%w: %s", ErrProducerNotFound, topic)
 }
 
 // acquire returns the started producer for topic and counts one pending async
-// publish. The caller must call p.pending.Done once the callback has returned, or
-// right away if the publish fails.
-func (p *Producer) acquire(topic string) (jsProducer, error) {
+// publish in the current run. The caller must call Done on the returned WaitGroup
+// once the callback has returned, or right away if the publish fails.
+func (p *Producer) acquire(topic string) (jsProducer, *sync.WaitGroup, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	pd, ok := p.producers[topic]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrProducerNotFound, topic)
+	if p.run != nil {
+		if pd, ok := p.run.producers[topic]; ok {
+			p.run.pending.Add(1)
+			return pd, p.run.pending, nil
+		}
 	}
-	p.pending.Add(1)
-	return pd, nil
+	return nil, nil, fmt.Errorf("%w: %s", ErrProducerNotFound, topic)
 }
 
 // buildSubject constructs the target NATS subject. If tag is provided,
