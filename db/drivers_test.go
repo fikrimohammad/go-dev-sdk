@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -134,27 +135,62 @@ func TestMySQLDSN_SSLMode(t *testing.T) {
 }
 
 func TestErrorInfo(t *testing.T) {
-	code, msg := errorInfo(&mysql.MySQLError{Number: 1062, Message: "duplicate entry"})
-	if code != "1062" || msg != "duplicate entry" {
-		t.Fatalf("errorInfo(mysql) = %q, %q", code, msg)
+	cases := []struct {
+		name     string
+		err      error
+		wantCode string
+		wantType string
+	}{
+		{
+			name:     "mysql",
+			err:      &mysql.MySQLError{Number: 1062, Message: "duplicate entry"},
+			wantCode: "1062",
+			wantType: "1062",
+		},
+		{
+			name:     "postgres",
+			err:      &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"},
+			wantCode: "23505",
+			wantType: "23505",
+		},
+		{
+			name:     "wrapped mysql",
+			err:      errors.Join(errors.New("x"), &mysql.MySQLError{Number: 1452, Message: "fk"}),
+			wantCode: "1452",
+			wantType: "1452",
+		},
+		{
+			name:     "wrapped postgres",
+			err:      errors.Join(errors.New("x"), &pgconn.PgError{Code: "40001", Message: "serialization failure"}),
+			wantCode: "40001",
+			wantType: "40001",
+		},
+		{
+			name:     "deadline",
+			err:      context.DeadlineExceeded,
+			wantType: "timeout",
+		},
+		{
+			name:     "canceled",
+			err:      context.Canceled,
+			wantType: "canceled",
+		},
+		{
+			// The message must never leak into error.type.
+			name:     "unknown",
+			err:      errors.New("connection to 10.0.0.5 refused"),
+			wantType: "_OTHER",
+		},
 	}
-
-	code, msg = errorInfo(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"})
-	if code != "23505" || msg != "duplicate key value violates unique constraint" {
-		t.Fatalf("errorInfo(postgres) = %q, %q", code, msg)
-	}
-
-	code, msg = errorInfo(errors.New("boom"))
-	if code != "" || msg != "boom" {
-		t.Fatalf("errorInfo(plain) = %q, %q", code, msg)
-	}
-
-	wrapped := errors.Join(errors.New("x"), &mysql.MySQLError{Number: 1452, Message: "fk"})
-	if code, msg := errorInfo(wrapped); code != "1452" || msg != "fk" {
-		t.Fatalf("errorInfo(wrapped mysql) = %q, %q", code, msg)
-	}
-	wrapped = errors.Join(errors.New("x"), &pgconn.PgError{Code: "40001", Message: "serialization failure"})
-	if code, msg := errorInfo(wrapped); code != "40001" || msg != "serialization failure" {
-		t.Fatalf("errorInfo(wrapped postgres) = %q, %q", code, msg)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, errType := errorInfo(tc.err)
+			if code != tc.wantCode {
+				t.Errorf("code = %q, want %q", code, tc.wantCode)
+			}
+			if errType != tc.wantType {
+				t.Errorf("error.type = %q, want %q", errType, tc.wantType)
+			}
+		})
 	}
 }

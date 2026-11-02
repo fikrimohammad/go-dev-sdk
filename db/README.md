@@ -21,8 +21,9 @@ per executed statement, for **MySQL and PostgreSQL**.
   interfaces describe the contracts; implementations are unexported.
 - **Transactions** — `Begin(ctx)` returns a `Tx` with the same query methods
   plus `Commit` / `Rollback`.
-- **Telemetry** — every executed statement records a client span (`db.query`)
-  and `db.client.operation.{count,duration}` metrics with OTel DB attributes.
+- **Telemetry** — every executed statement records a client span named after
+  its operation (for example `SELECT`) and a `db.client.operation.duration`
+  histogram sample with OTel DB attributes.
   Binding failures return without any telemetry.
 - **Sane pool defaults** for both engines, applied by `Config.SetDefaults`.
 - **Injectable telemetry** — `WithMetrics` / `WithTracer` override the
@@ -197,7 +198,7 @@ When not injected, statements are instrumented through the package-level
   such as `default_query_exec_mode` (useful behind PgBouncer) are not exposed as
   `Config` fields — set them through `DSN`.
 - **Errors.** `db.response.status_code` is the five-character SQLSTATE (for
-  example `23505`); `error.type` is the server message. `errors.As` with
+  example `23505`), and `error.type` carries the same code. `errors.As` with
   `*pgconn.PgError` still works because the original error is returned.
 
 ## TLS / SSL
@@ -221,13 +222,16 @@ config name, set the `tls` parameter through `DSN`.
 
 ## Telemetry attributes
 
-Per executed statement: `db.system.name` (`mysql` or `postgresql`),
-`db.namespace` (the database name), `server.address` and `server.port` (from
-`Config` or parsed from `DSN`, when known), `db.operation.name` (leading SQL
-verb, e.g. `SELECT`), `db.query.text`, `db.response.status_code` (MySQL error
-number or PostgreSQL SQLSTATE, empty on success), and `error.type` (error
-message, empty on success). Transaction begin/commit/rollback are lifecycle
-operations and are not instrumented.
+Per executed statement, the span (named after `db.operation.name`) and the
+`db.client.operation.duration` histogram (seconds) carry `db.system.name`
+(`mysql` or `postgresql`), `db.namespace` (the database name), `server.address`
+and `server.port` (from `Config` or parsed from `DSN`, when known), and
+`db.operation.name` (leading SQL verb, e.g. `SELECT`). On failure they also
+carry `error.type` (the MySQL error number, the PostgreSQL SQLSTATE, `timeout`,
+`canceled`, or `_OTHER`) and, when the driver reports a code,
+`db.response.status_code`. Only the span carries `db.query.text`; it stays off
+the metric to keep cardinality bounded. Transaction begin/commit/rollback are
+lifecycle operations and are not instrumented.
 
 ## Config reference
 

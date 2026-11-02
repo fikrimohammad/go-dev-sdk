@@ -30,11 +30,11 @@ Each task is one commit, with the subject `<type>(<module>): <summary> (<task>, 
 the capability-map link, this plan, and the task list. Open a draft PR whose body links the spec.
 
 **Acceptance criteria:**
-- [ ] One `docs:` commit holds the spec, the map, and the tasks.
-- [ ] A draft PR targets `main`.
+- [x] One `docs:` commit holds the spec, the map, and the tasks.
+- [x] A draft PR targets `main`.
 
 **Verification:**
-- [ ] `gh pr view --json isDraft` reports true.
+- [x] `gh pr view --json isDraft` reports true.
 
 **Dependencies:** None · **Files:** `docs/specs/sdk-fix-backlog/*`, `tasks/*` · **Scope:** XS
 
@@ -51,14 +51,14 @@ the capability-map link, this plan, and the task list. Open a draft PR whose bod
   lacks, stop and report it; the orchestrator tidies.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestInstrument_MetricAttributes`: exact attribute set on success and on
+- [x] *(regression)* `TestInstrument_MetricAttributes`: exact attribute set on success and on
       failure; no `db.query.text` on the metric; the span carries it.
-- [ ] *(regression)* `TestErrorInfo` (rework): MySQL and PostgreSQL errors give their code; an
+- [x] *(regression)* `TestErrorInfo` (rework): MySQL and PostgreSQL errors give their code; an
       unknown error gives `_OTHER`, never its message.
-- [ ] No `db.client.operation.count`, and the span name is the operation name.
+- [x] No `db.client.operation.count`, and the span name is the operation name.
 
 **Verification:**
-- [ ] db module checks (lint new-from-merge-base); coverage ≥ 87.4%.
+- [x] db module checks (lint new-from-merge-base); coverage ≥ 87.4%.
 
 **Dependencies:** T1 · **Files:** `db/db.go`, `db/drivers.go`, `db/db_test.go`, `db/drivers_test.go` · **Scope:** M
 

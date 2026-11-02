@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/url"
@@ -240,20 +241,27 @@ func (d driverSpec) connInfo(cfg Config) connInfo {
 	return info
 }
 
-// errorInfo classifies err into a database response code and a human-readable
-// message:
+// errorInfo classifies err into the db.response.status_code and error.type
+// values. The error message is never returned, so it cannot reach a metric.
 //
-//   - MySQL: the driver error number and its message ("1062", "duplicate entry").
-//   - PostgreSQL: the five-character SQLSTATE and the server message.
-//   - any other error: an empty code and err.Error().
-func errorInfo(err error) (code, message string) {
-	var me *mysql.MySQLError
-	if errors.As(err, &me) {
-		return strconv.Itoa(int(me.Number)), me.Message
+//   - MySQL: the driver error number, as both code and error.type ("1062").
+//   - PostgreSQL: the five-character SQLSTATE, as both code and error.type.
+//   - context.DeadlineExceeded: an empty code and error.type "timeout".
+//   - context.Canceled: an empty code and error.type "canceled".
+//   - any other error: an empty code and error.type "_OTHER".
+func errorInfo(err error) (code, errType string) {
+	if me, ok := errors.AsType[*mysql.MySQLError](err); ok {
+		c := strconv.Itoa(int(me.Number))
+		return c, c
 	}
-	var pe *pgconn.PgError
-	if errors.As(err, &pe) {
-		return pe.Code, pe.Message
+	if pe, ok := errors.AsType[*pgconn.PgError](err); ok {
+		return pe.Code, pe.Code
 	}
-	return "", err.Error()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "", "timeout"
+	case errors.Is(err, context.Canceled):
+		return "", "canceled"
+	}
+	return "", "_OTHER"
 }
