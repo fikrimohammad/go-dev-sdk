@@ -562,11 +562,11 @@ PresignGetObject (s3); Register, Start, Shutdown with a handler (consumer); Regi
 Start, PublishSync (producer). There is no `// Output:`, because these need real servers.
 
 **Acceptance criteria:**
-- [ ] Each example compiles (`go vet ./...`) and appears in `go doc -all`.
-- [ ] No new dependencies.
+- [x] Each example compiles (`go vet ./...`) and appears in `go doc -all`.
+- [x] No new dependencies.
 
 **Verification:**
-- [ ] Module checks pass in db, redis, s3, and nats.
+- [x] Module checks pass in db, redis, s3, and nats.
 
 **Dependencies:** T23, T24
 **Files likely touched:** `db/`, `redis/`, `s3/`, `nats/consumer/`, `nats/producer/` `example_test.go`

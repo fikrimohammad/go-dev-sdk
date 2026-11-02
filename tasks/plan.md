@@ -113,7 +113,7 @@ API is final.
 - [x] T23: R4 cron, db, redis: move interfaces.go into <pkg>.go (wave 1)
 - [x] T24: R3 errors.go in errgroup, identity, attributes, logs, metrics, rest/client, redis, errs (wave 2)
 - [ ] T25: R2 runnable examples: errs, errgroup, attributes, cron, cron/engine, plus a compile-only observability root example (wave 3)
-- [ ] T26: R2 compile-only examples: db, redis, s3, nats/consumer, nats/producer (wave 3)
+- [x] T26: R2 compile-only examples: db, redis, s3, nats/consumer, nats/producer (wave 3)
 
 ### Checkpoint E: conventions complete; Opus review; owner review
 
