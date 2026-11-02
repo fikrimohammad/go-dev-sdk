@@ -18,8 +18,9 @@ Specs:
 
 - [SPEC-foundations.md](SPEC-foundations.md)
 - [SPEC-data-clients.md](SPEC-data-clients.md) (approved 2026-11-02)
-- `SPEC-messaging.md` and `SPEC-guardrails.md` are written when
-  their turn comes, so they can use what earlier PRs taught us.
+- [SPEC-messaging.md](SPEC-messaging.md) (approved 2026-11-02)
+- `SPEC-guardrails.md` is written when its turn comes, so it can use what earlier PRs
+  taught us.
 
 Out of scope for every module: confloader's logic (redesign track, compile-only changes
 here), the release/versioning repair (its own track), and the testing app (migrated once

@@ -165,8 +165,10 @@ Tags: [B] bug, [T] telemetry/semconv, [A] API/design, [C] cleanup/lint.
   - Ack, Nak, Term, and InProgress aren't exposed: the returned error still decides
     ack/nak.
   - Handlers can be unit-tested with a small fake Message, with no server.
-  - Deferred, to be tracked as an issue: InProgress for handlers that run longer than
-    AckWait, and an ErrNoRetry return that terms poison messages.
+  - InProgress for handlers that run longer than AckWait, and an ErrNoRetry return that
+    terms poison messages: in scope for PR 3 (owner decision 2026-11-02), as an automatic
+    heartbeat bounded by Config.HandlerTimeout. A dead-letter queue and query-by-key
+    tooling are separate projects.
 - N19 [C] Add example_test.go testing recipes (sqlmock, miniredis, gofakes3, embedded
   nats-server) for users, per the S1/N12 research.
 
