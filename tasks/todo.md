@@ -101,15 +101,15 @@ then runs recall at `411bb72` and `216b2aa`, and precision on the branch (spec a
   step, then a verify-install job.
 
 **Acceptance criteria:**
-- [ ] `release.sh v0.1.0 --dry-run` passes on the branch.
-- [ ] It fails, with a clear message, on:
+- [x] `release.sh v0.1.0 --dry-run` passes on the branch.
+- [x] It fails, with a clear message, on:
   - a mismatched sibling require;
   - a bad version string;
   - a v2 version on a non-/v2 path;
   - a version already in the proxy (use `v1.0.0` against `go-dev-sdk`, through an override
     of the module prefix, or a stubbed curl).
-- [ ] A bats-free shell test, `.github/scripts/release_test.sh`, runs those cases.
-- [ ] `shellcheck` is clean, if it is available.
+- [x] A bats-free shell test, `.github/scripts/release_test.sh`, runs those cases.
+- [x] `shellcheck` is clean, if it is available.
 
 **Dependencies:** T2 · **Files:** `VERSION`, `.github/scripts/*`, `.github/workflows/release.yml` · **Scope:** M
 

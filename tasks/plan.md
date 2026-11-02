@@ -69,7 +69,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Wave 1 (parallel)
 - [ ] T3: gostyle `error-type-message` and `metric-high-cardinality` rules, with testdata and tests
-- [ ] T4: Release: `VERSION`, `.github/scripts/release.sh` (atomic, dry run, installability), `release.yml`
+- [x] T4: Release: `VERSION`, `.github/scripts/release.sh` (atomic, dry run, installability), `release.yml`
 - [ ] T5: db tests on sqlmock; delete the fake driver where sqlmock covers its cases
 - [ ] T6: redis tests on miniredis; delete the transport stubs and seams
 
