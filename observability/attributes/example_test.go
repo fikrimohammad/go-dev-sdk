@@ -6,7 +6,7 @@ package attributes_test
 import (
 	"fmt"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
+	"github.com/fikrimohammad/go-servicekit/observability/attributes"
 )
 
 func ExampleNormalizeKey() {

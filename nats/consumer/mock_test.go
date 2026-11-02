@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-servicekit/identity"
 )
 
 // testAppInfo is the service identity used across the consumer tests.

@@ -14,12 +14,12 @@ import (
 	"syscall"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs"
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
-	"github.com/fikrimohammad/go-dev-sdk/rest/server"
+	"github.com/fikrimohammad/go-servicekit/errs"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/rest/server"
 	"go.opentelemetry.io/otel"
 )
 

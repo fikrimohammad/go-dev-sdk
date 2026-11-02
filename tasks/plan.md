@@ -64,8 +64,8 @@ The four client modules have 10,995 lines of tests in total.
 Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Phase 0: Setup
-- [ ] T1: Commit the spec and plan, and open a draft PR
-- [ ] T2: Rename the module path to go-servicekit, and set sibling requires to v0.1.0
+- [x] T1: Commit the spec and plan, and open a draft PR (#19)
+- [x] T2: Rename the module path to go-servicekit, and set sibling requires to v0.1.0
 
 ### Wave 1 (parallel)
 - [ ] T3: gostyle `error-type-message` and `metric-high-cardinality` rules, with testdata and tests

@@ -32,7 +32,7 @@ per executed statement, for **MySQL and PostgreSQL**.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/db
+go get github.com/fikrimohammad/go-servicekit/db
 ```
 
 The PostgreSQL driver is a regular module dependency, so `Driver: "pgx"` (or
@@ -279,7 +279,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/fikrimohammad/go-dev-sdk/db"
+	"github.com/fikrimohammad/go-servicekit/db"
 )
 
 func TestInsert(t *testing.T) {

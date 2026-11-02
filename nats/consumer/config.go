@@ -7,7 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
+	"github.com/fikrimohammad/go-servicekit/nats/internal/wire"
 )
 
 // Defaults applied by Config.SetDefaults when the corresponding field is unset.

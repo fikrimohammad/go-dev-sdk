@@ -15,7 +15,7 @@ Specs:
 - [SPEC-rest-server.md](SPEC-rest-server.md)
 - [SPEC-rest-client.md](SPEC-rest-client.md)
 
-Release: one Go module, `github.com/fikrimohammad/go-dev-sdk/rest`, tagged
+Release: one Go module, `github.com/fikrimohammad/go-servicekit/rest`, tagged
 `rest/v0.1.0` by hand with `release.yml` (manual since 2026-11-01). Version
 1.0.0 is a deliberate later decision.
 

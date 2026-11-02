@@ -1,4 +1,4 @@
-# go-dev-sdk
+# go-servicekit
 
 Personal go-to SDK for building Go applications.
 
@@ -8,17 +8,17 @@ Each package is an independent Go module, importable directly:
 
 | Module | Import path | Purpose |
 | --- | --- | --- |
-| `errs` | `github.com/fikrimohammad/go-dev-sdk/errs` | Structured errors carrying an integer code, cause, metadata, and stack |
-| `errgroup` | `github.com/fikrimohammad/go-dev-sdk/errgroup` | Concurrency-limited, panic-safe errgroup wrapper |
-| `identity` | `github.com/fikrimohammad/go-dev-sdk/identity` | Standardized service identity (name/version/env) |
-| `observability` | `github.com/fikrimohammad/go-dev-sdk/observability` | OpenTelemetry logs, metrics, and traces |
-| `confloader` | `github.com/fikrimohammad/go-dev-sdk/confloader` | Layered config: file + dynamic (etcd) + secrets (Infisical) |
-| `rest` | `github.com/fikrimohammad/go-dev-sdk/rest` | Hertz HTTP server and client for gateway services: fixed telemetry, edge-safe defaults, RFC 9457 errors |
-| `cron` | `github.com/fikrimohammad/go-dev-sdk/cron` | Recurring job scheduler with robfig/cron and middleware pipeline |
-| `db` | `github.com/fikrimohammad/go-dev-sdk/db` | sqlx-based MySQL/PostgreSQL pool with named queries and telemetry |
-| `nats` | `github.com/fikrimohammad/go-dev-sdk/nats` | NATS JetStream producer/consumer with middleware and telemetry |
-| `redis` | `github.com/fikrimohammad/go-dev-sdk/redis` | Redis client with metrics/tracing |
-| `s3` | `github.com/fikrimohammad/go-dev-sdk/s3` | AWS S3 client with multipart upload and presigned URLs |
+| `errs` | `github.com/fikrimohammad/go-servicekit/errs` | Structured errors carrying an integer code, cause, metadata, and stack |
+| `errgroup` | `github.com/fikrimohammad/go-servicekit/errgroup` | Concurrency-limited, panic-safe errgroup wrapper |
+| `identity` | `github.com/fikrimohammad/go-servicekit/identity` | Standardized service identity (name/version/env) |
+| `observability` | `github.com/fikrimohammad/go-servicekit/observability` | OpenTelemetry logs, metrics, and traces |
+| `confloader` | `github.com/fikrimohammad/go-servicekit/confloader` | Layered config: file + dynamic (etcd) + secrets (Infisical) |
+| `rest` | `github.com/fikrimohammad/go-servicekit/rest` | Hertz HTTP server and client for gateway services: fixed telemetry, edge-safe defaults, RFC 9457 errors |
+| `cron` | `github.com/fikrimohammad/go-servicekit/cron` | Recurring job scheduler with robfig/cron and middleware pipeline |
+| `db` | `github.com/fikrimohammad/go-servicekit/db` | sqlx-based MySQL/PostgreSQL pool with named queries and telemetry |
+| `nats` | `github.com/fikrimohammad/go-servicekit/nats` | NATS JetStream producer/consumer with middleware and telemetry |
+| `redis` | `github.com/fikrimohammad/go-servicekit/redis` | Redis client with metrics/tracing |
+| `s3` | `github.com/fikrimohammad/go-servicekit/s3` | AWS S3 client with multipart upload and presigned URLs |
 
 ## Development
 

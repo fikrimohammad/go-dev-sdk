@@ -13,8 +13,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/nats/producer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/nats/producer"
 )
 
 // ExampleNew publishes an "order created" event to the "orders" topic.

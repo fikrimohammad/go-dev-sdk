@@ -18,10 +18,10 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/nats/consumer"
-	"github.com/fikrimohammad/go-dev-sdk/nats/producer"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/nats/consumer"
+	"github.com/fikrimohammad/go-servicekit/nats/producer"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 type orderEvent struct {

@@ -3,7 +3,7 @@ package confloader
 import (
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client"
+	"github.com/fikrimohammad/go-servicekit/confloader/client"
 )
 
 // Provider identifies the backend that stores the configuration/secrets.

@@ -11,7 +11,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/fikrimohammad/go-dev-sdk/redis"
+	"github.com/fikrimohammad/go-servicekit/redis"
 )
 
 // ExampleNew stores a session token with a time-to-live and reads it back,

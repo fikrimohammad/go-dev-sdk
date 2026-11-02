@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/nats/consumer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/nats/consumer"
 )
 
 // ExampleNew consumes messages from the "orders" topic as the "billing" group

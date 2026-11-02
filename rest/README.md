@@ -9,13 +9,13 @@ calls with safe retries, deadlines that hold, and the same telemetry. It never
 sends trace context, request IDs, or baggage to a vendor.
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/rest
+go get github.com/fikrimohammad/go-servicekit/rest
 ```
 
 Packages:
 
-- `github.com/fikrimohammad/go-dev-sdk/rest/server` - the HTTP server (documented below).
-- `github.com/fikrimohammad/go-dev-sdk/rest/client` - the HTTP client (documented below).
+- `github.com/fikrimohammad/go-servicekit/rest/server` - the HTTP server (documented below).
+- `github.com/fikrimohammad/go-servicekit/rest/client` - the HTTP client (documented below).
 
 ## Server
 
@@ -36,12 +36,12 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs"
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
-	"github.com/fikrimohammad/go-dev-sdk/rest/server"
+	"github.com/fikrimohammad/go-servicekit/errs"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/rest/server"
 	"go.opentelemetry.io/otel"
 )
 
@@ -164,8 +164,8 @@ import (
 	"net/http"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs"
-	"github.com/fikrimohammad/go-dev-sdk/rest/server"
+	"github.com/fikrimohammad/go-servicekit/errs"
+	"github.com/fikrimohammad/go-servicekit/rest/server"
 )
 
 func registerWebhooks(srv *server.Server, secret []byte) {
@@ -413,7 +413,7 @@ import (
 
 	hclient "github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/fikrimohammad/go-dev-sdk/rest/client"
+	"github.com/fikrimohammad/go-servicekit/rest/client"
 )
 
 func newTaxClient() (*hclient.Client, error) {
@@ -605,7 +605,7 @@ import (
 	"net/http"
 
 	hclient "github.com/cloudwego/hertz/pkg/app/client"
-	"github.com/fikrimohammad/go-dev-sdk/rest/client"
+	"github.com/fikrimohammad/go-servicekit/rest/client"
 )
 
 // paymentSDK stands in for a vendor SDK that takes an *http.Client.

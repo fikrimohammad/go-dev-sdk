@@ -19,7 +19,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/config"
 	herrs "github.com/cloudwego/hertz/pkg/common/errors"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/fikrimohammad/go-dev-sdk/rest/internal/semconv"
+	"github.com/fikrimohammad/go-servicekit/rest/internal/semconv"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"

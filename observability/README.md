@@ -60,10 +60,10 @@ for every module.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/observability
+go get github.com/fikrimohammad/go-servicekit/observability
 ```
 
-> Each signal imports `github.com/fikrimohammad/go-dev-sdk/observability/logs`,
+> Each signal imports `github.com/fikrimohammad/go-servicekit/observability/logs`,
 > `.../metrics`, `.../tracer`, or `.../attributes` directly.
 
 ## Step-by-step

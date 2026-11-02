@@ -16,7 +16,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
 )
 
 // startTestNATSServer starts an in-process NATS server with JetStream enabled

@@ -36,7 +36,7 @@ const (
 // -ldflags; when left empty, [Resolve] falls back to the running binary's build
 // information:
 //
-//	-ldflags "-X github.com/fikrimohammad/go-dev-sdk/identity.version=1.4.2"
+//	-ldflags "-X github.com/fikrimohammad/go-servicekit/identity.version=1.4.2"
 var version string
 
 // buildVersion reports the version of the main module recorded in the binary's

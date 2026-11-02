@@ -14,7 +14,7 @@ client with standard AWS SDK types and automatic OpenTelemetry tracing + metrics
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/s3
+go get github.com/fikrimohammad/go-servicekit/s3
 ```
 
 ## Step-by-step
@@ -174,7 +174,7 @@ import (
     "github.com/johannesboyne/gofakes3"
     "github.com/johannesboyne/gofakes3/backend/s3mem"
 
-    "github.com/fikrimohammad/go-dev-sdk/s3"
+    "github.com/fikrimohammad/go-servicekit/s3"
 )
 
 backend := s3mem.New()

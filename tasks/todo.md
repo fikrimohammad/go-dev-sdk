@@ -29,8 +29,8 @@ capability map, this plan, and the task list. Open a draft PR on `fikrimohammad/
 that links the spec.
 
 **Acceptance criteria:**
-- [ ] One `docs:` commit holds them.
-- [ ] A draft PR targets `main`.
+- [x] One `docs:` commit holds them.
+- [x] A draft PR targets `main`.
 
 **Verification:** `gh pr view --json isDraft` reports true.
 
@@ -51,10 +51,10 @@ that links the spec.
 - Run `go mod tidy` per module, then `go work vendor`.
 
 **Acceptance criteria:**
-- [ ] `grep -rn 'go-dev-sdk' --exclude-dir=vendor .` matches only the history lines that
+- [x] `grep -rn 'go-dev-sdk' --exclude-dir=vendor .` matches only the history lines that
       record the rename in `docs/ideas/sdk-fix-backlog.md` and the specs.
-- [ ] `grep -h 'go-servicekit/[a-z]* v' */go.mod | sort -u` shows only `v0.1.0`.
-- [ ] Every module passes the module checks.
+- [x] `grep -h 'go-servicekit/[a-z]* v' */go.mod | sort -u` shows only `v0.1.0`.
+- [x] Every module passes the module checks.
 
 **Dependencies:** T1 · **Files:** about 106 files across all modules · **Scope:** M (mechanical)
 

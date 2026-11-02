@@ -23,7 +23,7 @@ convention of an `Err` prefix on the `ErrName` sentinel.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/identity
+go get github.com/fikrimohammad/go-servicekit/identity
 ```
 
 ## Resolution
@@ -67,7 +67,7 @@ call, so behaviour is identical everywhere.
 can replace at link time:
 
 ```bash
-go build -ldflags "-X github.com/fikrimohammad/go-dev-sdk/identity.version=1.4.2" ./cmd/api
+go build -ldflags "-X github.com/fikrimohammad/go-servicekit/identity.version=1.4.2" ./cmd/api
 ```
 
 Builds that cannot use `-ldflags` (for example `go install`) fall back to the
@@ -139,7 +139,7 @@ info := identity.Resolve(func(key string) (string, bool) {
 
 | Before | After |
 | --- | --- |
-| `github.com/fikrimohammad/go-dev-sdk/appinfo` | `github.com/fikrimohammad/go-dev-sdk/identity` |
+| `github.com/fikrimohammad/go-servicekit/appinfo` | `github.com/fikrimohammad/go-servicekit/identity` |
 | `appinfo.Info` | `identity.Info` |
 | `appinfo.Default()` | `identity.Default()` |
 | `appinfo.DefaultName`, `DefaultVersion`, `DefaultEnvironment` | `identity.Placeholder()` |

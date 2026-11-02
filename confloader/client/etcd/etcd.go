@@ -8,7 +8,7 @@ import (
 
 	"go.etcd.io/etcd/client/v3"
 
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client"
+	"github.com/fikrimohammad/go-servicekit/confloader/client"
 )
 
 // Client implements client.Client against etcd.

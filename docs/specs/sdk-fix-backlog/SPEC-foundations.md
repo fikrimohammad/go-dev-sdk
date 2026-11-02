@@ -285,7 +285,7 @@ on every exported identifier; sentinel errors prefixed with the package name; `e
 5. `grep -rnw 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
    finds nothing. No `*.go`, go.mod or go.sum file mentions goconvey (the `.golangci.yml`
    depguard rule that bans it is intentional).
-6. `.golangci.yml`'s ireturn allow-list includes `github.com/fikrimohammad/go-dev-sdk/`.
+6. `.golangci.yml`'s ireturn allow-list includes `github.com/fikrimohammad/go-servicekit/`.
    AGENTS.md documents that client packages may export and return a caller-facing
    interface so users can generate mocks.
 7. `go doc -all` for each changed package shows no unresolved links or stale references

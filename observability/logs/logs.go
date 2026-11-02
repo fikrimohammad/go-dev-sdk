@@ -13,8 +13,8 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/observability/attributes"
 )
 
 // Logger emits structured log records. All methods accept a context for trace

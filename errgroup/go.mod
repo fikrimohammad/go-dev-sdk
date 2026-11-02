@@ -1,4 +1,4 @@
-module github.com/fikrimohammad/go-dev-sdk/errgroup
+module github.com/fikrimohammad/go-servicekit/errgroup
 
 go 1.26.5
 

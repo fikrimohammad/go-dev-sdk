@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/fikrimohammad/go-dev-sdk/errs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/errs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
 )
 
 // ErrsCodeKey is the custom attribute key that carries the code of a bound

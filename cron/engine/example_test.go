@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fikrimohammad/go-dev-sdk/cron"
-	"github.com/fikrimohammad/go-dev-sdk/cron/engine"
+	"github.com/fikrimohammad/go-servicekit/cron"
+	"github.com/fikrimohammad/go-servicekit/cron/engine"
 )
 
 func ExampleEngine_Trigger() {

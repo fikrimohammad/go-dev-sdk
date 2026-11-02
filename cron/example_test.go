@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fikrimohammad/go-dev-sdk/cron"
+	"github.com/fikrimohammad/go-servicekit/cron"
 )
 
 func ExampleWithFencingToken() {

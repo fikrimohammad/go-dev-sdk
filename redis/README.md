@@ -31,7 +31,7 @@ executed command.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/redis
+go get github.com/fikrimohammad/go-servicekit/redis
 ```
 
 ## Step-by-step
@@ -49,7 +49,7 @@ Examples use two imports: the SDK package as `redis`, and go-redis as `goredis` 
 import (
     goredis "github.com/redis/go-redis/v9"
 
-    "github.com/fikrimohammad/go-dev-sdk/redis"
+    "github.com/fikrimohammad/go-servicekit/redis"
 )
 ```
 
@@ -260,7 +260,7 @@ import (
 
     "github.com/alicebob/miniredis/v2"
 
-    "github.com/fikrimohammad/go-dev-sdk/redis"
+    "github.com/fikrimohammad/go-servicekit/redis"
 )
 
 func TestCache(t *testing.T) {

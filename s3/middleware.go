@@ -10,7 +10,7 @@ import (
 	"github.com/aws/smithy-go/middleware"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 // instrumentationMiddlewareID is the unique middleware identifier registered in the Smithy stack.

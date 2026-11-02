@@ -24,7 +24,7 @@ A concurrency-limited, panic-safe wrapper around
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/errgroup
+go get github.com/fikrimohammad/go-servicekit/errgroup
 ```
 
 ## Step-by-step

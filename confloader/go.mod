@@ -1,4 +1,4 @@
-module github.com/fikrimohammad/go-dev-sdk/confloader
+module github.com/fikrimohammad/go-servicekit/confloader
 
 go 1.26.5
 
@@ -68,8 +68,8 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
+replace github.com/fikrimohammad/go-servicekit/identity => ../identity
 
-replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
+replace github.com/fikrimohammad/go-servicekit/errs => ../errs
 
-replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
+replace github.com/fikrimohammad/go-servicekit/observability => ../observability

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/fikrimohammad/go-dev-sdk/errs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/rest/internal/semconv"
+	"github.com/fikrimohammad/go-servicekit/errs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/rest/internal/semconv"
 )
 
 func TestInstruments(t *testing.T) {

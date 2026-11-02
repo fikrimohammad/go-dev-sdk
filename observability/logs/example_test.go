@@ -4,8 +4,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
 )
 
 func ExampleNew() {

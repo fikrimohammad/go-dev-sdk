@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client"
+	"github.com/fikrimohammad/go-servicekit/confloader/client"
 )
 
 // ExampleNew shows the intended usage: declare a config struct of Getter[T]

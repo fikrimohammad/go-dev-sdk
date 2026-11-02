@@ -1,4 +1,4 @@
-module github.com/fikrimohammad/go-dev-sdk/s3
+module github.com/fikrimohammad/go-servicekit/s3
 
 go 1.26.5
 
@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.3.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.1
 	github.com/aws/smithy-go v1.27.7
-	github.com/fikrimohammad/go-dev-sdk/observability v1.0.0
+	github.com/fikrimohammad/go-servicekit/observability v0.1.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/metric v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
@@ -33,7 +33,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0 // indirect
+	github.com/fikrimohammad/go-servicekit/identity v0.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -52,6 +52,6 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
+replace github.com/fikrimohammad/go-servicekit/observability => ../observability
 
-replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
+replace github.com/fikrimohammad/go-servicekit/identity => ../identity

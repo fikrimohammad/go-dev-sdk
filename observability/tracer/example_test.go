@@ -3,7 +3,7 @@ package tracer_test
 import (
 	"context"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 func ExampleClient_Tracer() {

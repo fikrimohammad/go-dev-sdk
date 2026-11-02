@@ -14,7 +14,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-servicekit/identity"
 )
 
 // maxInt64Value is the largest value representable as an int64 attribute.

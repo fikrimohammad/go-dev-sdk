@@ -31,9 +31,9 @@ alert/dashboard template repo depends on it; changing it is a breaking change.
 
 ## Tech Stack
 
-- Go 1.26.5 (from `go.work`); module `github.com/fikrimohammad/go-dev-sdk/rest`.
+- Go 1.26.5 (from `go.work`); module `github.com/fikrimohammad/go-servicekit/rest`.
 - `github.com/cloudwego/hertz` v0.10.6 (server; `ut` for tests).
-- `github.com/fikrimohammad/go-dev-sdk/observability` (`metrics.Client`,
+- `github.com/fikrimohammad/go-servicekit/observability` (`metrics.Client`,
   `tracer.Client`, `logs`), `errs`, `identity` (tests only), using local
   `replace` directives like other modules.
 - `go.opentelemetry.io/otel` v1.45.0: `trace`, `propagation`, `codes`,
@@ -60,7 +60,7 @@ go doc -all ./server   # doc links resolve, no stray brackets
 
 ```
 rest/
-  go.mod                       module github.com/fikrimohammad/go-dev-sdk/rest
+  go.mod                       module github.com/fikrimohammad/go-servicekit/rest
   README.md                    usage, middleware order, contract
   parity_test.go               (added by rest-client) client ↔ server end-to-end
   internal/semconv/

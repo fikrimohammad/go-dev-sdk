@@ -39,8 +39,8 @@ import (
 	"go.opentelemetry.io/otel/semconv/v1.43.0/rpcconv"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 // tracerScope is the OTel instrumentation scope name.

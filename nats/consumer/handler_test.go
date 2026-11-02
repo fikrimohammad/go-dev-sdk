@@ -11,7 +11,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
+	"github.com/fikrimohammad/go-servicekit/nats/internal/wire"
 )
 
 // regression: Shutdown cancels a running handler's ctx, and the handler's deadline is
