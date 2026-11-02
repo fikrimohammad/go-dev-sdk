@@ -70,13 +70,13 @@ that links the spec.
 - Standard library only.
 
 **Acceptance criteria:**
-- [ ] `testdata/bad` triggers each new rule in each shape: a direct literal, a builder
+- [x] `testdata/bad` triggers each new rule in each shape: a direct literal, a builder
       function, an index write, an identifier from `err.Error()`, and a builder that returns
       `err.Error()`.
-- [ ] `testdata/good` has the safe shapes (a cloned span-only map, a coded `error.type`, a
+- [x] `testdata/good` has the safe shapes (a cloned span-only map, a coded `error.type`, a
       bounded key) and reports nothing.
-- [ ] `TestTelemetryRules_Table` covers each key form.
-- [ ] Existing rules are unchanged; `TestCheck` passes.
+- [x] `TestTelemetryRules_Table` covers each key form.
+- [x] Existing rules are unchanged; `TestCheck` passes.
 
 **Verification:** `GOWORK=off go test -count=1 gostyle.go gostyle_test.go`. The orchestrator
 then runs recall at `411bb72` and `216b2aa`, and precision on the branch (spec assumption 4).
