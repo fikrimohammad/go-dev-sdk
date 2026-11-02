@@ -101,7 +101,7 @@ defer cli.Close()
 `New` applies defaults (`Port=6379`, `ConnectTimeout=5s`), pings the server,
 and returns an instrumented `redis.UniversalClient`. The ping is bounded by both
 `ctx` and `ConnectTimeout`, so pass a context that carries your startup deadline.
-`Close` releases the connection pool and stops the pool-metrics poller.
+`Close` stops the pool-metrics poller, waits for it to exit, and releases the connection pool.
 
 ### 2. Read and write
 
@@ -232,6 +232,19 @@ The span (named after the command, or `PIPELINE`) carries the same attributes
 plus `db.query.text`, with values redacted as `?`. Pipeline spans of two or more
 commands also carry `db.operation.batch.size`. Neither is set on the metric, to keep its
 cardinality bounded.
+
+## Pool metrics
+
+`WithPoolMetrics(interval)` polls the connection pool and records two semconv
+metrics, both with `db.client.connection.pool.name` set to
+`<server.address>:<server.port>`:
+
+- `db.client.connection.count` (up-down counter, `{connection}`) with
+  `db.client.connection.state` set to `idle` or `used`.
+- `db.client.connection.timeouts` (counter, `{timeout}`).
+
+Each poll records the change since the previous poll. `Close` stops the poller,
+waits for it to exit, and withdraws its connections, so the count returns to zero.
 
 ## Config reference
 

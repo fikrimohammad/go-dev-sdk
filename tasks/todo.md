@@ -198,12 +198,12 @@ the integration tests' call sites.
 - One poll helper; no duplicated branches (R2).
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestPoolMetrics`: driving PoolStats through a sequence (via a stubbed stats
+- [x] *(regression)* `TestPoolMetrics`: driving PoolStats through a sequence (via a stubbed stats
       source) gives the right running count per state and timeout total; after `Close`, the
       poller has exited (WaitGroup).
 
 **Verification:**
-- [ ] redis module checks; coverage ≥ 68.2%.
+- [x] redis module checks; coverage ≥ 68.2%.
 
 **Dependencies:** T6 · **Files:** `redis/redis.go`, `redis/redis_test.go` · **Scope:** M
 

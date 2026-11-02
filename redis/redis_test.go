@@ -778,6 +778,205 @@ func TestClient_Close_WithPoolMetrics(t *testing.T) {
 	}
 }
 
+// poolTestName is the db.client.connection.pool.name the pool tests expect.
+const poolTestName = "cache.example.com:6380"
+
+// poolSums collects r and returns the summed value of the named int64 sum per
+// db.client.connection.state, keyed by state ("" for a point without one). It
+// fails when a point's attribute keys are not exactly wantKeys or when its pool
+// name is wrong. The returned metric has an empty Name when no point exists yet.
+func poolSums(t *testing.T, r *sdkmetric.ManualReader, name string, wantKeys ...string) (map[string]int64, metricdata.Metrics) {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := r.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	wantKeys = slices.Clone(wantKeys)
+	slices.Sort(wantKeys)
+
+	sums := make(map[string]int64)
+	var found metricdata.Metrics
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			found = m
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("%s data type = %T, want metricdata.Sum[int64]", name, m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				attrs := make(map[string]string)
+				for _, kv := range dp.Attributes.ToSlice() {
+					attrs[string(kv.Key)] = kv.Value.AsString()
+				}
+				if got := slices.Sorted(maps.Keys(attrs)); !slices.Equal(got, wantKeys) {
+					t.Errorf("%s attribute keys = %v, want %v", name, got, wantKeys)
+				}
+				if got := attrs["db.client.connection.pool.name"]; got != poolTestName {
+					t.Errorf("%s pool.name = %q, want %q", name, got, poolTestName)
+				}
+				sums[attrs["db.client.connection.state"]] += dp.Value
+			}
+		}
+	}
+	return sums, found
+}
+
+func TestPoolMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	tests := []struct {
+		name         string
+		stats        *redis.PoolStats
+		wantIdle     int64 // running count, state=idle
+		wantUsed     int64 // running count, state=used
+		wantTimeouts int64 // running total of timeouts
+	}{
+		{"first poll", &redis.PoolStats{TotalConns: 3, IdleConns: 2, Timeouts: 0}, 2, 1, 0},
+		{"second poll", &redis.PoolStats{TotalConns: 5, IdleConns: 1, Timeouts: 2}, 1, 4, 2},
+		{"third poll", &redis.PoolStats{TotalConns: 2, IdleConns: 2, Timeouts: 2}, 2, 0, 2},
+	}
+
+	var cur *redis.PoolStats
+	p := &poolPoller{
+		stats:   func() *redis.PoolStats { return cur },
+		metrics: func() metrics.Client { return metrics.Wrap(mp) },
+		pool:    poolTestName,
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cur = tt.stats
+			p.poll(context.Background())
+
+			counts, cm := poolSums(t, reader, "db.client.connection.count",
+				"db.client.connection.pool.name", "db.client.connection.state")
+			if cm.Name != "" {
+				if cm.Unit != "{connection}" {
+					t.Errorf("count unit = %q, want %q", cm.Unit, "{connection}")
+				}
+				if cm.Data.(metricdata.Sum[int64]).IsMonotonic {
+					t.Error("count IsMonotonic = true, want false")
+				}
+			}
+			if got := counts["idle"]; got != tt.wantIdle {
+				t.Errorf("count{state=idle} = %d, want %d", got, tt.wantIdle)
+			}
+			if got := counts["used"]; got != tt.wantUsed {
+				t.Errorf("count{state=used} = %d, want %d", got, tt.wantUsed)
+			}
+
+			timeouts, tm := poolSums(t, reader, "db.client.connection.timeouts", "db.client.connection.pool.name")
+			if tm.Name != "" {
+				if tm.Unit != "{timeout}" {
+					t.Errorf("timeouts unit = %q, want %q", tm.Unit, "{timeout}")
+				}
+				if !tm.Data.(metricdata.Sum[int64]).IsMonotonic {
+					t.Error("timeouts IsMonotonic = false, want true")
+				}
+			}
+			if got := timeouts[""]; got != tt.wantTimeouts {
+				t.Errorf("timeouts = %d, want %d", got, tt.wantTimeouts)
+			}
+		})
+	}
+}
+
+func TestPoolMetrics_StopWithdrawsCounts(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	polled := make(chan struct{}, 1)
+	p := &poolPoller{
+		stats: func() *redis.PoolStats {
+			select {
+			case polled <- struct{}{}:
+			default:
+			}
+			return &redis.PoolStats{TotalConns: 3, IdleConns: 2, Timeouts: 1}
+		},
+		metrics:  func() metrics.Client { return metrics.Wrap(mp) },
+		pool:     poolTestName,
+		interval: time.Millisecond,
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.run(context.Background(), stop)
+	}()
+	select {
+	case <-polled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poller never polled the stats source")
+	}
+	close(stop)
+	<-done
+
+	counts, cm := poolSums(t, reader, "db.client.connection.count",
+		"db.client.connection.pool.name", "db.client.connection.state")
+	if cm.Name == "" {
+		t.Fatal("count metric absent after polling, want data points")
+	}
+	for _, state := range []string{"idle", "used"} {
+		if got := counts[state]; got != 0 {
+			t.Errorf("count{state=%s} after stop = %d, want 0", state, got)
+		}
+	}
+}
+
+func TestClient_Close_WaitsForPoller(t *testing.T) {
+	raw := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = raw.Close() })
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	stop := make(chan struct{})
+	c := &client{UniversalClient: raw, stopPoolMetrics: stop}
+	p := &poolPoller{
+		stats: func() *redis.PoolStats {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release // the poller is stuck here until the test releases it
+			return &redis.PoolStats{}
+		},
+		metrics:  func() metrics.Client { return metrics.Noop() },
+		pool:     poolTestName,
+		interval: time.Millisecond,
+	}
+	c.pollers.Go(func() { p.run(context.Background(), stop) })
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poller never polled the stats source")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the poller was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return after the poller was released")
+	}
+	// A second Close must not panic or block.
+	_ = c.Close()
+}
+
 func TestCreateUnderlyingClient_Topologies(t *testing.T) {
 	// 1. Standalone
 	standaloneCfg := Config{

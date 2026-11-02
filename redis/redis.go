@@ -4,7 +4,7 @@
 // New builds a go-redis client from a Config, attaches an instrumentation
 // hook, pings the server to verify the connection, and returns a
 // [redis.UniversalClient] with the full go-redis command set. Its Close also
-// stops the pool-metrics poller. Metrics and tracing clients are injectable
+// stops the pool-metrics poller and waits for it to exit. Metrics and tracing clients are injectable
 // via WithMetrics / WithTracer and fall back to the OTel global providers.
 //
 // Instrumentation rides go-redis' hook pipeline, so every command, current
@@ -67,36 +67,22 @@ var (
 		Unit:        dbconv.ClientOperationDuration{}.Unit(),
 		Description: dbconv.ClientOperationDuration{}.Description(),
 	}
-	poolHitsInstrument = metrics.Instrument{
-		Name:        "db.client.connections.hits",
-		Unit:        "{connection}",
-		Description: "Redis connection pool hits",
-	}
-	poolMissesInstrument = metrics.Instrument{
-		Name:        "db.client.connections.misses",
-		Unit:        "{connection}",
-		Description: "Redis connection pool misses",
+	// poolCountInstrument and poolTimeoutsInstrument are the pool metrics from
+	// the dbconv semantic convention.
+	poolCountInstrument = metrics.Instrument{
+		Name:        dbconv.ClientConnectionCount{}.Name(),
+		Unit:        dbconv.ClientConnectionCount{}.Unit(),
+		Description: dbconv.ClientConnectionCount{}.Description(),
 	}
 	poolTimeoutsInstrument = metrics.Instrument{
-		Name:        "db.client.connections.timeouts",
-		Unit:        "{connection}",
-		Description: "Redis connection pool timeouts",
+		Name:        dbconv.ClientConnectionTimeouts{}.Name(),
+		Unit:        dbconv.ClientConnectionTimeouts{}.Unit(),
+		Description: dbconv.ClientConnectionTimeouts{}.Description(),
 	}
-	poolStaleInstrument = metrics.Instrument{
-		Name:        "db.client.connections.stale",
-		Unit:        "{connection}",
-		Description: "Redis stale connections",
-	}
-	poolTotalInstrument = metrics.Instrument{
-		Name:        "db.client.connections.total",
-		Unit:        "{connection}",
-		Description: "Redis current total connections",
-	}
-	poolIdleInstrument = metrics.Instrument{
-		Name:        "db.client.connections.idle",
-		Unit:        "{connection}",
-		Description: "Redis current idle connections",
-	}
+
+	// poolStateIdle and poolStateUsed are the db.client.connection.state values.
+	poolStateIdle = otelsemconv.DBClientConnectionStateIdle.Value.AsString()
+	poolStateUsed = otelsemconv.DBClientConnectionStateUsed.Value.AsString()
 )
 
 // meta carries the attributes held by every instrumented command.
@@ -151,7 +137,11 @@ func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
 
-// WithPoolMetrics enables background collection of connection pool metrics (hits, misses, timeouts, conns) at the given interval.
+// WithPoolMetrics enables background collection of connection pool metrics at
+// the given interval. Each poll records db.client.connection.count (up-down
+// counter, state "idle" or "used") and db.client.connection.timeouts (counter).
+// Both carry db.client.connection.pool.name ("<server.address>:<server.port>").
+// Close stops the poller and waits for it to exit.
 func WithPoolMetrics(interval time.Duration) Option {
 	return func(o *options) { o.poolMetricsInterval = interval }
 }
@@ -160,7 +150,7 @@ func WithPoolMetrics(interval time.Duration) Option {
 // the resulting config (standalone, sentinel, or cluster), attaches the
 // instrumentation hook, and pings it. The ping is bounded by both ctx and
 // cfg.ConnectTimeout. The returned client is a [redis.UniversalClient]; its
-// Close also stops the pool-metrics poller.
+// Close also stops the pool-metrics poller and waits for it to exit.
 func New(ctx context.Context, cfg Config, opts ...Option) (redis.UniversalClient, error) { //nolint:ireturn // returns go-redis UniversalClient by design
 	var o options
 	for _, opt := range opts {
@@ -191,15 +181,14 @@ func New(ctx context.Context, cfg Config, opts ...Option) (redis.UniversalClient
 		}
 	}
 
-	cli.AddHook(&instrumentHook{
-		meta: meta{
-			serverAddr: serverAddr,
-			serverPort: serverPort,
-			namespace:  strconv.Itoa(cfg.DB),
-			metrics:    o.metrics,
-			tracer:     o.tracer,
-		},
-	})
+	m := meta{
+		serverAddr: serverAddr,
+		serverPort: serverPort,
+		namespace:  strconv.Itoa(cfg.DB),
+		metrics:    o.metrics,
+		tracer:     o.tracer,
+	}
+	cli.AddHook(&instrumentHook{meta: m})
 
 	pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
 	defer cancel()
@@ -208,85 +197,22 @@ func New(ctx context.Context, cfg Config, opts ...Option) (redis.UniversalClient
 		return nil, fmt.Errorf("redis: ping: %w", err)
 	}
 
-	var stopCh chan struct{}
+	c := &client{UniversalClient: cli}
 	if o.poolMetricsInterval > 0 {
-		mClient := o.metrics
+		c.stopPoolMetrics = make(chan struct{})
+		p := &poolPoller{
+			stats:    cli.PoolStats,
+			metrics:  m.metricsClient,
+			pool:     net.JoinHostPort(serverAddr, strconv.Itoa(serverPort)),
+			interval: o.poolMetricsInterval,
+		}
 		// The poller outlives the startup ctx, so it keeps the ctx values but not its cancellation.
 		pollCtx := context.WithoutCancel(ctx)
-		stopCh = make(chan struct{})
-		baseAttrs := map[string]any{
-			"server.address": serverAddr,
-			"server.port":    serverPort,
-			"db.system.name": "redis",
-			"db.namespace":   strconv.Itoa(cfg.DB),
-		}
-		go func(c redis.UniversalClient, m metrics.Client, interval time.Duration, stop <-chan struct{}, attrs map[string]any) {
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			var prevHits, prevMisses, prevTimeouts, prevStale uint32
-			for {
-				select {
-				case <-stop:
-					return
-				case <-ticker.C:
-					stats := c.PoolStats()
-					if stats == nil {
-						continue
-					}
-					mCtx := pollCtx
-
-					hitsDelta := int64(stats.Hits - prevHits)
-					prevHits = stats.Hits
-
-					missesDelta := int64(stats.Misses - prevMisses)
-					prevMisses = stats.Misses
-
-					timeoutsDelta := int64(stats.Timeouts - prevTimeouts)
-					prevTimeouts = stats.Timeouts
-
-					staleDelta := int64(stats.StaleConns - prevStale)
-					prevStale = stats.StaleConns
-
-					if m != nil {
-						if hitsDelta > 0 {
-							_ = m.Add(mCtx, poolHitsInstrument, hitsDelta, attrs)
-						}
-						if missesDelta > 0 {
-							_ = m.Add(mCtx, poolMissesInstrument, missesDelta, attrs)
-						}
-						if timeoutsDelta > 0 {
-							_ = m.Add(mCtx, poolTimeoutsInstrument, timeoutsDelta, attrs)
-						}
-						if staleDelta > 0 {
-							_ = m.Add(mCtx, poolStaleInstrument, staleDelta, attrs)
-						}
-						_ = m.RecordGauge(mCtx, poolTotalInstrument, float64(stats.TotalConns), attrs)
-						_ = m.RecordGauge(mCtx, poolIdleInstrument, float64(stats.IdleConns), attrs)
-					} else {
-						if hitsDelta > 0 {
-							_ = metrics.Add(mCtx, poolHitsInstrument, hitsDelta, attrs)
-						}
-						if missesDelta > 0 {
-							_ = metrics.Add(mCtx, poolMissesInstrument, missesDelta, attrs)
-						}
-						if timeoutsDelta > 0 {
-							_ = metrics.Add(mCtx, poolTimeoutsInstrument, timeoutsDelta, attrs)
-						}
-						if staleDelta > 0 {
-							_ = metrics.Add(mCtx, poolStaleInstrument, staleDelta, attrs)
-						}
-						_ = metrics.RecordGauge(mCtx, poolTotalInstrument, float64(stats.TotalConns), attrs)
-						_ = metrics.RecordGauge(mCtx, poolIdleInstrument, float64(stats.IdleConns), attrs)
-					}
-				}
-			}
-		}(cli, mClient, o.poolMetricsInterval, stopCh, baseAttrs)
+		stop := c.stopPoolMetrics
+		c.pollers.Go(func() { p.run(pollCtx, stop) })
 	}
 
-	return &client{
-		UniversalClient: cli,
-		stopPoolMetrics: stopCh,
-	}, nil
+	return c, nil
 }
 
 // createUnderlyingClient instantiates the concrete go-redis client for the configured topology.
@@ -439,22 +365,98 @@ func buildTLSConfig(cfg Config) (*tls.Config, error) {
 }
 
 // client wraps a go-redis UniversalClient. Close is the only method it
-// overrides: it stops the pool-metrics poller before closing the pool.
+// overrides: it stops the pool-metrics poller, waits for it to exit, and then
+// closes the pool.
 type client struct {
 	redis.UniversalClient
 	stopPoolMetrics chan struct{}
 	stopOnce        sync.Once
+	pollers         sync.WaitGroup
 }
 
-// Close stops the pool-metrics poller, if one runs, and releases the
-// underlying connection pool.
+// Close stops the pool-metrics poller, if one runs, waits until it has exited,
+// and releases the underlying connection pool. It is safe to call more than once.
 func (c *client) Close() error {
-	if c.stopPoolMetrics != nil {
-		c.stopOnce.Do(func() {
+	c.stopOnce.Do(func() {
+		if c.stopPoolMetrics != nil {
 			close(c.stopPoolMetrics)
-		})
-	}
+		}
+	})
+	c.pollers.Wait()
 	return c.UniversalClient.Close()
+}
+
+// poolPoller records the connection pool of one go-redis client as semconv
+// metrics. Each poll records only the change since the previous poll, so the
+// up-down counter holds the current number of connections per state.
+type poolPoller struct {
+	stats    func() *redis.PoolStats // snapshot source; a nil snapshot is skipped
+	metrics  func() metrics.Client   // resolved per record, as meta.metricsClient does
+	pool     string                  // db.client.connection.pool.name
+	interval time.Duration
+
+	prevIdle, prevUsed int64
+	prevTimeouts       uint32
+}
+
+// run polls every interval until stop is closed. Its final step withdraws the
+// connections it last reported, so the count returns to zero for this pool.
+func (p *poolPoller) run(ctx context.Context, stop <-chan struct{}) {
+	ticker := time.NewTicker(p.interval)
+	defer ticker.Stop()
+	defer p.withdraw(ctx)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			p.poll(ctx)
+		}
+	}
+}
+
+// poll reads the pool stats once and records their deltas since the last poll.
+func (p *poolPoller) poll(ctx context.Context) {
+	s := p.stats()
+	if s == nil {
+		return
+	}
+	idle := int64(s.IdleConns)
+	used := int64(s.TotalConns) - idle
+	p.addCount(ctx, idle-p.prevIdle, used-p.prevUsed)
+	p.prevIdle, p.prevUsed = idle, used
+
+	if d := int64(s.Timeouts - p.prevTimeouts); d > 0 {
+		_ = p.metrics().Add(ctx, poolTimeoutsInstrument, d, p.attrs(""))
+	}
+	p.prevTimeouts = s.Timeouts
+}
+
+// withdraw records the negation of the last reported counts.
+func (p *poolPoller) withdraw(ctx context.Context) {
+	p.addCount(ctx, -p.prevIdle, -p.prevUsed)
+	p.prevIdle, p.prevUsed = 0, 0
+}
+
+// addCount records the non-zero idle and used deltas on the count instrument.
+func (p *poolPoller) addCount(ctx context.Context, idleDelta, usedDelta int64) {
+	m := p.metrics()
+	if idleDelta != 0 {
+		_ = m.AddUpDown(ctx, poolCountInstrument, idleDelta, p.attrs(poolStateIdle))
+	}
+	if usedDelta != 0 {
+		_ = m.AddUpDown(ctx, poolCountInstrument, usedDelta, p.attrs(poolStateUsed))
+	}
+}
+
+// attrs returns the attributes of a pool metric. state is the
+// db.client.connection.state value, or empty for a metric without one.
+func (p *poolPoller) attrs(state string) map[string]any {
+	a := map[string]any{string(otelsemconv.DBClientConnectionPoolNameKey): p.pool}
+	if state != "" {
+		a[string(otelsemconv.DBClientConnectionStateKey)] = state
+	}
+	return a
 }
 
 // instrumentHook instruments every command and pipeline flowing through the

@@ -63,7 +63,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 ### Checkpoint A: Opus review of T1–T7 (done; fixes in 326fd73 and the redis fix commit)
 ### Wave 3 (parallel)
 - [x] T8: db cleanup: D3 (prove or drop), D4, X8, X9, testing recipe, strict (N19)
-- [ ] T9: redis pool metrics in semconv form; Close waits for the poller (R2, R3, R4)
+- [x] T9: redis pool metrics in semconv form; Close waits for the poller (R2, R3, R4)
 
 ### Wave 4
 - [ ] T10: redis `New(ctx)` check, lint cleanup, testing recipe, strict (X8, X9, N19)
