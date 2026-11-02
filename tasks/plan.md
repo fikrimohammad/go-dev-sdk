@@ -68,7 +68,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 ### Wave 4
 - [x] T10: redis `New(ctx)` check, lint cleanup, testing recipe, strict (X8, X9, N19)
 
-### Checkpoint B: final Opus review (approved; fixes applied); PR description drafted; owner review pending
+### Checkpoint B: final Opus review (approved; fixes applied); PR description published; marked ready for owner review
 
 ## Risks and Mitigations
 

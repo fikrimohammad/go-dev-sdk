@@ -229,6 +229,6 @@ the integration tests' call sites.
 ### Checkpoint B: complete
 - [x] SPEC-data-clients success criteria 1–7 are verified with evidence.
 - [x] Final Opus review, with its fixes applied.
-- [ ] The PR body (prepared by the orchestrator) lists every renamed or dropped metric and
+- [x] The PR body (prepared by the orchestrator) lists every renamed or dropped metric and
       attribute and the API breaks. The owner updates it and marks the PR ready, or tells the
       orchestrator to.
