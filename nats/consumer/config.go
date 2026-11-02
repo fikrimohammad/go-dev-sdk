@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 )
 
 const (
@@ -17,7 +19,8 @@ const (
 
 // ConsumeFromWhere values for Config.ConsumeFromWhere.
 const (
-	// ConsumeFromLast resumes from the last message in the stream (default).
+	// ConsumeFromLast delivers only messages published after the durable consumer
+	// is created (default).
 	ConsumeFromLast = "last"
 	// ConsumeFromFirst starts from the earliest available message.
 	ConsumeFromFirst = "first"
@@ -125,10 +128,12 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// buildFilterSubjects converts Tags into full NATS subjects for the topic.
+// buildFilterSubjects converts Tags into full NATS subjects for the topic. Empty
+// Tags or only the "*" wildcard select the data subjects of the topic, so schedule
+// messages are never delivered.
 func (c Config) buildFilterSubjects() []string {
 	if len(c.Tags) == 0 || (len(c.Tags) == 1 && c.Tags[0] == DefaultTags) {
-		return nil
+		return wire.DataSubjects(c.Topic)
 	}
 
 	var subjects []string
@@ -170,7 +175,7 @@ func (c Config) buildConsumerConfig(durableName string) jetstream.ConsumerConfig
 			cfg.OptStartTime = &t
 		}
 	default:
-		cfg.DeliverPolicy = jetstream.DeliverLastPolicy
+		cfg.DeliverPolicy = jetstream.DeliverNewPolicy
 	}
 
 	return cfg

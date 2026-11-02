@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -148,13 +149,19 @@ func TestConfig_BuildFilterSubjects(t *testing.T) {
 			name:  "default wildcard",
 			topic: "orders",
 			tags:  []string{"*"},
-			want:  nil,
+			want:  []string{"orders", "orders.>"},
 		},
 		{
 			name:  "empty tags",
 			topic: "orders",
 			tags:  nil,
-			want:  nil,
+			want:  []string{"orders", "orders.>"},
+		},
+		{
+			name:  "wildcard mixed with tag",
+			topic: "orders",
+			tags:  []string{"*", "created"},
+			want:  []string{"orders.>", "orders.created"},
 		},
 		{
 			name:  "single tag",
@@ -244,5 +251,58 @@ func TestConfig_BuildConsumerConfig(t *testing.T) {
 	}
 	if jsCfgTs.OptStartTime == nil {
 		t.Error("OptStartTime is nil")
+	}
+}
+
+func TestBuildConsumerConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		cfg           Config
+		wantPolicy    jetstream.DeliverPolicy
+		wantFilters   []string
+		wantSingleSub string
+	}{
+		{
+			name:        "last delivers new messages only",
+			cfg:         Config{Topic: "orders", ConsumeFromWhere: ConsumeFromLast},
+			wantPolicy:  jetstream.DeliverNewPolicy,
+			wantFilters: []string{"orders", "orders.>"},
+		},
+		{
+			name:        "default is last",
+			cfg:         Config{Topic: "orders"},
+			wantPolicy:  jetstream.DeliverNewPolicy,
+			wantFilters: []string{"orders", "orders.>"},
+		},
+		{
+			name:        "first delivers all",
+			cfg:         Config{Topic: "orders", ConsumeFromWhere: ConsumeFromFirst},
+			wantPolicy:  jetstream.DeliverAllPolicy,
+			wantFilters: []string{"orders", "orders.>"},
+		},
+		{
+			name:          "single tag sets FilterSubject",
+			cfg:           Config{Topic: "orders", Tags: []string{"created"}, ConsumeFromWhere: ConsumeFromLast},
+			wantPolicy:    jetstream.DeliverNewPolicy,
+			wantSingleSub: "orders.created",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.cfg.SetDefaults().buildConsumerConfig("durable")
+			if got.DeliverPolicy != tt.wantPolicy {
+				t.Errorf("DeliverPolicy = %v, want %v", got.DeliverPolicy, tt.wantPolicy)
+			}
+			if tt.wantSingleSub != "" && got.FilterSubject != tt.wantSingleSub {
+				t.Errorf("FilterSubject = %q, want %q", got.FilterSubject, tt.wantSingleSub)
+			}
+			if tt.wantFilters != nil && !slices.Equal(got.FilterSubjects, tt.wantFilters) {
+				t.Errorf("FilterSubjects = %v, want %v", got.FilterSubjects, tt.wantFilters)
+			}
+		})
 	}
 }

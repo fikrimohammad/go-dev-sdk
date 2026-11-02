@@ -4,9 +4,8 @@ import "errors"
 
 // Consumer-related sentinel errors. Callers can match them with errors.Is.
 var (
-	ErrConsumerExists   = errors.New("consumer: already registered for this topic and group")
-	ErrConsumerNotFound = errors.New("consumer: not registered for this topic and group")
-	ErrInvalidAppName   = errors.New("consumer: service name must not contain dots")
+	ErrConsumerExists = errors.New("consumer: already registered for this topic and group")
+	ErrInvalidAppName = errors.New("consumer: service name must not contain dots")
 )
 
 // Config-related sentinel errors. Callers can match them with errors.Is.

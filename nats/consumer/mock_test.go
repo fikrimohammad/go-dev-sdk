@@ -15,27 +15,11 @@ var testAppInfo = identity.Info{Name: "test-app"}
 
 // mockConsumer implements jsConsumer for testing.
 type mockConsumer struct {
-	startErr    error
-	shutdownErr error
 	consumeErr  error
+	shutdownErr error
 
-	startFunc    func() error
-	shutdownFunc func() error
 	consumeFunc  func(handler func(msg jetstream.Msg)) error
-}
-
-func (m *mockConsumer) Start() error {
-	if m.startFunc != nil {
-		return m.startFunc()
-	}
-	return m.startErr
-}
-
-func (m *mockConsumer) Shutdown() error {
-	if m.shutdownFunc != nil {
-		return m.shutdownFunc()
-	}
-	return m.shutdownErr
+	shutdownFunc func(ctx context.Context) error
 }
 
 func (m *mockConsumer) Consume(handler func(msg jetstream.Msg)) error {
@@ -43,6 +27,13 @@ func (m *mockConsumer) Consume(handler func(msg jetstream.Msg)) error {
 		return m.consumeFunc(handler)
 	}
 	return m.consumeErr
+}
+
+func (m *mockConsumer) Shutdown(ctx context.Context) error {
+	if m.shutdownFunc != nil {
+		return m.shutdownFunc(ctx)
+	}
+	return m.shutdownErr
 }
 
 // mockMsg implements jetstream.Msg for testing.

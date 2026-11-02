@@ -174,10 +174,10 @@ func TestMultiConsumerParity(t *testing.T) {
 		t.Fatalf("p.Register: %v", err)
 	}
 
-	if err := p.Start(); err != nil {
+	if err := p.Start(t.Context()); err != nil {
 		t.Fatalf("p.Start: %v", err)
 	}
-	defer func() { _ = p.Shutdown() }()
+	defer func() { _ = p.Shutdown(context.Background()) }()
 
 	// 2. Create Billing Consumer Group (oec_pay_billing_oec_order_event_order_created)
 	cBilling, err := consumer.New(identity.Info{Name: billingApp}, consumer.WithTracer(tracer.Wrap(tp)))
@@ -260,15 +260,15 @@ func TestMultiConsumerParity(t *testing.T) {
 	}
 
 	// 4. Start both consumers
-	if err := cBilling.Start(); err != nil {
+	if err := cBilling.Start(t.Context()); err != nil {
 		t.Fatalf("cBilling.Start: %v", err)
 	}
-	defer func() { _ = cBilling.Shutdown() }()
+	defer func() { _ = cBilling.Shutdown(context.Background()) }()
 
-	if err := cPromo.Start(); err != nil {
+	if err := cPromo.Start(t.Context()); err != nil {
 		t.Fatalf("cPromo.Start: %v", err)
 	}
-	defer func() { _ = cPromo.Shutdown() }()
+	defer func() { _ = cPromo.Shutdown(context.Background()) }()
 
 	// 5. Publish `order_created` messages with W3C parent trace
 	parentCtx, parentSpan := tp.Tracer("test").Start(context.Background(), "order-producer-trace")
@@ -363,10 +363,10 @@ func TestConsumerRetryRedelivery(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("p.Register: %v", err)
 	}
-	if err := p.Start(); err != nil {
+	if err := p.Start(t.Context()); err != nil {
 		t.Fatalf("p.Start: %v", err)
 	}
-	defer func() { _ = p.Shutdown() }()
+	defer func() { _ = p.Shutdown(context.Background()) }()
 
 	c, err := consumer.New(identity.Info{Name: "order_worker"})
 	if err != nil {
@@ -398,10 +398,10 @@ func TestConsumerRetryRedelivery(t *testing.T) {
 		t.Fatalf("c.Register: %v", err)
 	}
 
-	if err := c.Start(); err != nil {
+	if err := c.Start(t.Context()); err != nil {
 		t.Fatalf("c.Start: %v", err)
 	}
-	defer func() { _ = c.Shutdown() }()
+	defer func() { _ = c.Shutdown(context.Background()) }()
 
 	if err := p.PublishSync(context.Background(), topicName, tag, "retry-order", []byte("retry-data")); err != nil {
 		t.Fatalf("PublishSync: %v", err)
@@ -440,10 +440,10 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("p.Register: %v", err)
 	}
-	if err := p.Start(); err != nil {
+	if err := p.Start(t.Context()); err != nil {
 		t.Fatalf("p.Start: %v", err)
 	}
-	defer func() { _ = p.Shutdown() }()
+	defer func() { _ = p.Shutdown(context.Background()) }()
 
 	c, err := consumer.New(identity.Info{Name: "concurrent_app"})
 	if err != nil {
@@ -491,10 +491,10 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 		t.Fatalf("c.Register: %v", err)
 	}
 
-	if err := c.Start(); err != nil {
+	if err := c.Start(t.Context()); err != nil {
 		t.Fatalf("c.Start: %v", err)
 	}
-	defer func() { _ = c.Shutdown() }()
+	defer func() { _ = c.Shutdown(context.Background()) }()
 
 	for i := range numMsgs {
 		if err := p.PublishSync(context.Background(), topicName, tag, fmt.Sprintf("id-%d", i), []byte("test")); err != nil {

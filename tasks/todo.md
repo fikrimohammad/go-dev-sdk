@@ -91,16 +91,16 @@ and the connection setup:
   and `example_test.go`.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestStart_PreservesOperatorStreamSettings` (embedded JetStream):
+- [x] *(regression)* `TestStart_PreservesOperatorStreamSettings` (embedded JetStream):
       precreate a stream with MaxAge 1h and only `[topic]`; after `Start`, MaxAge is kept and
       the subjects include `topic.>` and `schedules.topic.>`.
-- [ ] *(regression)* `TestShutdown_WaitsForAsyncPublish`: Shutdown returns only after a pending
+- [x] *(regression)* `TestShutdown_WaitsForAsyncPublish`: Shutdown returns only after a pending
       async callback has run (a stub transport that delays the ack).
-- [ ] `TestRegister_NoIO`: Register with an unreachable endpoint succeeds and dials nothing.
-- [ ] `TestShutdown_Deadline`: a hung drain returns `ctx.Err()` by the deadline.
+- [x] `TestRegister_NoIO`: Register with an unreachable endpoint succeeds and dials nothing.
+- [x] `TestShutdown_Deadline`: a hung drain returns `ctx.Err()` by the deadline.
 
 **Verification:**
-- [ ] `./producer/...` checks; coverage ≥ 70.1%.
+- [x] `./producer/...` checks; coverage ≥ 70.1%.
 
 **Dependencies:** T2 · **Files:** `nats/producer/producer.go`, `nats/producer/producer_test.go`, `nats/producer/helpers_test.go`, `nats/producer/mock_test.go`, `nats/producer/example_test.go` · **Scope:** M
 
@@ -125,16 +125,16 @@ and the connection setup:
 - Keep `HandlerFunc(ctx, []byte)` (T6 changes it). Handler ctx cancellation is T6.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestShutdown_WithoutStart`: Register then Shutdown dials nothing and
+- [x] *(regression)* `TestShutdown_WithoutStart`: Register then Shutdown dials nothing and
       leaks nothing (a factory spy counts dials).
-- [ ] *(regression)* `TestShutdown_RespectsDeadline`: with a handler that ignores ctx, Shutdown
+- [x] *(regression)* `TestShutdown_RespectsDeadline`: with a handler that ignores ctx, Shutdown
       returns `context.DeadlineExceeded` by the deadline (±200 ms).
-- [ ] *(regression)* `TestConsumer_DefaultFilterSkipsSchedules` (embedded JetStream): a message
+- [x] *(regression)* `TestConsumer_DefaultFilterSkipsSchedules` (embedded JetStream): a message
       published raw on `schedules.<topic>.x` is not delivered; `topic` and `topic.tag` are.
-- [ ] `TestBuildConsumerConfig` covers `DeliverNewPolicy` for "last".
+- [x] `TestBuildConsumerConfig` covers `DeliverNewPolicy` for "last".
 
 **Verification:**
-- [ ] `./consumer/...` checks under `-race`; coverage ≥ 68.6%.
+- [x] `./consumer/...` checks under `-race`; coverage ≥ 68.6%.
 
 **Dependencies:** T2 · **Files:** `nats/consumer/consumer.go`, `nats/consumer/config.go`, `nats/consumer/consumer_test.go`, `nats/consumer/config_test.go`, `nats/consumer/helpers_test.go` · **Scope:** M
 

@@ -4,70 +4,48 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 
 	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
+// jsConsumer is one durable JetStream consumer run by a Consumer.
 type jsConsumer interface {
-	Start() error
-	Shutdown() error
+	// Consume starts delivering each message to handler.
 	Consume(handler func(msg jetstream.Msg)) error
+	// Shutdown stops intake, waits for in-flight handlers, and drains the
+	// connection. It returns ctx.Err() if ctx ends first.
+	Shutdown(ctx context.Context) error
 }
 
-type consumerFactory func(cfg Config, durableName string) (jsConsumer, error)
+// consumerFactory connects to the server and returns the durable consumer
+// durableName for cfg. The stream and the durable consumer are ensured within ctx.
+type consumerFactory func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error)
 
+// defaultJSConsumer is the jsConsumer backed by a NATS connection and a
+// JetStream pull consumer.
 type defaultJSConsumer struct {
 	nc         *nats.Conn
-	js         jetstream.JetStream
 	consumer   jetstream.Consumer
-	consumeCtx jetstream.ConsumeContext
 	cfg        Config
-	handler    func(msg jetstream.Msg)
-	mu         sync.Mutex
+	consumeCtx jetstream.ConsumeContext
 	wg         sync.WaitGroup
-	started    bool
 }
 
+// Consume starts pulling messages and runs handler on up to MaxConcurrent
+// messages at a time.
 func (c *defaultJSConsumer) Consume(handler func(msg jetstream.Msg)) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.handler = handler
-	return nil
-}
-
-func (c *defaultJSConsumer) Start() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.started {
-		return nil
-	}
-
-	if c.handler == nil {
-		return errors.New("consumer: handler is nil")
-	}
-
-	opts := []jetstream.PullConsumeOpt{}
-	maxConcurrent := c.cfg.MaxConcurrent
-	if maxConcurrent <= 0 {
-		maxConcurrent = DefaultMaxConcurrent
-	}
-	opts = append(opts, jetstream.PullMaxMessages(maxConcurrent))
-
-	sem := make(chan struct{}, maxConcurrent)
-	workerHandler := func(msg jetstream.Msg) {
+	sem := make(chan struct{}, c.cfg.MaxConcurrent)
+	consumeCtx, err := c.consumer.Consume(func(msg jetstream.Msg) {
 		sem <- struct{}{}
 		c.wg.Add(1)
 		go func() {
@@ -75,71 +53,87 @@ func (c *defaultJSConsumer) Start() error {
 				<-sem
 				c.wg.Done()
 			}()
-			c.handler(msg)
+			handler(msg)
 		}()
-	}
-
-	consumeCtx, err := c.consumer.Consume(workerHandler, opts...)
+	}, jetstream.PullMaxMessages(c.cfg.MaxConcurrent))
 	if err != nil {
 		return fmt.Errorf("consumer: consume start: %w", err)
 	}
 
 	c.consumeCtx = consumeCtx
-	c.started = true
 	return nil
 }
 
-func (c *defaultJSConsumer) Shutdown() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.started {
-		return nil
+// Shutdown stops intake, waits for in-flight handlers, and drains the connection.
+// When ctx ends first it closes the connection and returns ctx.Err().
+func (c *defaultJSConsumer) Shutdown(ctx context.Context) error {
+	if err := c.quiesce(ctx); err != nil {
+		c.nc.Close()
+		return err
 	}
+	return c.drainConn(ctx)
+}
 
+// quiesce stops new deliveries and waits for the handlers already running. Once
+// the consume context is closed, no callback can add to the WaitGroup.
+func (c *defaultJSConsumer) quiesce(ctx context.Context) error {
 	if c.consumeCtx != nil {
-		c.consumeCtx.Stop()
-		c.consumeCtx = nil
+		c.consumeCtx.Drain()
+		select {
+		case <-c.consumeCtx.Closed():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
-	c.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
-	if c.nc != nil {
-		_ = c.nc.Drain()
+// drainConn drains the connection and waits until it is closed. nats.Conn.Drain
+// is asynchronous, so the wait polls IsClosed. ctx bounds the wait.
+func (c *defaultJSConsumer) drainConn(ctx context.Context) error {
+	if err := c.nc.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		c.nc.Close()
+		return fmt.Errorf("consumer: drain connection: %w", err)
 	}
 
-	c.started = false
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !c.nc.IsClosed() {
+		select {
+		case <-ctx.Done():
+			c.nc.Close()
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 	return nil
 }
 
-func defaultConsumerFactory(cfg Config, durableName string) (jsConsumer, error) {
-	opts := []nats.Option{
-		nats.Name(durableName),
-		nats.Timeout(cfg.Timeout),
-		nats.RetryOnFailedConnect(true),
-	}
-
-	if cfg.Token != "" {
-		opts = append(opts, nats.Token(cfg.Token))
-	}
-	if cfg.Username != "" || cfg.Password != "" {
-		opts = append(opts, nats.UserInfo(cfg.Username, cfg.Password))
-	}
-	if cfg.NKey != "" {
-		opt, err := nats.NkeyOptionFromSeed(cfg.NKey)
-		if err != nil {
-			return nil, fmt.Errorf("consumer: nkey option: %w", err)
-		}
-		opts = append(opts, opt)
-	}
-	if cfg.CredentialsFile != "" {
-		opts = append(opts, nats.UserCredentials(cfg.CredentialsFile))
-	}
-
-	endpoints := strings.Join(cfg.Endpoints, ",")
-	nc, err := nats.Connect(endpoints, opts...)
+// defaultConsumerFactory connects, ensures the stream exists, and creates or
+// updates the durable consumer. On error it closes the connection it opened.
+func defaultConsumerFactory(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
+	nc, err := wire.Connect(durableName, wire.Options{
+		Endpoints:       cfg.Endpoints,
+		Timeout:         cfg.Timeout,
+		Token:           cfg.Token,
+		Username:        cfg.Username,
+		Password:        cfg.Password,
+		NKey:            cfg.NKey,
+		CredentialsFile: cfg.CredentialsFile,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("consumer: connect to %s: %w", endpoints, err)
+		return nil, fmt.Errorf("consumer: %w", err)
 	}
 
 	js, err := jetstream.New(nc)
@@ -148,32 +142,23 @@ func defaultConsumerFactory(cfg Config, durableName string) (jsConsumer, error) 
 		return nil, fmt.Errorf("consumer: create jetstream: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-	defer cancel()
-
-	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:              cfg.Topic,
-		Subjects:          []string{cfg.Topic, cfg.Topic + ".>"},
-		AllowMsgSchedules: true,
-	})
+	// The producer owns the stream, so an existing one is never updated.
+	stream, err := js.Stream(ctx, cfg.Topic)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		stream, err = js.CreateStream(ctx, wire.StreamConfig(cfg.Topic))
+	}
 	if err != nil {
 		nc.Close()
 		return nil, fmt.Errorf("consumer: ensure stream %s: %w", cfg.Topic, err)
 	}
 
-	consumerConfig := cfg.buildConsumerConfig(durableName)
-	cons, err := stream.CreateOrUpdateConsumer(ctx, consumerConfig)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, cfg.buildConsumerConfig(durableName))
 	if err != nil {
 		nc.Close()
 		return nil, fmt.Errorf("consumer: create consumer %s: %w", durableName, err)
 	}
 
-	return &defaultJSConsumer{
-		nc:       nc,
-		js:       js,
-		consumer: cons,
-		cfg:      cfg,
-	}, nil
+	return &defaultJSConsumer{nc: nc, consumer: cons, cfg: cfg}, nil
 }
 
 // Option configures a Consumer returned by New.
@@ -196,15 +181,25 @@ func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
 
+// registration is a consumer accepted by Register and not yet started.
+type registration struct {
+	cfg     Config
+	handler *handlerAdapter
+}
+
+// Consumer runs the registered JetStream consumers. Register stores them, Start
+// connects and begins delivery, and Shutdown stops them.
 type Consumer struct {
 	appName         string
-	consumers       sync.Map
-	started         atomic.Bool
 	consumerFactory consumerFactory
-	mu              sync.Mutex
+	metrics         metrics.Client
+	tracer          tracer.Client
 
-	metrics metrics.Client
-	tracer  tracer.Client
+	// mu guards the fields below. Start and Shutdown hold it for their whole run.
+	mu      sync.Mutex
+	regs    map[string]registration // keyed by durable name
+	running []jsConsumer
+	started bool
 }
 
 // New returns an empty, ready-to-use Consumer. The service identity is taken
@@ -228,19 +223,20 @@ func New(info identity.Info, opts ...Option) (*Consumer, error) {
 
 	return &Consumer{
 		appName:         info.Name,
-		consumers:       sync.Map{},
 		consumerFactory: defaultConsumerFactory,
+		regs:            make(map[string]registration),
 		metrics:         o.metrics,
 		tracer:          o.tracer,
 	}, nil
 }
 
-// Register configures and registers a consumer for cfg.Topic and cfg.Group.
+// Register validates cfg and stores it with handlerFunc. It does not connect;
+// Start does. Register fails after Start.
 func (c *Consumer) Register(cfg Config, handlerFunc HandlerFunc) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.started.Load() {
+	if c.started {
 		return errors.New("consumer: cannot register after Start")
 	}
 
@@ -253,24 +249,13 @@ func (c *Consumer) Register(cfg Config, handlerFunc HandlerFunc) error {
 		return fmt.Errorf("consumer: register config invalid: %w", err)
 	}
 
-	cr, err := c.getConsumer(cfg.Topic, cfg.Group)
-	if err != nil && !errors.Is(err, ErrConsumerNotFound) {
-		return fmt.Errorf("consumer: get existing consumer: %w", err)
+	name := c.buildGroupName(cfg.Topic, cfg.Group)
+	if _, ok := c.regs[name]; ok {
+		return fmt.Errorf("%w: %s", ErrConsumerExists, name)
 	}
 
-	if cr != nil {
-		key := c.buildGroupName(cfg.Topic, cfg.Group)
-		return fmt.Errorf("%w: %s", ErrConsumerExists, key)
-	}
-
-	groupName := c.buildGroupName(cfg.Topic, cfg.Group)
-	cn, err := c.consumerFactory(cfg, groupName)
-	if err != nil {
-		return fmt.Errorf("consumer: create consumer %s: %w", groupName, err)
-	}
-
-	addr, port := serverAddrPort(cfg.Endpoints)
-	consumerHandlerAdapter, err := newHandlerAdapter(meta{
+	addr, port := wire.ServerAddrPort(cfg.Endpoints)
+	adapter, err := newHandlerAdapter(meta{
 		topic:      cfg.Topic,
 		group:      cfg.Group,
 		serverAddr: addr,
@@ -280,154 +265,82 @@ func (c *Consumer) Register(cfg Config, handlerFunc HandlerFunc) error {
 		tracer:     c.tracer,
 	}, cfg.RetryBackoff, handlerFunc)
 	if err != nil {
-		_ = cn.Shutdown()
 		return fmt.Errorf("consumer: create handler adapter: %w", err)
 	}
 
-	err = cn.Consume(consumerHandlerAdapter.Handle)
-	if err != nil {
-		_ = cn.Shutdown()
-		return fmt.Errorf("consumer: subscribe %s: %w", groupName, err)
-	}
-
-	c.setConsumer(cfg.Topic, cfg.Group, cn)
+	c.regs[name] = registration{cfg: cfg, handler: adapter}
 	return nil
 }
 
-func (c *Consumer) Start() error {
+// Start connects every registered consumer, ensures its stream and durable
+// consumer exist, and starts delivery. ctx bounds the setup. If any consumer
+// fails, Start shuts down the ones already started and returns the error. Start
+// does nothing once it has succeeded.
+func (c *Consumer) Start(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !c.started.CompareAndSwap(false, true) {
+	if c.started {
 		return nil
 	}
 
-	consumers, err := c.getAllConsumers()
-	if err != nil {
-		c.started.Store(false)
-		return err
-	}
-
-	var errs []error
-	for _, cn := range consumers {
-		if err := cn.Start(); err != nil {
-			errs = append(errs, err)
+	var running []jsConsumer
+	for name, reg := range c.regs {
+		cn, err := c.startOne(ctx, name, reg)
+		if err != nil {
+			return errors.Join(err, shutdownAll(ctx, running))
 		}
+		running = append(running, cn)
 	}
 
-	if len(errs) > 0 {
-		c.started.Store(false)
-		return errors.Join(errs...)
-	}
-
+	c.running = running
+	c.started = true
 	return nil
 }
 
-func (c *Consumer) Shutdown() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.started.CompareAndSwap(true, false) {
-		return nil
-	}
-
-	consumers, err := c.getAllConsumers()
+// startOne creates the durable consumer for reg and starts its delivery. On a
+// failure after creation it shuts that consumer down.
+func (c *Consumer) startOne(ctx context.Context, name string, reg registration) (jsConsumer, error) {
+	cn, err := c.consumerFactory(ctx, reg.cfg, name)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("consumer: create %s: %w", name, err)
 	}
 
-	var errs []error
-	for _, cn := range consumers {
-		if err := cn.Shutdown(); err != nil {
-			errs = append(errs, err)
-		}
+	if err := cn.Consume(reg.handler.Handle); err != nil {
+		return nil, errors.Join(fmt.Errorf("consumer: subscribe %s: %w", name, err), cn.Shutdown(ctx))
 	}
-
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-
-	return nil
-}
-
-func (c *Consumer) getConsumer(topic, group string) (jsConsumer, error) {
-	key := c.buildGroupName(topic, group)
-	consumerRaw, ok := c.consumers.Load(key)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrConsumerNotFound, key)
-	}
-
-	cn, ok := consumerRaw.(jsConsumer)
-	if !ok {
-		return nil, fmt.Errorf("consumer: invalid consumer type: %s", key)
-	}
-
 	return cn, nil
 }
 
-func (c *Consumer) getAllConsumers() ([]jsConsumer, error) {
-	var (
-		consumers []jsConsumer
-		errs      []error
-	)
+// Shutdown stops intake for every started consumer, waits for in-flight
+// handlers, and drains the connections, all bounded by ctx. It returns ctx.Err()
+// when ctx ends first. Shutdown does nothing if Start has not succeeded, and a
+// second call does nothing.
+func (c *Consumer) Shutdown(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	c.consumers.Range(func(k, v any) bool {
-		key, ok := k.(string)
-		if !ok {
-			errs = append(errs, fmt.Errorf("consumer: invalid consumer key: %v", k))
-			return true
-		}
-
-		cn, ok := v.(jsConsumer)
-		if !ok {
-			errs = append(errs, fmt.Errorf("consumer: invalid consumer type: %s", key))
-			return true
-		}
-
-		consumers = append(consumers, cn)
-		return true
-	})
-
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+	if !c.started {
+		return nil
 	}
 
-	return consumers, nil
+	running := c.running
+	c.running = nil
+	c.started = false
+	return shutdownAll(ctx, running)
 }
 
-func (c *Consumer) setConsumer(topic, group string, cn jsConsumer) {
-	key := c.buildGroupName(topic, group)
-	c.consumers.Store(key, cn)
+// shutdownAll shuts down every consumer in cns and joins their errors.
+func shutdownAll(ctx context.Context, cns []jsConsumer) error {
+	var errs []error
+	for _, cn := range cns {
+		if err := cn.Shutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Consumer) buildGroupName(topic, group string) string {
 	return fmt.Sprintf("%s_%s_%s", c.appName, topic, group)
-}
-
-// serverAddrPort splits the first endpoint into host and port.
-func serverAddrPort(endpoints []string) (string, int) {
-	if len(endpoints) == 0 {
-		return "", 0
-	}
-	ep := endpoints[0]
-	if strings.Contains(ep, "://") {
-		u, err := url.Parse(ep)
-		if err == nil {
-			host := u.Hostname()
-			port, _ := strconv.Atoi(u.Port())
-			if port == 0 {
-				port = 4222
-			}
-			return host, port
-		}
-	}
-	host, portStr, err := net.SplitHostPort(ep)
-	if err != nil {
-		return ep, 4222
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return host, 4222
-	}
-	return host, port
 }

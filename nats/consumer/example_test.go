@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/fikrimohammad/go-dev-sdk/identity"
 	"github.com/fikrimohammad/go-dev-sdk/nats/consumer"
@@ -47,17 +48,20 @@ func ExampleNew() {
 		return
 	}
 
-	if err := c.Start(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := c.Start(ctx); err != nil {
 		log.Println("start consumer:", err)
 		return
 	}
 	defer func() {
-		if err := c.Shutdown(); err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.Shutdown(shutdownCtx); err != nil {
 			log.Println("shutdown consumer:", err)
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 }
