@@ -680,7 +680,7 @@ func TestBuildTLSConfig(t *testing.T) {
 	// Disabled
 	tlsCfg, err := buildTLSConfig(Config{TLSEnabled: false})
 	if err != nil || tlsCfg != nil {
-		t.Fatalf("expected nil tlsCfg, got %v, err=%v", tlsCfg, err)
+		t.Fatalf("buildTLSConfig(disabled) = %v, %v, want nil, nil", tlsCfg, err)
 	}
 
 	// Enabled defaults
@@ -705,7 +705,7 @@ func TestBuildTLSConfig(t *testing.T) {
 		TLSCACert:  "not-a-valid-ca-cert",
 	})
 	if err == nil {
-		t.Fatal("expected error for non-existent CA file")
+		t.Fatal("buildTLSConfig(missing CA) err = nil, want error")
 	}
 }
 
@@ -729,6 +729,27 @@ func TestOptions(t *testing.T) {
 	}
 }
 
+func TestServerAddress(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      Config
+		wantAddr string
+		wantPort int
+	}{
+		{"host only", Config{Host: "db.example", Port: 6380}, "db.example", 6380},
+		{"addrs only", Config{Addrs: []string{"cache.example:6381"}}, "cache.example", 6381},
+		{"both set addrs wins", Config{Host: "db.example", Port: 6380, Addrs: []string{"cache.example:6381"}}, "cache.example", 6381},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, port := serverAddress(tc.cfg)
+			if addr != tc.wantAddr || port != tc.wantPort {
+				t.Fatalf("serverAddress() = %q, %d, want %q, %d", addr, port, tc.wantAddr, tc.wantPort)
+			}
+		})
+	}
+}
+
 func TestNew_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -741,17 +762,17 @@ func TestNew_CancelledContext(t *testing.T) {
 
 func TestNew_InvalidConfig(t *testing.T) {
 	if _, err := New(context.Background(), Config{Host: "", Port: 6379}); err == nil {
-		t.Fatal("New: expected error for missing host")
+		t.Fatal("New(missing host) err = nil, want error")
 	}
 	if _, err := New(context.Background(), Config{Host: "h", Port: -1}); err == nil {
-		t.Fatal("New: expected error for invalid port")
+		t.Fatal("New(invalid port) err = nil, want error")
 	}
 }
 
 func TestNew_ConnectionFailure(t *testing.T) {
 	_, err := New(context.Background(), Config{Host: "127.0.0.1", Port: 1, ConnectTimeout: 100 * time.Millisecond})
 	if err == nil {
-		t.Fatal("New: expected connection error")
+		t.Fatal("New(unreachable) err = nil, want connection error")
 	}
 	if !strings.Contains(err.Error(), "ping") {
 		t.Fatalf("New err = %q, want ping error", err.Error())
@@ -985,7 +1006,7 @@ func TestCreateUnderlyingClient_Topologies(t *testing.T) {
 	}.SetDefaults()
 	standaloneCli := createUnderlyingClient(standaloneCfg, nil)
 	if _, ok := standaloneCli.(*redis.Client); !ok {
-		t.Fatalf("expected *redis.Client for standalone, got %T", standaloneCli)
+		t.Fatalf("createUnderlyingClient(standalone) type = %T, want *redis.Client", standaloneCli)
 	}
 	_ = standaloneCli.Close()
 
@@ -997,7 +1018,7 @@ func TestCreateUnderlyingClient_Topologies(t *testing.T) {
 	}.SetDefaults()
 	sentinelCli := createUnderlyingClient(sentinelCfg, nil)
 	if _, ok := sentinelCli.(*redis.Client); !ok {
-		t.Fatalf("expected *redis.Client for failover, got %T", sentinelCli)
+		t.Fatalf("createUnderlyingClient(sentinel) type = %T, want *redis.Client", sentinelCli)
 	}
 	_ = sentinelCli.Close()
 
@@ -1010,7 +1031,7 @@ func TestCreateUnderlyingClient_Topologies(t *testing.T) {
 	}.SetDefaults()
 	sentinelClusterCli := createUnderlyingClient(sentinelClusterCfg, nil)
 	if _, ok := sentinelClusterCli.(*redis.ClusterClient); !ok {
-		t.Fatalf("expected *redis.ClusterClient for failover cluster, got %T", sentinelClusterCli)
+		t.Fatalf("createUnderlyingClient(sentinel, read split) type = %T, want *redis.ClusterClient", sentinelClusterCli)
 	}
 	_ = sentinelClusterCli.Close()
 
@@ -1021,7 +1042,7 @@ func TestCreateUnderlyingClient_Topologies(t *testing.T) {
 	}.SetDefaults()
 	clusterCli := createUnderlyingClient(clusterCfg, nil)
 	if _, ok := clusterCli.(*redis.ClusterClient); !ok {
-		t.Fatalf("expected *redis.ClusterClient for cluster, got %T", clusterCli)
+		t.Fatalf("createUnderlyingClient(cluster) type = %T, want *redis.ClusterClient", clusterCli)
 	}
 	_ = clusterCli.Close()
 }

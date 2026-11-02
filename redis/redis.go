@@ -169,18 +169,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (redis.UniversalClient
 
 	cli := createUnderlyingClient(cfg, tlsCfg)
 
-	serverAddr := cfg.Host
-	serverPort := cfg.Port
-	if serverAddr == "" && len(cfg.Addrs) > 0 {
-		serverAddr = cfg.Addrs[0]
-		if host, portStr, err := net.SplitHostPort(cfg.Addrs[0]); err == nil {
-			serverAddr = host
-			if p, err := strconv.Atoi(portStr); err == nil {
-				serverPort = p
-			}
-		}
-	}
-
+	serverAddr, serverPort := serverAddress(cfg)
 	m := meta{
 		serverAddr: serverAddr,
 		serverPort: serverPort,
@@ -213,6 +202,24 @@ func New(ctx context.Context, cfg Config, opts ...Option) (redis.UniversalClient
 	}
 
 	return c, nil
+}
+
+// serverAddress returns the host and port reported in telemetry. It follows
+// the endpoint the standalone client dials: Addrs[0] when set, else Host and
+// Port.
+func serverAddress(cfg Config) (string, int) {
+	if len(cfg.Addrs) == 0 {
+		return cfg.Host, cfg.Port
+	}
+	serverAddr := cfg.Addrs[0]
+	serverPort := cfg.Port
+	if host, portStr, err := net.SplitHostPort(cfg.Addrs[0]); err == nil {
+		serverAddr = host
+		if p, err := strconv.Atoi(portStr); err == nil {
+			serverPort = p
+		}
+	}
+	return serverAddr, serverPort
 }
 
 // createUnderlyingClient instantiates the concrete go-redis client for the configured topology.

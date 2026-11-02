@@ -218,11 +218,11 @@ the integration tests' call sites.
 - Add `redis` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [ ] Full-tree lint 0 and gostyle 0 in redis; `redis` is in the strict list; no stale `//nolint`
+- [x] Full-tree lint 0 and gostyle 0 in redis; `redis` is in the strict list; no stale `//nolint`
       remains.
 
 **Verification:**
-- [ ] redis module checks (strict).
+- [x] redis module checks (strict).
 
 **Dependencies:** T9 · **Files:** `redis/redis.go`, `redis/redis_test.go`, `redis/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 

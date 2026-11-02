@@ -246,6 +246,35 @@ metrics, both with `db.client.connection.pool.name` set to
 Each poll records the change since the previous poll. `Close` stops the poller,
 waits for it to exit, and withdraws its connections, so the count returns to zero.
 
+## Testing your code
+
+Run your tests against an in-process [miniredis](https://github.com/alicebob/miniredis)
+server. Add `github.com/alicebob/miniredis/v2` to your own module; this package does not depend on it.
+
+```go
+import (
+    "testing"
+
+    "github.com/alicebob/miniredis/v2"
+
+    "github.com/fikrimohammad/go-dev-sdk/redis"
+)
+
+func TestCache(t *testing.T) {
+    m := miniredis.RunT(t) // stopped automatically when the test ends
+
+    // One Addrs entry selects standalone mode; no Mode or Host needed.
+    rdb, err := redis.New(t.Context(), redis.Config{Addrs: []string{m.Addr()}})
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { _ = rdb.Close() })
+
+    // Exercise your code against rdb here.
+}
+```
+
+Because `New` returns go-redis's `redis.UniversalClient` interface, you can also mock it
+with gomock: `mockgen -destination mock_redis.go github.com/redis/go-redis/v9 UniversalClient`.
+
 ## Config reference
 
 | Field | Default | Notes |

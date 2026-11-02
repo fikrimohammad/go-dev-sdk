@@ -66,7 +66,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T9: redis pool metrics in semconv form; Close waits for the poller (R2, R3, R4)
 
 ### Wave 4
-- [ ] T10: redis `New(ctx)` check, lint cleanup, testing recipe, strict (X8, X9, N19)
+- [x] T10: redis `New(ctx)` check, lint cleanup, testing recipe, strict (X8, X9, N19)
 
 ### Checkpoint B: final Opus review; PR description; owner review
 
