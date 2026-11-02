@@ -99,12 +99,12 @@ the capability-map link, this plan, and the task list. Open a draft PR whose bod
 - One metrics helper and one tracer helper (X6).
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestMiddleware_MetricAttributes`: the exact name, unit, and attribute set;
+- [x] *(regression)* `TestMiddleware_MetricAttributes`: the exact name, unit, and attribute set;
       no `rpc.system` or `rpc.service` anywhere.
-- [ ] The span keeps its name (the operation) and kind (client).
+- [x] The span keeps its name (the operation) and kind (client).
 
 **Verification:**
-- [ ] s3 module checks; coverage ≥ 85.5%.
+- [x] s3 module checks; coverage ≥ 85.5%.
 
 **Dependencies:** T1 · **Files:** `s3/s3.go`, `s3/middleware.go`, `s3/s3_test.go` · **Scope:** M
 

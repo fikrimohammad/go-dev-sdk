@@ -9,10 +9,11 @@
 //
 // Every operation executed through Client is automatically
 // recorded with one client span named after the operation and the
-// s3.client.operation.{count,duration} metrics with OTel attributes:
-// rpc.system, rpc.service, rpc.method, aws.s3.bucket, cloud.region (when known),
-// server.address and server.port (when a self-hosted endpoint is configured), and
-// error.type (the AWS API error code, a short transport label, or unknown_error).
+// rpc.client.call.duration histogram with OTel attributes:
+// rpc.system.name ("aws-api"), rpc.method ("S3/<Operation>"), aws.s3.bucket,
+// cloud.region (when known), server.address and server.port (when a
+// self-hosted endpoint is configured), and error.type (the AWS API error code,
+// a short transport label, "timeout", "canceled", or "_OTHER"; set only on failure).
 package s3
 
 import (
@@ -33,35 +34,27 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
-const (
-	// tracerScope is the OTel instrumentation scope name.
-	tracerScope = "s3.client"
+// tracerScope is the OTel instrumentation scope name.
+const tracerScope = "s3.client"
 
-	// metricCount and metricDuration are the OTel metric names emitted per performed operation.
-	metricCount    = "s3.client.operation.count"
-	metricDuration = "s3.client.operation.duration"
-)
+// rpcSystemName is the rpc.system.name value for AWS API calls. The v1.43.0
+// enum has no member for it, so the value is set as a string.
+const rpcSystemName = "aws-api"
 
-var (
-	metricCountInstrument = metrics.Instrument{
-		Name:        metricCount,
-		Unit:        "{operation}",
-		Description: "S3 client operations",
-	}
-	metricDurationInstrument = metrics.Instrument{
-		Name:        metricDuration,
-		Unit:        "s",
-		Description: "S3 client operation duration",
-	}
-)
+// rpcCallDuration describes the rpc.client.call.duration histogram, recorded once per S3 operation.
+var rpcCallDuration = metrics.Instrument{
+	Name:        "rpc.client.call.duration",
+	Unit:        "s",
+	Description: "Duration of S3 client calls.",
+}
 
 // IsNotFound returns true if err represents an S3 404/NotFound or NoSuchKey/NoSuchBucket error.
 func IsNotFound(err error) bool {
@@ -377,12 +370,11 @@ func (c *client) PresignGetObject(ctx context.Context, params *s3.GetObjectInput
 	}
 
 	start := time.Now()
-	tr := c.tracerClient()
-	ctx, span := tr.Start(ctx, opName,
+	attrs := c.attrs(opName, bucket)
+	ctx, span := c.tracerClient().Start(ctx, opName,
 		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(tracer.Attrs(c.samplingAttrs(opName, bucket))...),
+		trace.WithAttributes(tracer.Attrs(attrs)...),
 	)
-	defer span.End()
 
 	if c.presignDefaultExpiry > 0 {
 		optFns = append([]func(*s3.PresignOptions){
@@ -395,14 +387,7 @@ func (c *client) PresignGetObject(ctx context.Context, params *s3.GetObjectInput
 	}
 
 	req, err := c.presigner.PresignGetObject(ctx, params, optFns...)
-	etype := ""
-	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		etype = errorType(err)
-		span.SetAttributes(attribute.String("error.type", etype))
-	}
-
-	c.recordMetrics(ctx, opName, bucket, etype, time.Since(start))
+	c.finish(ctx, span, attrs, start, err)
 	return req, err
 }
 
@@ -415,12 +400,11 @@ func (c *client) PresignPutObject(ctx context.Context, params *s3.PutObjectInput
 	}
 
 	start := time.Now()
-	tr := c.tracerClient()
-	ctx, span := tr.Start(ctx, opName,
+	attrs := c.attrs(opName, bucket)
+	ctx, span := c.tracerClient().Start(ctx, opName,
 		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(tracer.Attrs(c.samplingAttrs(opName, bucket))...),
+		trace.WithAttributes(tracer.Attrs(attrs)...),
 	)
-	defer span.End()
 
 	if c.presignDefaultExpiry > 0 {
 		optFns = append([]func(*s3.PresignOptions){
@@ -433,87 +417,70 @@ func (c *client) PresignPutObject(ctx context.Context, params *s3.PutObjectInput
 	}
 
 	req, err := c.presigner.PresignPutObject(ctx, params, optFns...)
-	etype := ""
-	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		etype = errorType(err)
-		span.SetAttributes(attribute.String("error.type", etype))
-	}
-
-	c.recordMetrics(ctx, opName, bucket, etype, time.Since(start))
+	c.finish(ctx, span, attrs, start, err)
 	return req, err
 }
 
-// tracerClient returns the configured tracer client or falls back to package default.
+// metricsClient returns the injected metrics client, or the OTel global meter
+// provider's client when none was injected. It is resolved on every call.
+func (m meta) metricsClient() metrics.Client {
+	if m.metrics != nil {
+		return m.metrics
+	}
+	return metrics.Default()
+}
+
+// tracerClient returns the tracer for the S3 instrumentation scope, from the
+// injected tracer client or the OTel global tracer provider when none was
+// injected. It is resolved on every call.
 func (m meta) tracerClient() trace.Tracer {
 	if m.tracer != nil {
 		return m.tracer.Tracer(tracerScope)
 	}
-	return tracer.Tracer(tracerScope)
+	return tracer.Default().Tracer(tracerScope)
 }
 
-// recordMetrics records count and duration histograms for an operation.
-func (m meta) recordMetrics(ctx context.Context, op, bucket, etype string, duration time.Duration) {
-	attrs := m.attrs(op, bucket, etype)
-	if m.metrics != nil {
-		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = m.metrics.Record(ctx, metricDurationInstrument, duration.Seconds(), attrs)
-	} else {
-		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = metrics.Record(ctx, metricDurationInstrument, duration.Seconds(), attrs)
-	}
-}
-
-// samplingAttrs returns the attributes that matter for sampling decisions and
-// are therefore set at span creation time.
-func (m meta) samplingAttrs(op, bucket string) map[string]any {
+// attrs returns the attributes that one S3 operation puts on its span and on
+// its duration point. Attributes with no known value are left out, so none is
+// ever empty.
+func (m meta) attrs(op, bucket string) map[string]any {
 	a := map[string]any{
-		"rpc.system":  "aws-api",
-		"rpc.service": "s3",
-		"rpc.method":  op,
+		string(semconv.RPCSystemNameKey): rpcSystemName,
+		string(semconv.RPCMethodKey):     "S3/" + op,
 	}
 	if bucket != "" {
-		a["aws.s3.bucket"] = bucket
+		a[string(semconv.AWSS3BucketKey)] = bucket
 	}
 	if m.region != "" {
-		a["cloud.region"] = m.region
+		a[string(semconv.CloudRegionKey)] = m.region
 	}
 	if m.serverAddr != "" {
-		a["server.address"] = m.serverAddr
-		a["server.port"] = m.serverPort
+		a[string(semconv.ServerAddressKey)] = m.serverAddr
+	}
+	if m.serverPort != 0 {
+		a[string(semconv.ServerPortKey)] = m.serverPort
 	}
 	return a
 }
 
-// attrs builds the OTel attributes for a single span / metric event.
-func (m meta) attrs(op, bucket, etype string) map[string]any {
-	a := map[string]any{
-		"rpc.system":  "aws-api",
-		"rpc.service": "s3",
-		"rpc.method":  op,
+// finish completes one operation. When err is non-nil it sets error.type and
+// the error status on the span. It then ends the span and records the
+// rpc.client.call.duration point, which carries the same attributes as the
+// span. Telemetry errors never fail the call.
+func (m meta) finish(ctx context.Context, span trace.Span, attrs map[string]any, start time.Time, err error) {
+	if err != nil {
+		etype := errorType(err)
+		attrs[string(semconv.ErrorTypeKey)] = etype
+		span.SetStatus(codes.Error, err.Error())
+		span.SetAttributes(semconv.ErrorTypeKey.String(etype))
 	}
-	if etype != "" {
-		a["error.type"] = etype
-	}
-	if bucket != "" {
-		a["aws.s3.bucket"] = bucket
-	}
-	if m.region != "" {
-		a["cloud.region"] = m.region
-	}
-	if m.serverAddr != "" {
-		a["server.address"] = m.serverAddr
-		a["server.port"] = m.serverPort
-	}
-	return a
+	span.End()
+	_ = m.metricsClient().Record(ctx, rpcCallDuration, time.Since(start).Seconds(), attrs)
 }
 
-// errorType extracts a standardized error.type label from err.
+// errorType returns the error.type value for a non-nil err: the AWS API error
+// code, a transport label, "timeout", "canceled", or "_OTHER".
 func errorType(err error) string {
-	if err == nil {
-		return ""
-	}
-
 	var aerr smithy.APIError
 	if errors.As(err, &aerr) {
 		if code := aerr.ErrorCode(); code != "" {
@@ -524,7 +491,7 @@ func errorType(err error) string {
 	var operr *smithy.OperationError
 	if errors.As(err, &operr) {
 		if operr.Err != nil {
-			if code := errorType(operr.Err); code != "" && code != "unknown_error" {
+			if code := errorType(operr.Err); code != "_OTHER" {
 				return code
 			}
 		}
@@ -578,5 +545,5 @@ func errorType(err error) string {
 		return "canceled"
 	}
 
-	return "unknown_error"
+	return "_OTHER"
 }

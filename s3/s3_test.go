@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -45,15 +48,11 @@ type metricRec struct {
 }
 
 type fakeMetrics struct {
-	mu     sync.Mutex
-	counts []metricRec
-	hists  []metricRec
+	mu    sync.Mutex
+	hists []metricRec
 }
 
-func (f *fakeMetrics) Add(_ context.Context, instrument metrics.Instrument, value int64, attrs map[string]any) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.counts = append(f.counts, metricRec{instrument.Name, float64(value), normalizeAttrs(attrs)})
+func (f *fakeMetrics) Add(context.Context, metrics.Instrument, int64, map[string]any) error {
 	return nil
 }
 
@@ -75,15 +74,6 @@ func (f *fakeMetrics) RecordGauge(context.Context, metrics.Instrument, float64, 
 func (f *fakeMetrics) Provider() metric.MeterProvider { return nil }
 
 func (f *fakeMetrics) Stop(context.Context) error { return nil }
-
-func (f *fakeMetrics) lastCount() (metricRec, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.counts) == 0 {
-		return metricRec{}, false
-	}
-	return f.counts[len(f.counts)-1], true
-}
 
 func (f *fakeMetrics) lastHist() (metricRec, bool) {
 	f.mu.Lock()
@@ -780,6 +770,31 @@ func TestDeleteBucket_Error(t *testing.T) {
 	}
 }
 
+func TestHeadBucket_Success(t *testing.T) {
+	api := &stubS3API{}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	if _, err := c.HeadBucket(context.Background(), &s3.HeadBucketInput{
+		Bucket: aws.String("reports"),
+	}); err != nil {
+		t.Fatalf("HeadBucket: %v", err)
+	}
+	if api.headBucketCalls != 1 {
+		t.Fatalf("headBucketCalls = %d, want 1", api.headBucketCalls)
+	}
+}
+
+func TestHeadBucket_Error(t *testing.T) {
+	api := &stubS3API{headBucketErr: errors.New("forbidden")}
+	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+
+	if _, err := c.HeadBucket(context.Background(), &s3.HeadBucketInput{
+		Bucket: aws.String("private"),
+	}); err == nil {
+		t.Fatalf("HeadBucket(%q) = %v, want error", "private", err)
+	}
+}
+
 func TestListBuckets_Success(t *testing.T) {
 	api := &stubS3API{}
 	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
@@ -838,19 +853,19 @@ func TestPresignGetObject_Success(t *testing.T) {
 		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
 	}
 	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "reports" || attrs["rpc.method"] != "PresignGetObject" {
+	if attrs["aws.s3.bucket"] != "reports" || attrs["rpc.method"] != "S3/PresignGetObject" {
 		t.Fatalf("unexpected span attrs: %+v", attrs)
 	}
 	if _, hasErr := attrs["error.type"]; hasErr {
 		t.Fatalf("error.type should be absent on success, got: %v", attrs["error.type"])
 	}
 
-	count, ok := fm.lastCount()
-	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignGetObject" || count.attrs["aws.s3.bucket"] != "reports" {
-		t.Fatalf("unexpected count metric: %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignGetObject" || hist.attrs["aws.s3.bucket"] != "reports" {
+		t.Fatalf("unexpected duration metric: %+v", hist)
 	}
-	if _, hasErr := count.attrs["error.type"]; hasErr {
-		t.Fatalf("expected metric error.type to be absent on success, got: %v", count.attrs["error.type"])
+	if _, hasErr := hist.attrs["error.type"]; hasErr {
+		t.Fatalf("metric error.type = %v, want absent on success", hist.attrs["error.type"])
 	}
 }
 
@@ -891,13 +906,13 @@ func TestPresignGetObject_Error(t *testing.T) {
 		t.Fatalf("span status = %v, want Error", span.Status().Code)
 	}
 	attrs := spanAttrs(span)
-	if attrs["error.type"] != "unknown_error" {
-		t.Fatalf("error.type = %v, want unknown_error", attrs["error.type"])
+	if attrs["error.type"] != "_OTHER" {
+		t.Fatalf("error.type = %v, want _OTHER", attrs["error.type"])
 	}
 
-	count, ok := fm.lastCount()
-	if !ok || count.name != metricCount || count.attrs["error.type"] != "unknown_error" {
-		t.Fatalf("unexpected count metric: %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["error.type"] != "_OTHER" {
+		t.Fatalf("unexpected duration metric: %+v", hist)
 	}
 }
 
@@ -933,13 +948,13 @@ func TestPresignPutObject_Success(t *testing.T) {
 		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
 	}
 	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "uploads" || attrs["rpc.method"] != "PresignPutObject" {
+	if attrs["aws.s3.bucket"] != "uploads" || attrs["rpc.method"] != "S3/PresignPutObject" {
 		t.Fatalf("unexpected span attrs: %+v", attrs)
 	}
 
-	count, ok := fm.lastCount()
-	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignPutObject" {
-		t.Fatalf("unexpected count metric: %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignPutObject" {
+		t.Fatalf("unexpected duration metric: %+v", hist)
 	}
 }
 
@@ -980,9 +995,9 @@ func TestPresignPutObject_Error(t *testing.T) {
 		t.Fatalf("span status = %v, want Error", span.Status().Code)
 	}
 
-	count, ok := fm.lastCount()
-	if !ok || count.name != metricCount || count.attrs["error.type"] != "unknown_error" {
-		t.Fatalf("unexpected count metric: %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["error.type"] != "_OTHER" {
+		t.Fatalf("unexpected duration metric: %+v", hist)
 	}
 }
 
@@ -1066,14 +1081,34 @@ func TestErrorType(t *testing.T) {
 			want: "timeout",
 		},
 		{
-			name: "plain error",
-			err:  errors.New("boom"),
-			want: "unknown_error",
+			name: "op error with dns cause",
+			err:  &smithy.OperationError{Err: &net.OpError{Op: "dial", Err: &net.DNSError{Err: "no such host"}}},
+			want: "dns_error",
 		},
 		{
-			name: "nil",
-			err:  nil,
-			want: "",
+			name: "op error with plain cause",
+			err:  &smithy.OperationError{Err: &net.OpError{Op: "dial", Err: errors.New("boom")}},
+			want: "network_error",
+		},
+		{
+			name: "bare dns error",
+			err:  &net.DNSError{Err: "no such host", Name: "minio.local"},
+			want: "dns_error",
+		},
+		{
+			name: "deadline exceeded in message",
+			err:  errors.New("dial tcp: context deadline exceeded"),
+			want: "timeout",
+		},
+		{
+			name: "canceled in message",
+			err:  errors.New("read: context canceled"),
+			want: "canceled",
+		},
+		{
+			name: "plain error",
+			err:  errors.New("boom"),
+			want: "_OTHER",
 		},
 	}
 	for _, tc := range cases {
@@ -1130,21 +1165,18 @@ func TestInstrumentationMiddleware_HandleInitialize_Success(t *testing.T) {
 		t.Fatalf("span = %+v, want PutObject", span)
 	}
 	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "my-bucket" || attrs["rpc.method"] != "PutObject" || attrs["cloud.region"] != "us-east-1" {
+	if attrs["aws.s3.bucket"] != "my-bucket" || attrs["rpc.method"] != "S3/PutObject" || attrs["cloud.region"] != "us-east-1" {
 		t.Fatalf("unexpected attrs: %+v", attrs)
 	}
 	if errType, hasErr := attrs["error.type"]; hasErr && errType != "" {
 		t.Fatalf("error.type should be absent or empty on success, got %v", errType)
 	}
-	count, ok := fm.lastCount()
-	if !ok || count.name != metricCount || count.attrs["aws.s3.bucket"] != "my-bucket" {
-		t.Fatalf("count metric = %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["aws.s3.bucket"] != "my-bucket" || hist.attrs["rpc.method"] != "S3/PutObject" {
+		t.Fatalf("duration metric = %+v", hist)
 	}
-	if _, hasErr := count.attrs["error.type"]; hasErr {
-		t.Fatalf("expected metric error.type to be absent on success, got: %v", count.attrs["error.type"])
-	}
-	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration || hist.attrs["rpc.method"] != "PutObject" {
-		t.Fatalf("hist metric = %+v", hist)
+	if _, hasErr := hist.attrs["error.type"]; hasErr {
+		t.Fatalf("metric error.type = %v, want absent on success", hist.attrs["error.type"])
 	}
 }
 
@@ -1189,6 +1221,131 @@ func TestInstrumentationMiddleware_HandleInitialize_Error(t *testing.T) {
 	attrs := spanAttrs(span)
 	if attrs["error.type"] != "BucketNotEmpty" {
 		t.Fatalf("error.type = %v, want BucketNotEmpty", attrs["error.type"])
+	}
+}
+
+// --- test: metric and span attributes ----------------------------------------------
+
+// collectMetrics returns every metric the reader has collected, keyed by name.
+func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	out := make(map[string]metricdata.Metrics)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			out[m.Name] = m
+		}
+	}
+	return out
+}
+
+// attrStrings returns the emitted value of each attribute, keyed by attribute name.
+func attrStrings(kvs []attribute.KeyValue) map[string]string {
+	out := make(map[string]string, len(kvs))
+	for _, kv := range kvs {
+		out[string(kv.Key)] = kv.Value.String()
+	}
+	return out
+}
+
+func TestMiddleware_MetricAttributes(t *testing.T) {
+	const noSuchBucket = `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`
+
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		// wantErrType is the expected error.type, empty on success.
+		wantErrType string
+	}{
+		{name: "success", status: http.StatusOK},
+		{name: "failure", status: http.StatusNotFound, body: noSuchBucket, wantErrType: "NoSuchBucket"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/xml")
+				w.Header().Set("ETag", `"etag-123"`)
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+
+			u, err := url.Parse(srv.URL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", srv.URL, err)
+			}
+
+			ex := &recordingExporter{}
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+			reader := sdkmetric.NewManualReader()
+			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+			cli, err := New(Config{
+				Region:          "us-east-1",
+				Endpoint:        srv.URL,
+				AccessKeyID:     "test-key",
+				SecretAccessKey: "test-secret",
+			}, WithMetrics(metrics.Wrap(mp)), WithTracer(tracer.Wrap(tp)))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			_, err = cli.PutObject(t.Context(), &s3.PutObjectInput{
+				Bucket: aws.String("production-data"),
+				Key:    aws.String("report.pdf"),
+				Body:   strings.NewReader("pdf-content"),
+			})
+			if (err != nil) != (tt.wantErrType != "") {
+				t.Fatalf("PutObject error = %v, want error %t", err, tt.wantErrType != "")
+			}
+
+			want := map[string]string{
+				"rpc.system.name": "aws-api",
+				"rpc.method":      "S3/PutObject",
+				"aws.s3.bucket":   "production-data",
+				"cloud.region":    "us-east-1",
+				"server.address":  u.Hostname(),
+				"server.port":     u.Port(),
+			}
+			if tt.wantErrType != "" {
+				want["error.type"] = tt.wantErrType
+			}
+
+			all := collectMetrics(t, reader)
+			names := slices.Sorted(maps.Keys(all))
+			if want := []string{"rpc.client.call.duration"}; !slices.Equal(names, want) {
+				t.Fatalf("metric names = %v, want %v", names, want)
+			}
+			m := all["rpc.client.call.duration"]
+			if m.Unit != "s" {
+				t.Errorf("unit = %q, want %q", m.Unit, "s")
+			}
+			hist, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("data = %T, want Histogram[float64]", m.Data)
+			}
+			if len(hist.DataPoints) != 1 || hist.DataPoints[0].Count != 1 {
+				t.Fatalf("data points = %+v, want one point with count 1", hist.DataPoints)
+			}
+			if got := attrStrings(hist.DataPoints[0].Attributes.ToSlice()); !maps.Equal(got, want) {
+				t.Errorf("metric attributes = %v, want %v", got, want)
+			}
+
+			span, ok := ex.last()
+			if !ok || span.Name() != "PutObject" || span.SpanKind() != trace.SpanKindClient {
+				t.Fatalf("span = %v, want PutObject client span", span)
+			}
+			if got := attrStrings(span.Attributes()); !maps.Equal(got, want) {
+				t.Errorf("span attributes = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -1245,28 +1402,28 @@ func TestMiddleware_FallsBackToOTelGlobal(t *testing.T) {
 	var found bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != metricDuration {
+			if m.Name != "rpc.client.call.duration" {
 				continue
 			}
 			h, ok := m.Data.(metricdata.Histogram[float64])
 			if !ok {
-				t.Fatalf("%s data = %T, want Histogram[float64]", metricDuration, m.Data)
+				t.Fatalf("%s data = %T, want Histogram[float64]", "rpc.client.call.duration", m.Data)
 			}
 			hist, found = h, true
 		}
 	}
 	if !found {
-		t.Fatalf("metric %q not collected from the OTel global meter provider", metricDuration)
+		t.Fatalf("metric %q not collected from the OTel global meter provider", "rpc.client.call.duration")
 	}
 	if len(hist.DataPoints) != 1 {
-		t.Fatalf("%s data points = %d, want 1", metricDuration, len(hist.DataPoints))
+		t.Fatalf("%s data points = %d, want 1", "rpc.client.call.duration", len(hist.DataPoints))
 	}
 	dp := hist.DataPoints[0]
 	if dp.Count != 1 {
-		t.Errorf("%s count = %d, want 1", metricDuration, dp.Count)
+		t.Errorf("%s count = %d, want 1", "rpc.client.call.duration", dp.Count)
 	}
-	if v, ok := dp.Attributes.Value(attribute.Key("rpc.method")); !ok || v.AsString() != "PutObject" {
-		t.Errorf("%s rpc.method = %v, want PutObject", metricDuration, v.AsString())
+	if v, ok := dp.Attributes.Value(attribute.Key("rpc.method")); !ok || v.AsString() != "S3/PutObject" {
+		t.Errorf("%s rpc.method = %v, want S3/PutObject", "rpc.client.call.duration", v.AsString())
 	}
 }
 
@@ -1372,15 +1529,19 @@ func TestMiddleware_EndToEnd_LivePutObject(t *testing.T) {
 	if attrs["aws.s3.bucket"] != "production-data" {
 		t.Fatalf("span aws.s3.bucket = %v, want production-data", attrs["aws.s3.bucket"])
 	}
-	if attrs["rpc.method"] != "PutObject" || attrs["rpc.system"] != "aws-api" || attrs["rpc.service"] != "s3" {
+	if attrs["rpc.method"] != "S3/PutObject" || attrs["rpc.system.name"] != "aws-api" {
 		t.Fatalf("unexpected RPC attributes: %+v", attrs)
 	}
-
-	if count, ok := fm.lastCount(); !ok || count.name != metricCount || count.attrs["aws.s3.bucket"] != "production-data" {
-		t.Fatalf("unexpected count metric: %+v", count)
+	if _, ok := attrs["rpc.system"]; ok {
+		t.Errorf("span has removed rpc.system attribute")
 	}
-	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration || hist.attrs["rpc.method"] != "PutObject" {
-		t.Fatalf("unexpected duration histogram metric: %+v", hist)
+	if _, ok := attrs["rpc.service"]; ok {
+		t.Errorf("span has removed rpc.service attribute")
+	}
+
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["aws.s3.bucket"] != "production-data" || hist.attrs["rpc.method"] != "S3/PutObject" {
+		t.Fatalf("unexpected duration metric: %+v", hist)
 	}
 }
 
@@ -1470,19 +1631,19 @@ func TestMiddleware_EndToEnd_PresignGetObject(t *testing.T) {
 		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
 	}
 	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "PresignGetObject" {
+	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "S3/PresignGetObject" {
 		t.Fatalf("unexpected attrs: %+v", attrs)
 	}
 	if _, hasErr := attrs["error.type"]; hasErr {
 		t.Fatalf("expected error.type to be absent on success, got %v", attrs["error.type"])
 	}
 
-	count, ok := fm.lastCount()
-	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignGetObject" || count.attrs["aws.s3.bucket"] != "presigned-bucket" {
-		t.Fatalf("unexpected count metric: %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignGetObject" || hist.attrs["aws.s3.bucket"] != "presigned-bucket" {
+		t.Fatalf("unexpected duration metric: %+v", hist)
 	}
-	if _, hasErr := count.attrs["error.type"]; hasErr {
-		t.Fatalf("expected metric error.type to be absent on success, got: %v", count.attrs["error.type"])
+	if _, hasErr := hist.attrs["error.type"]; hasErr {
+		t.Fatalf("metric error.type = %v, want absent on success", hist.attrs["error.type"])
 	}
 }
 
@@ -1522,12 +1683,12 @@ func TestMiddleware_EndToEnd_PresignPutObject(t *testing.T) {
 		t.Fatalf("span kind = %v, want SpanKindInternal", span.SpanKind())
 	}
 	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "PresignPutObject" {
+	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "S3/PresignPutObject" {
 		t.Fatalf("unexpected attrs: %+v", attrs)
 	}
 
-	count, ok := fm.lastCount()
-	if !ok || count.name != metricCount || count.attrs["rpc.method"] != "PresignPutObject" {
-		t.Fatalf("unexpected count metric: %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignPutObject" {
+		t.Fatalf("unexpected duration metric: %+v", hist)
 	}
 }

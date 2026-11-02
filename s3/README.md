@@ -8,7 +8,7 @@ client with standard AWS SDK types and automatic OpenTelemetry tracing + metrics
 - **Standard AWS SDK Types** — operates directly on standard AWS SDK types (`*s3.PutObjectInput`, `*s3.GetObjectInput`, `*transfermanager.UploadObjectInput`, etc.) with zero custom struct wrappers or mapping layers.
 - **Standard AWS SDK Methods** — standard S3 operations (`PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `CopyObject`, `ListObjectsV2`, `CreateBucket`, `DeleteBucket`, `HeadBucket`, `ListBuckets`) are natively available on `Client`.
 - **IsNotFound** — ergonomic helper for checking 404 / NoSuchKey / NoSuchBucket errors reliably.
-- **Smithy Middleware Telemetry** — automatic OpenTelemetry spans and `s3.client.operation.{count,duration}` metrics for all operations without manual method overrides.
+- **Smithy Middleware Telemetry** — automatic OpenTelemetry spans and the `rpc.client.call.duration` histogram for all operations without manual method overrides.
 - **Injectable Telemetry** — optionally override package-level metrics/tracer defaults via `WithMetrics` and `WithTracer`.
 
 ## Installation
