@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"testing"
 )
 
@@ -22,16 +24,16 @@ func TestLogValue_BasicFields(t *testing.T) {
 		t.Errorf("message = %q, want %q", m["message"].String(), "job not found")
 	}
 	if _, ok := m["debug"]; ok {
-		t.Error("debug should not be present")
+		t.Errorf("LogValue() debug = %v, want absent", m["debug"])
 	}
 	if _, ok := m["meta"]; ok {
-		t.Error("meta should not be present")
+		t.Errorf("LogValue() meta = %v, want absent", m["meta"])
 	}
 	if _, ok := m["cause"]; ok {
-		t.Error("cause should not be present")
+		t.Errorf("LogValue() cause = %v, want absent", m["cause"])
 	}
 	if _, ok := m["stack"]; ok {
-		t.Error("stack should not be present")
+		t.Errorf("LogValue() stack = %v, want absent", m["stack"])
 	}
 }
 
@@ -54,10 +56,10 @@ func TestLogValue_AllFields(t *testing.T) {
 		t.Errorf("debug = %q, want %q", m["debug"].String(), "query returned 0 rows")
 	}
 	if _, ok := m["meta"]; !ok {
-		t.Error("meta should be present")
+		t.Error("LogValue() meta = absent, want present")
 	}
 	if _, ok := m["stack"]; !ok {
-		t.Error("stack should be present")
+		t.Error("LogValue() stack = absent, want present")
 	}
 }
 
@@ -84,7 +86,7 @@ func TestLogValue_WithNestedCause(t *testing.T) {
 
 	causeVal := m["cause"]
 	if causeVal.Kind() != slog.KindGroup {
-		t.Fatalf("cause should be a group, got kind %v", causeVal.Kind())
+		t.Fatalf("LogValue() cause kind = %v, want %v", causeVal.Kind(), slog.KindGroup)
 	}
 
 	innerGroup := causeVal.Group()
@@ -106,7 +108,7 @@ func TestLogValue_EmptyOptionalFields(t *testing.T) {
 	m := slogGroupToMap(group)
 
 	if len(m) != 2 {
-		t.Errorf("expected 2 fields, got %d: %v", len(m), fieldKeys(m))
+		t.Errorf("LogValue() fields = %d %v, want 2", len(m), fieldKeys(m))
 	}
 }
 
@@ -126,7 +128,7 @@ func TestSlogAttr_WithError(t *testing.T) {
 
 	errGroup, ok := logEntry["err"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected nested group under 'err', got: %v", logEntry["err"])
+		t.Fatalf("SlogAttr(err) output err = %v, want nested group", logEntry["err"])
 	}
 	if errGroup["code"] != float64(4004) {
 		t.Errorf("err.code = %v, want %v", errGroup["code"], 4004)
@@ -170,4 +172,73 @@ func fieldKeys(m map[string]slog.Value) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+func TestError_LogValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       *Error
+		wantDebug string
+		wantMeta  map[string]any
+	}{
+		{
+			name:      "debug and meta",
+			err:       New(4004, "not found").WithDebug("d").WithMeta("k", "v"),
+			wantDebug: "d",
+			wantMeta:  map[string]any{"k": "v"},
+		},
+		{
+			name:      "only debug omits meta",
+			err:       New(4004, "not found").WithDebug("d"),
+			wantDebug: "d",
+			wantMeta:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, nil))
+			logger.Error("export failed", SlogAttr(tt.err))
+
+			var logEntry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+				t.Fatalf("failed to unmarshal log output: %v", err)
+			}
+			errObj, ok := logEntry["err"].(map[string]any)
+			if !ok {
+				t.Fatalf("LogValue() err = %v, want map[string]any", logEntry["err"])
+			}
+
+			if got := errObj["debug"]; got != tt.wantDebug {
+				t.Errorf("LogValue() debug = %v, want %v", got, tt.wantDebug)
+			}
+			if tt.wantMeta == nil {
+				if _, present := errObj["meta"]; present {
+					t.Errorf("LogValue() meta = %v, want absent", errObj["meta"])
+				}
+			} else {
+				got, _ := errObj["meta"].(map[string]any)
+				if !maps.Equal(got, tt.wantMeta) {
+					t.Errorf("LogValue() meta = %v, want %v", got, tt.wantMeta)
+				}
+			}
+		})
+	}
+}
+
+func TestSlogAttr(t *testing.T) {
+	err := fmt.Errorf("wrap: %w", New(42, "boom"))
+
+	attr := SlogAttr(err)
+	if attr.Key != "err" {
+		t.Errorf("SlogAttr(%v).Key = %q, want %q", err, attr.Key, "err")
+	}
+	if attr.Value.Kind() != slog.KindGroup {
+		t.Fatalf("SlogAttr(%v).Value.Kind() = %v, want %v", err, attr.Value.Kind(), slog.KindGroup)
+	}
+	code := slogGroupToMap(attr.Value.Group())["code"]
+	if code.Int64() != 42 {
+		t.Errorf("SlogAttr(%v) code = %d, want %d", err, code.Int64(), 42)
+	}
 }

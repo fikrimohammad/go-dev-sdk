@@ -137,7 +137,7 @@ type meta struct {
 	serverPort           int    // server.port, 0 for real AWS
 	presignDefaultExpiry time.Duration
 
-	// metrics and tracer override the package-level defaults when non-nil.
+	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
 }
@@ -151,18 +151,17 @@ type options struct {
 }
 
 // WithMetrics injects a metrics client for the instrumented operations. A nil
-// client falls back to the package-level default (metrics.SetDefault).
+// client falls back to the OTel global meter provider (otel.SetMeterProvider).
 func WithMetrics(m metrics.Client) Option {
 	return func(o *options) { o.metrics = m }
 }
 
 // WithTracer injects a tracer client for the instrumented operations. A nil
-// client falls back to the package-level default (tracer.SetDefault).
+// client falls back to the OTel global tracer provider (otel.SetTracerProvider).
 func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
 
-// New applies cfg.SetDefaults and cfg.Validate, loads the AWS configuration
 // New applies cfg.SetDefaults and cfg.Validate, loads the AWS configuration
 // (region, optional static credentials and endpoint), derives a transfer
 // manager and a presign client from the underlying AWS config, registers the

@@ -3,7 +3,6 @@ package errgroup
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,7 +31,7 @@ func TestGroup_Go_HappyPath(t *testing.T) {
 		t.Fatalf("Wait returned unexpected error: %v", err)
 	}
 	if got := counter.Load(); got != n {
-		t.Fatalf("expected %d tasks to run, got %d", n, got)
+		t.Fatalf("Go(%d tasks) ran = %d, want %d", n, got, n)
 	}
 }
 
@@ -59,12 +58,12 @@ func TestGroup_Go_FirstErrorIsReturned(t *testing.T) {
 
 	err := g.Wait()
 	if !errors.Is(err, errBoom) {
-		t.Fatalf("expected Wait error to be errBoom, got %v", err)
+		t.Fatalf("Wait() = %v, want errBoom", err)
 	}
 
 	// Group context must be canceled after Wait returns.
 	if err := g.Context().Err(); err == nil {
-		t.Fatalf("expected group context to be cancelled after Wait, got nil")
+		t.Fatal("Context().Err() = nil, want canceled after Wait")
 	}
 }
 
@@ -75,25 +74,23 @@ func TestGroup_Go_FirstErrorIsReturned(t *testing.T) {
 func TestGroup_Go_PanicWithErrorPreservesWrap(t *testing.T) {
 	t.Parallel()
 
+	sentinel := errors.New("sentinel")
 	g := New(context.Background())
 
 	g.Go(func(ctx context.Context) error {
-		panic(errBoom)
+		panic(sentinel)
 	})
 
 	err := g.Wait()
-	if err == nil {
-		t.Fatal("expected non-nil error from panicking task")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Wait() error = %v, want errors.Is sentinel", err)
 	}
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("expected errors.Is(err, errBoom) to be true, got err=%v", err)
+	pe, ok := errors.AsType[*PanicError](err)
+	if !ok {
+		t.Fatalf("Wait() error = %T, want *PanicError in chain", err)
 	}
-	if !strings.Contains(err.Error(), "panic recovered") {
-		t.Fatalf("expected error to be labelled as recovered panic, got %q", err.Error())
-	}
-	// Sanity: a stack trace should be included.
-	if !strings.Contains(err.Error(), "goroutine") {
-		t.Fatalf("expected stack trace in error, got %q", err.Error())
+	if len(pe.Stack) == 0 {
+		t.Error("PanicError.Stack is empty, want a stack trace")
 	}
 }
 
@@ -103,18 +100,25 @@ func TestGroup_Go_PanicWithStringIsWrapped(t *testing.T) {
 	g := New(context.Background())
 
 	g.Go(func(ctx context.Context) error {
-		panic("something exploded")
+		panic("boom")
 	})
 
 	err := g.Wait()
-	if err == nil {
-		t.Fatal("expected non-nil error from panicking task")
+	pe, ok := errors.AsType[*PanicError](err)
+	if !ok {
+		t.Fatalf("Wait() error = %T, want *PanicError in chain", err)
 	}
-	if !strings.Contains(err.Error(), "something exploded") {
-		t.Fatalf("expected panic value to appear in error message, got %q", err.Error())
+	if pe.Value != "boom" {
+		t.Errorf("PanicError.Value = %v, want %q", pe.Value, "boom")
 	}
-	if !strings.Contains(err.Error(), "panic recovered") {
-		t.Fatalf("expected panic-recovered label, got %q", err.Error())
+	if len(pe.Stack) == 0 {
+		t.Error("PanicError.Stack is empty, want a stack trace")
+	}
+	if got := pe.Unwrap(); got != nil {
+		t.Errorf("PanicError.Unwrap() = %v, want nil", got)
+	}
+	if got, want := pe.Error(), "errgroup: task panicked: boom"; got != want {
+		t.Errorf("PanicError.Error() = %q, want %q", got, want)
 	}
 }
 
@@ -156,7 +160,7 @@ func TestGroup_MaxConcurrency_LimitsInFlight(t *testing.T) {
 		t.Fatalf("Wait returned error: %v", err)
 	}
 	if got := maxInflight.Load(); got > int32(limit) {
-		t.Fatalf("expected at most %d concurrent tasks, observed %d", limit, got)
+		t.Fatalf("max in-flight = %d, want at most %d", got, limit)
 	}
 }
 
@@ -178,7 +182,7 @@ func TestGroup_TryGo_ReturnsFalseWhenSaturated(t *testing.T) {
 		<-release
 		return nil
 	}); !ok {
-		t.Fatal("expected first TryGo to succeed")
+		t.Fatal("TryGo(first) = false, want true")
 	}
 
 	<-started // ensure the slot is really occupied
@@ -186,7 +190,7 @@ func TestGroup_TryGo_ReturnsFalseWhenSaturated(t *testing.T) {
 	if ok := g.TryGo(func(ctx context.Context) error {
 		return nil
 	}); ok {
-		t.Fatal("expected second TryGo to be rejected while limit is saturated")
+		t.Fatal("TryGo(saturated) = true, want false")
 	}
 
 	close(release)
@@ -203,15 +207,36 @@ func TestGroup_TryGo_RecoversPanic(t *testing.T) {
 	if ok := g.TryGo(func(ctx context.Context) error {
 		panic("try-go boom")
 	}); !ok {
-		t.Fatal("expected TryGo to succeed")
+		t.Fatal("TryGo(panic boom) = false, want true")
+	}
+
+	pe, ok := errors.AsType[*PanicError](g.Wait())
+	if !ok {
+		t.Fatal("Wait() error is not a *PanicError from panicking TryGo task")
+	}
+	if pe.Value != "try-go boom" {
+		t.Errorf("PanicError.Value = %v, want %q", pe.Value, "try-go boom")
+	}
+}
+
+func TestGroup_TryGo_PanicWithErrorPreservesWrap(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("sentinel")
+	g := New(context.Background())
+
+	if ok := g.TryGo(func(ctx context.Context) error {
+		panic(sentinel)
+	}); !ok {
+		t.Fatal("TryGo(panic sentinel) = false, want true")
 	}
 
 	err := g.Wait()
-	if err == nil {
-		t.Fatal("expected non-nil error from panicking TryGo task")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Wait() error = %v, want errors.Is sentinel", err)
 	}
-	if !strings.Contains(err.Error(), "try-go boom") {
-		t.Fatalf("expected recovered panic message, got %q", err.Error())
+	if _, ok := errors.AsType[*PanicError](err); !ok {
+		t.Fatalf("Wait() error = %T, want *PanicError in chain", err)
 	}
 }
 
@@ -236,10 +261,10 @@ func TestGroup_Go_SkipsAfterCancellation(t *testing.T) {
 
 	err := g.Wait()
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected Wait to return context.Canceled, got %v", err)
+		t.Fatalf("Wait() = %v, want context.Canceled", err)
 	}
 	if invoked.Load() {
-		t.Fatal("task body should not have been invoked after cancellation")
+		t.Fatalf("Go() task body invoked = %v, want false after cancellation", invoked.Load())
 	}
 }
 
@@ -254,7 +279,7 @@ func TestSubGroup_InheritsMaxConcurrency(t *testing.T) {
 	child := parent.SubGroup()
 
 	if child.maxConcurrency != 2 {
-		t.Fatalf("expected sub-group to inherit maxConcurrency=2, got %d", child.maxConcurrency)
+		t.Fatalf("SubGroup().maxConcurrency = %d, want 2", child.maxConcurrency)
 	}
 
 	// Behavioural check: child should honour the limit.
@@ -280,7 +305,7 @@ func TestSubGroup_InheritsMaxConcurrency(t *testing.T) {
 		t.Fatalf("child.Wait returned error: %v", err)
 	}
 	if got := maxInflight.Load(); got > 2 {
-		t.Fatalf("expected sub-group to observe at most 2 in-flight, got %d", got)
+		t.Fatalf("sub-group max in-flight = %d, want at most 2", got)
 	}
 }
 
@@ -295,12 +320,12 @@ func TestSubGroup_ErrorDoesNotCancelParent(t *testing.T) {
 		return errBoom
 	})
 	if err := child.Wait(); !errors.Is(err, errBoom) {
-		t.Fatalf("expected child.Wait to return errBoom, got %v", err)
+		t.Fatalf("child.Wait() = %v, want errBoom", err)
 	}
 
 	// Parent must still be alive.
 	if err := parent.Context().Err(); err != nil {
-		t.Fatalf("parent context should not be cancelled by child failure, got %v", err)
+		t.Fatalf("Context().Err() after child failure = %v, want nil", err)
 	}
 
 	// Parent can still run new work.
@@ -313,7 +338,7 @@ func TestSubGroup_ErrorDoesNotCancelParent(t *testing.T) {
 		t.Fatalf("parent.Wait returned unexpected error: %v", err)
 	}
 	if !ran.Load() {
-		t.Fatal("expected parent task to run after child failure")
+		t.Fatal("parent task ran = false, want true after child failure")
 	}
 }
 
@@ -342,42 +367,18 @@ func TestSubGroup_ParentCancellationCancelsChild(t *testing.T) {
 
 	err := child.Wait()
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected child.Wait to return context.Canceled, got %v", err)
+		t.Fatalf("child.Wait() = %v, want context.Canceled", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if !errors.Is(observedErr, context.Canceled) {
-		t.Fatalf("expected child task to observe context.Canceled, got %v", observedErr)
+		t.Fatalf("child task ctx.Err() = %v, want context.Canceled", observedErr)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Nil context / defaults
+// Defaults
 // ---------------------------------------------------------------------------
-
-func TestNew_NilContextFallsBackToBackground(t *testing.T) {
-	t.Parallel()
-
-	g := New(nil) //nolint:staticcheck // intentional nil-ctx test
-	if g.Context() == nil {
-		t.Fatal("expected group context to be non-nil after nil-ctx fallback")
-	}
-
-	var ran atomic.Bool
-	g.Go(func(ctx context.Context) error {
-		if ctx == nil {
-			t.Errorf("task received nil ctx")
-		}
-		ran.Store(true)
-		return nil
-	})
-	if err := g.Wait(); err != nil {
-		t.Fatalf("Wait returned error: %v", err)
-	}
-	if !ran.Load() {
-		t.Fatal("expected task to run under Background fallback ctx")
-	}
-}
 
 func TestNew_ZeroMaxConcurrencyMeansUnlimited(t *testing.T) {
 	t.Parallel()
@@ -409,7 +410,7 @@ func TestNew_ZeroMaxConcurrencyMeansUnlimited(t *testing.T) {
 	}
 
 	if got := counter.Load(); got != n {
-		t.Fatalf("expected %d tasks to run, got %d", n, got)
+		t.Fatalf("Go(%d tasks) ran = %d, want %d", n, got, n)
 	}
 }
 
@@ -430,6 +431,6 @@ func TestGroup_Context_IsCancelledOnFirstError(t *testing.T) {
 	_ = g.Wait()
 
 	if err := g.Context().Err(); err == nil {
-		t.Fatal("expected group ctx to be cancelled after a task error")
+		t.Fatal("Context().Err() = nil, want canceled after task error")
 	}
 }

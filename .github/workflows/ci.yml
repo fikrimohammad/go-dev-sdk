@@ -15,6 +15,7 @@ permissions:
 env:
   GO_VERSION: "1.26.5"
   GOLANGCI_VERSION: v2.15.0
+  STRICT_LINT_MODULES: '["errgroup","errs","identity","observability","rest"]'
 
 jobs:
   modules:
@@ -64,18 +65,23 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_VERSION }}
           working-directory: ${{ matrix.module }}
-          # Existing code predates the style-guide rules; fail only on new issues.
-          only-new-issues: true
+          # Modules in STRICT_LINT_MODULES are linted on the full tree; all others
+          # fail only on new issues. Add a module in the commit that makes it clean;
+          # never remove one.
+          only-new-issues: ${{ !contains(fromJSON(env.STRICT_LINT_MODULES), matrix.module) }}
+          # The restored lint cache served stale results: on an unchanged commit it
+          # reported two nolintlint findings that an uncached run doesn't. A full
+          # uncached run of a module takes seconds, so results stay deterministic.
+          skip-cache: true
 
       - name: Vet
         run: go vet ./...
 
-      # mockey-based tests require inlining disabled (see repo README).
       - name: Test
-        run: go test -count=1 -shuffle=on -gcflags="all=-N -l" ./...
+        run: go test -count=1 -shuffle=on ./...
 
       - name: Test with race detector
-        run: go test -count=1 -race -shuffle=on -gcflags="all=-N -l" ./...
+        run: go test -count=1 -race -shuffle=on ./...
 
       - name: Tidy check
         run: go mod tidy -diff

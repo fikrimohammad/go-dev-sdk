@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestSetDefaults(t *testing.T) {
+func TestConfig_SetDefaults(t *testing.T) {
 	tests := []struct {
 		name string
 		in   Config
@@ -30,16 +30,15 @@ func TestSetDefaults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.in
-			got.setDefaults()
+			got := tt.in.SetDefaults()
 			if got != tt.want {
-				t.Errorf("setDefaults(%+v) = %+v, want %+v", tt.in, got, tt.want)
+				t.Errorf("SetDefaults(%+v) = %+v, want %+v", tt.in, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestValidate(t *testing.T) {
+func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     Config
@@ -73,13 +72,31 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.cfg.validate()
+			err := tt.cfg.Validate()
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("validate(%+v) error = %v, wantErr %v", tt.cfg, err, tt.wantErr)
+				t.Fatalf("Validate(%+v) error = %v, wantErr %v", tt.cfg, err, tt.wantErr)
 			}
 			if err != nil && !strings.HasPrefix(err.Error(), "rest/server: ") {
-				t.Errorf("validate(%+v) error = %q, want prefix %q", tt.cfg, err, "rest/server: ")
+				t.Errorf("Validate(%+v) error = %q, want prefix %q", tt.cfg, err, "rest/server: ")
 			}
 		})
+	}
+}
+
+func TestConfig_Validate_ReportsEveryProblem(t *testing.T) {
+	cfg := Config{Addr: ":3000", ReadTimeout: -time.Second, ShutdownTimeout: -time.Second}
+	err := cfg.Validate()
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("Validate(%+v) error = %v, want an errors.Join error with two problems", cfg, err)
+	}
+	if n := len(joined.Unwrap()); n != 2 {
+		t.Errorf("Validate(%+v) reported %d problems, want 2: %v", cfg, n, err)
+	}
+	if !strings.Contains(err.Error(), "rest/server: read_timeout -1s must not be negative") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "rest/server: read_timeout -1s must not be negative")
+	}
+	if !strings.Contains(err.Error(), "rest/server: shutdown_timeout -1s must not be negative") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "rest/server: shutdown_timeout -1s must not be negative")
 	}
 }

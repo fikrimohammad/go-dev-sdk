@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Defaults applied by Config.setDefaults when the corresponding field is zero.
+// Defaults applied by Config.SetDefaults when the corresponding field is zero.
 const (
 	defaultTimeout        = 30 * time.Second
 	defaultAttemptTimeout = 10 * time.Second
@@ -52,8 +52,10 @@ type Config struct {
 	TLS *tls.Config `yaml:"-" json:"-"`
 }
 
-// setDefaults replaces each zero field with its default.
-func (c *Config) setDefaults() {
+// SetDefaults returns a copy of c with each zero field replaced by its default:
+// Timeout 30s, AttemptTimeout 10s, MaxAttempts 3, BackoffBase 100ms, BackoffMax
+// 2s, MaxRetryAfter 10s, and DialTimeout 5s. Fields that are not zero are kept.
+func (c Config) SetDefaults() Config {
 	if c.Timeout == 0 {
 		c.Timeout = defaultTimeout
 	}
@@ -75,11 +77,13 @@ func (c *Config) setDefaults() {
 	if c.DialTimeout == 0 {
 		c.DialTimeout = defaultDialTimeout
 	}
+	return c
 }
 
-// validate reports whether the defaulted config is usable. Zero values were
-// already replaced by defaults, so a zero MaxAttempts never reaches this check.
-func (c *Config) validate() error {
+// Validate reports every problem with c, joined with errors.Join, or nil when c
+// is usable. Call SetDefaults first; New does.
+func (c Config) Validate() error {
+	var errs []error
 	durations := []struct {
 		name  string
 		value time.Duration
@@ -93,19 +97,19 @@ func (c *Config) validate() error {
 	}
 	for _, d := range durations {
 		if d.value < 0 {
-			return fmt.Errorf("rest/client: %s %v must not be negative", d.name, d.value)
+			errs = append(errs, fmt.Errorf("rest/client: %s %v must not be negative", d.name, d.value))
 		}
 	}
 	if c.MaxAttempts < 1 {
-		return fmt.Errorf("rest/client: max_attempts %d must be at least 1", c.MaxAttempts)
+		errs = append(errs, fmt.Errorf("rest/client: max_attempts %d must be at least 1", c.MaxAttempts))
 	}
 	if c.BackoffBase > c.BackoffMax {
-		return fmt.Errorf("rest/client: backoff_base %v must not exceed backoff_max %v", c.BackoffBase, c.BackoffMax)
+		errs = append(errs, fmt.Errorf("rest/client: backoff_base %v must not exceed backoff_max %v", c.BackoffBase, c.BackoffMax))
 	}
 	if c.Proxy != "" {
-		return validateProxy(c.Proxy)
+		errs = append(errs, validateProxy(c.Proxy))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // validateProxy reports whether proxy is an http URL with a host. The messages

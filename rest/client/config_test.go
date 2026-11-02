@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestSetDefaults(t *testing.T) {
+func TestConfig_SetDefaults(t *testing.T) {
 	defaults := Config{
 		Timeout:        30 * time.Second,
 		AttemptTimeout: 10 * time.Second,
@@ -54,16 +54,15 @@ func TestSetDefaults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.in
-			got.setDefaults()
+			got := tt.in.SetDefaults()
 			if got != tt.want {
-				t.Errorf("setDefaults(%+v) = %+v, want %+v", tt.in, got, tt.want)
+				t.Errorf("SetDefaults(%+v) = %+v, want %+v", tt.in, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestValidate(t *testing.T) {
+func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     Config
@@ -157,27 +156,43 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := tt.cfg
-			cfg.setDefaults()
-			err := cfg.validate()
+			cfg := tt.cfg.SetDefaults()
+			err := cfg.Validate()
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("validate(%+v) error = %v, wantErr %v", tt.cfg, err, tt.wantErr)
+				t.Fatalf("Validate(%+v) error = %v, wantErr %v", tt.cfg, err, tt.wantErr)
 			}
 			if err != nil && !strings.HasPrefix(err.Error(), "rest/client: ") {
-				t.Errorf("validate(%+v) error = %q, want prefix %q", tt.cfg, err.Error(), "rest/client: ")
+				t.Errorf("Validate(%+v) error = %q, want prefix %q", tt.cfg, err.Error(), "rest/client: ")
 			}
 		})
 	}
 }
 
-func TestValidate_ProxySchemeMessage(t *testing.T) {
-	cfg := Config{Proxy: "https://egress:443"}
-	cfg.setDefaults()
-	err := cfg.validate()
+func TestConfig_Validate_ReportsEveryProblem(t *testing.T) {
+	cfg := Config{Timeout: -time.Second, MaxAttempts: -1}.SetDefaults()
+	err := cfg.Validate()
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("Validate(%+v) error = %v, want an errors.Join error with two problems", cfg, err)
+	}
+	if n := len(joined.Unwrap()); n != 2 {
+		t.Errorf("Validate(%+v) reported %d problems, want 2: %v", cfg, n, err)
+	}
+	if !strings.Contains(err.Error(), "rest/client: timeout -1s must not be negative") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "rest/client: timeout -1s must not be negative")
+	}
+	if !strings.Contains(err.Error(), "rest/client: max_attempts -1 must be at least 1") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "rest/client: max_attempts -1 must be at least 1")
+	}
+}
+
+func TestConfig_Validate_ProxySchemeMessage(t *testing.T) {
+	cfg := Config{Proxy: "https://egress:443"}.SetDefaults()
+	err := cfg.Validate()
 	if err == nil {
-		t.Fatalf("validate(Proxy: %q) error = nil, want an error", cfg.Proxy)
+		t.Fatalf("Validate(Proxy: %q) error = nil, want an error", cfg.Proxy)
 	}
 	if want := "rest/client: proxy scheme must be http"; err.Error() != want {
-		t.Errorf("validate(Proxy: %q) error = %q, want %q", cfg.Proxy, err.Error(), want)
+		t.Errorf("Validate(Proxy: %q) error = %q, want %q", cfg.Proxy, err.Error(), want)
 	}
 }

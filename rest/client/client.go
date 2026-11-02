@@ -60,22 +60,22 @@ import (
 type Option func(*options)
 
 // options holds the telemetry clients set by Option. A nil client means the
-// package-level default.
+// OTel global provider.
 type options struct {
 	metrics metrics.Client
 	tracer  tracer.Client
 }
 
 // WithMetrics sets the metrics client for the client's measurements. Without
-// it, or with a nil m, the client uses the package-level default
-// (metrics.SetDefault), read on every attempt.
+// it, or with a nil m, the client uses the OTel global meter provider
+// (otel.SetMeterProvider), read on every attempt.
 func WithMetrics(m metrics.Client) Option {
 	return func(o *options) { o.metrics = m }
 }
 
 // WithTracer sets the tracer client for the client's spans. Without it, or
-// with a nil t, the client uses the package-level default (tracer.SetDefault),
-// read on every attempt.
+// with a nil t, the client uses the OTel global tracer provider
+// (otel.SetTracerProvider or tracer.SetGlobal), read on every attempt.
 func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
@@ -99,8 +99,8 @@ func New(cfg Config, opts ...Option) (*hclient.Client, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+	cfg = cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	// WithTLSConfig is always applied. It also selects the standard dialer,

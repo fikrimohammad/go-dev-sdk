@@ -45,7 +45,7 @@ func (e *Error) Meta() map[string]any {
 	return m
 }
 
-// Error returns a concise error string: message: cause
+// Error returns a concise error string: message: cause.
 func (e *Error) Error() string {
 	if e.cause != nil {
 		return fmt.Sprintf("%s: %v", e.message, e.cause)
@@ -58,13 +58,11 @@ func (e *Error) Unwrap() error {
 	return e.cause
 }
 
-// Is reports whether any error in e's chain matches target.
-// It matches when the target is an *Error and codes are equal.
+// Is reports whether target is an *Error with the same non-zero code.
+// Errors with code 0 (unknown) never match by code.
 func (e *Error) Is(target error) bool {
-	if t, ok := target.(*Error); ok {
-		return e.code == t.code
-	}
-	return false
+	t, ok := target.(*Error)
+	return ok && e.code != 0 && e.code == t.code
 }
 
 // WithMeta returns a new Error with the given key-value metadata pair added.

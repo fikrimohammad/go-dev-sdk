@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,8 +14,11 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jmoiron/sqlx"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
@@ -249,17 +253,50 @@ func setupTestWithDriver(t *testing.T, d *stubDB, spec driverSpec, systemName, n
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	tracer.SetDefault(tracer.Wrap(tp))
 
 	fm := &fakeMetrics{}
-	metrics.SetDefault(fm)
 
 	return &dbConn{DB: sqlx.NewDb(sqlDB, spec.name), driver: spec, meta: meta{
 		systemName: systemName,
 		namespace:  namespace,
 		serverAddr: "db.example.com",
 		serverPort: spec.port,
+		metrics:    fm,
+		tracer:     tracer.Wrap(tp),
 	}}, fm, ex
+}
+
+// setOTelProviders installs tp and mp as the OTel global providers for the
+// duration of the test. The previous globals are restored in t.Cleanup.
+func setOTelProviders(t *testing.T, tp trace.TracerProvider, mp metric.MeterProvider) {
+	t.Helper()
+	prevTP, prevMP := otel.GetTracerProvider(), otel.GetMeterProvider()
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		if otel.GetTracerProvider() != prevTP {
+			otel.SetTracerProvider(prevTP)
+		}
+		if otel.GetMeterProvider() != prevMP {
+			otel.SetMeterProvider(prevMP)
+		}
+	})
+}
+
+// collectedMetrics returns the names of the metrics r has collected so far.
+func collectedMetrics(t *testing.T, r *sdkmetric.ManualReader) []string {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := r.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	var names []string
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			names = append(names, m.Name)
+		}
+	}
+	return names
 }
 
 func stubExecErr(t *testing.T, err error) {
@@ -339,13 +376,14 @@ func TestConnect_InjectedClients(t *testing.T) {
 	testBackend.rows = [][]driver.Value{{int64(1), "a"}}
 	testBackend.mu.Unlock()
 
-	// Package-level defaults: fresh, must receive nothing.
+	// OTel global providers are the fallback defaults: fresh, must receive nothing.
 	defEx := &recordingExporter{}
 	defTp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(defEx)))
 	t.Cleanup(func() { _ = defTp.Shutdown(context.Background()) })
-	tracer.SetDefault(tracer.Wrap(defTp))
-	defFm := &fakeMetrics{}
-	metrics.SetDefault(defFm)
+	defReader := sdkmetric.NewManualReader()
+	defMp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(defReader))
+	t.Cleanup(func() { _ = defMp.Shutdown(context.Background()) })
+	setOTelProviders(t, defTp, defMp)
 
 	// Injected clients: must receive the events.
 	injEx := &recordingExporter{}
@@ -376,11 +414,46 @@ func TestConnect_InjectedClients(t *testing.T) {
 	}
 
 	if n := defEx.count(); n != 0 {
-		t.Fatalf("package default tracer spans = %d, want 0", n)
+		t.Fatalf("OTel global tracer spans = %d, want 0", n)
 	}
-	nc, nh := defFm.nums()
-	if nc != 0 || nh != 0 {
-		t.Fatalf("package default metrics received counts=%d hists=%d, want 0", nc, nh)
+	if names := collectedMetrics(t, defReader); len(names) != 0 {
+		t.Fatalf("OTel global meter provider collected %v, want none", names)
+	}
+}
+
+func TestInstrument_FallsBackToOTelGlobal(t *testing.T) {
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	setOTelProviders(t, tp, mp)
+
+	dbx, _, _ := setupTest(t, &stubDB{})
+	c := dbx.(*dbConn)
+	// No injected clients: the execution must fall back to the OTel globals.
+	c.meta.metrics = nil
+	c.meta.tracer = nil
+
+	if _, err := dbx.NamedExecContext(context.Background(),
+		"INSERT INTO t (id, name) VALUES (:id, :name)",
+		map[string]any{"id": int64(1), "name": "a"}); err != nil {
+		t.Fatalf("NamedExecContext: %v", err)
+	}
+
+	if n := ex.count(); n != 1 {
+		t.Fatalf("OTel global tracer spans = %d, want 1", n)
+	}
+	sp, _ := ex.last()
+	if sp.Name() != tracerScope {
+		t.Fatalf("span name = %q, want %q", sp.Name(), tracerScope)
+	}
+	names := collectedMetrics(t, reader)
+	for _, want := range []string{metricCount, metricDuration} {
+		if !slices.Contains(names, want) {
+			t.Errorf("OTel global meter provider collected %v, want %q among them", names, want)
+		}
 	}
 }
 

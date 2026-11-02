@@ -34,9 +34,11 @@ type Config struct {
 	// Scope is the OTel instrumentation scope name for created instruments.
 	// Empty uses DefaultInstrumentationScope.
 	Scope string `yaml:"scope" json:"scope"`
-	// Insecure disables TLS for the exporter connection. Unset defaults to
-	// insecure, preserving the historical default.
-	Insecure *bool `yaml:"insecure" json:"insecure"`
+	// Insecure disables TLS for the exporter connection. The zero value uses TLS.
+	// The OTEL_EXPORTER_OTLP_INSECURE or OTEL_EXPORTER_OTLP_METRICS_INSECURE
+	// environment variable can still enable plaintext, because WithInsecure is
+	// only added when this field is true.
+	Insecure bool `yaml:"insecure" json:"insecure"`
 	// Headers are extra headers sent with OTLP exports.
 	Headers map[string]string `yaml:"headers" json:"headers"`
 	// GlobalKV contains resource attributes attached to exported metrics.
@@ -49,7 +51,12 @@ type Config struct {
 	HistogramMaxScale int32 `yaml:"histogram_max_scale" json:"histogram_max_scale"`
 }
 
-func (c *Config) setDefaults() {
+// SetDefaults returns a copy of c with zero-valued fields set to their
+// defaults: Endpoint "localhost:4317", Timeout 10s, ExportInterval 10s, Scope
+// DefaultInstrumentationScope, HistogramMaxBuckets 160, and HistogramMaxScale
+// 20. Other fields are returned unchanged. New calls SetDefaults before
+// Validate.
+func (c Config) SetDefaults() Config {
 	if c.Endpoint == "" {
 		c.Endpoint = defaultEndpoint
 	}
@@ -68,9 +75,12 @@ func (c *Config) setDefaults() {
 	if c.HistogramMaxScale == 0 {
 		c.HistogramMaxScale = defaultHistogramMaxScale
 	}
+	return c
 }
 
-func (c *Config) validate() error {
+// Validate reports every problem with c, joined with errors.Join, or nil when
+// c is usable. Call SetDefaults first; New does.
+func (c Config) Validate() error {
 	var errs []error
 	if c.Timeout <= 0 {
 		errs = append(errs, fmt.Errorf("metrics: timeout must be positive"))
@@ -88,10 +98,4 @@ func (c *Config) validate() error {
 		errs = append(errs, fmt.Errorf("metrics: histogram_max_scale must be between -10 and 20"))
 	}
 	return errors.Join(errs...)
-}
-
-// isInsecure reports whether the exporter connection skips TLS. Unset defaults
-// to insecure, preserving the historical default.
-func (c Config) isInsecure() bool {
-	return c.Insecure == nil || *c.Insecure
 }

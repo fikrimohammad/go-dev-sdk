@@ -65,9 +65,8 @@
 // begin, commit, and rollback are lifecycle operations and are not
 // instrumented.
 //
-// Tracing and metrics use the package-level defaults of the observability
-// packages ([tracer.Tracer], [metrics.Add], and [metrics.Record]) unless
-// overridden with [WithMetrics] or [WithTracer].
+// Tracing and metrics use the OTel global providers (otel.SetTracerProvider and
+// otel.SetMeterProvider) unless overridden with [WithMetrics] or [WithTracer].
 package db
 
 import (
@@ -112,6 +111,47 @@ var (
 // attribute.
 var sqlOpRE = regexp.MustCompile(`(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE|CALL|CREATE|ALTER|DROP|TRUNCATE|SET|EXPLAIN|SHOW|DESCRIBE|VACUUM|ANALYZE)\b`)
 
+// Queryer executes read queries (SELECT).
+type Queryer interface {
+	// NamedSelectContext binds the named placeholders in query with arg, then
+	// runs a SELECT storing the result rows into dest (a *[]T).
+	NamedSelectContext(ctx context.Context, dest any, query string, arg any) error
+	// NamedGetContext binds the named placeholders in query with arg, then runs
+	// a query expecting a single result row and stores it into dest. It returns
+	// [sql.ErrNoRows] when the query returns no rows.
+	NamedGetContext(ctx context.Context, dest any, query string, arg any) error
+}
+
+// Execer executes write queries (INSERT/UPDATE/DELETE).
+type Execer interface {
+	// NamedExecContext binds the named placeholders in query with arg, then
+	// runs an INSERT/UPDATE/DELETE and returns the result.
+	NamedExecContext(ctx context.Context, query string, arg any) (sql.Result, error)
+}
+
+// DB is the connection contract: it queries, executes, opens transactions, and
+// manages the underlying connection pool. It embeds [Queryer] and [Execer].
+// A DB is safe for concurrent use by multiple goroutines.
+type DB interface {
+	// Begin opens a transaction. Call Tx.Commit or Tx.Rollback to finish it.
+	Begin(ctx context.Context) (Tx, error)
+	// Close releases the underlying database connection pool.
+	Close() error
+	Queryer
+	Execer
+}
+
+// Tx is the transaction contract: it queries and executes inside the
+// transaction, and manages its lifecycle. It embeds [Queryer] and [Execer].
+type Tx interface {
+	// Commit commits the transaction.
+	Commit() error
+	// Rollback aborts the transaction.
+	Rollback() error
+	Queryer
+	Execer
+}
+
 // meta carries the attributes held by every instrumented execution target.
 type meta struct {
 	systemName string // db.system.name, from the driver
@@ -119,7 +159,7 @@ type meta struct {
 	serverAddr string // server.address ("" when unknown)
 	serverPort int    // server.port (0 when unknown)
 
-	// metrics and tracer override the package-level defaults when non-nil.
+	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
 }
@@ -133,13 +173,13 @@ type options struct {
 }
 
 // WithMetrics injects a metrics client for the instrumented executions. A nil
-// client falls back to the package-level default set by [metrics.SetDefault].
+// client falls back to the OTel global meter provider (otel.SetMeterProvider).
 func WithMetrics(m metrics.Client) Option {
 	return func(o *options) { o.metrics = m }
 }
 
 // WithTracer injects a tracer client for the instrumented executions. A nil
-// client falls back to the package-level default set by [tracer.SetDefault].
+// client falls back to the OTel global tracer provider (otel.SetTracerProvider).
 func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
@@ -148,8 +188,8 @@ func WithTracer(t tracer.Client) Option {
 // from the resulting config (using Config.DSN when set, otherwise building a
 // driver-specific data source name), applies the pool settings, pings it, and
 // returns an instrumented [DB]. It returns an error if validation fails or the
-// database cannot be opened or pinged. Metrics and tracing use the
-// package-level defaults unless overridden with [WithMetrics] or [WithTracer].
+// database cannot be opened or pinged. Metrics and tracing use the OTel global
+// providers unless overridden with [WithMetrics] or [WithTracer].
 func Connect(cfg Config, opts ...Option) (DB, error) {
 	var o options
 	for _, opt := range opts {

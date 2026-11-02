@@ -149,12 +149,6 @@ func serverAddress(authority string) string {
 	return authority
 }
 
-// ErrInformationalResponse is returned when a vendor's final response has a
-// 1xx status other than 100 Continue. Hertz returns such a response as final
-// and leaves the real response on the connection, so the attempt fails and is
-// not retried. Callers can test for it with errors.Is.
-var ErrInformationalResponse = errors.New("rest/client: unexpected informational response")
-
 // deadline is the innermost step, and it runs once per attempt. It stops
 // without sending when ctx is done or no time is left. Otherwise it counts the
 // attempt and sets the Hertz timeout of the attempt to the shorter of
@@ -425,8 +419,8 @@ const tracerScope = "rest.client"
 // response with a status of 400 or above, sets the span status to Error with
 // no description.
 func tracing(tc tracer.Client) hclient.Middleware {
-	// A nil tc means the package-level default, looked up per call so a
-	// later tracer.SetDefault still applies.
+	// A nil tc means the OTel global tracer provider, looked up per call so
+	// a later otel.SetTracerProvider still applies.
 	var fixed trace.Tracer
 	if tc != nil {
 		fixed = tc.Tracer(tracerScope)
@@ -484,8 +478,8 @@ func tracing(tc tracer.Client) hclient.Middleware {
 func measure(mc metrics.Client) hclient.Middleware {
 	return func(next hclient.Endpoint) hclient.Endpoint {
 		return func(ctx context.Context, req *protocol.Request, resp *protocol.Response) error {
-			// A nil mc means the package-level default, looked up per attempt
-			// so a later metrics.SetDefault still applies.
+			// A nil mc means the OTel global meter provider, looked up per attempt
+			// so a later otel.SetMeterProvider still applies.
 			m := mc
 			if m == nil {
 				m = metrics.Default()

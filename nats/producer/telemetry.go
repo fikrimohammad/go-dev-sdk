@@ -48,12 +48,12 @@ type meta struct {
 	serverAddr string
 	serverPort int
 
-	// metrics and tracer override the package-level defaults when non-nil.
+	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
 }
 
-// tracerOr returns the configured tracer or the package-level default.
+// tracerOr returns the configured tracer or one from the OTel global provider.
 func (m meta) tracerOr() trace.Tracer {
 	if m.tracer != nil {
 		return m.tracer.Tracer(tracerScope)

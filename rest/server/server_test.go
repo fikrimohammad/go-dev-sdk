@@ -14,8 +14,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/cloudwego/hertz/pkg/common/ut"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-dev-sdk/rest/internal/semconv"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -55,22 +57,56 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// installDefaultTelemetry makes a recording metrics client and a recording
-// tracer the package-level defaults until the test ends.
-func installDefaultTelemetry(t *testing.T) (*recordingMetrics, *tracetest.SpanRecorder) {
+// installDefaultTelemetry installs a recording tracer provider and a manual
+// metrics reader as the OTel global providers until the test ends. It returns
+// the reader and the span recorder.
+func installDefaultTelemetry(t *testing.T) (*sdkmetric.ManualReader, *tracetest.SpanRecorder) {
 	t.Helper()
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
-	mc := newRecordingMetrics()
-	prevMetrics, prevTracer := metrics.Default(), tracer.Default()
-	metrics.SetDefault(mc)
-	tracer.SetDefault(tracer.Wrap(tp))
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	prevTracer, prevMeter := otel.GetTracerProvider(), otel.GetMeterProvider()
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
 	t.Cleanup(func() {
-		metrics.SetDefault(prevMetrics)
-		tracer.SetDefault(prevTracer)
+		if otel.GetTracerProvider() != prevTracer {
+			otel.SetTracerProvider(prevTracer)
+		}
+		if otel.GetMeterProvider() != prevMeter {
+			otel.SetMeterProvider(prevMeter)
+		}
 		_ = tp.Shutdown(context.WithoutCancel(t.Context()))
+		_ = mp.Shutdown(context.WithoutCancel(t.Context()))
 	})
-	return mc, rec
+	return reader, rec
+}
+
+// requestDurationCount returns how many http.server.request.duration
+// measurements reader has collected. It fails the test if the collection fails
+// or the instrument is not a float64 histogram.
+func requestDurationCount(t *testing.T, reader *sdkmetric.ManualReader) uint64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("reader.Collect() error = %v", err)
+	}
+	var n uint64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != semconv.ServerRequestDuration.Name {
+				continue
+			}
+			h, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("%s data = %T, want metricdata.Histogram[float64]", m.Name, m.Data)
+			}
+			for _, dp := range h.DataPoints {
+				n += dp.Count
+			}
+		}
+	}
+	return n
 }
 
 func TestNew_unsetTelemetryUsesDefaults(t *testing.T) {
@@ -89,9 +125,9 @@ func TestNew_unsetTelemetryUsesDefaults(t *testing.T) {
 			}
 			// The defaults are installed after New, so this also checks that
 			// they are read per request, not captured by New.
-			mc, rec := installDefaultTelemetry(t)
+			reader, rec := installDefaultTelemetry(t)
 			perform(s, http.MethodGet, "/missing", nil)
-			if got := len(mc.Records()); got != 1 {
+			if got := requestDurationCount(t, reader); got != 1 {
 				t.Errorf("default metrics got %d duration records, want 1", got)
 			}
 			if got := len(rec.Ended()); got != 1 {

@@ -48,7 +48,7 @@ jobs:
           cache-dependency-path: ${{ matrix.module }}/go.sum
 
       - name: Test with coverage
-        run: go test -count=1 -gcflags="all=-N -l" -coverprofile=coverage.out ./...
+        run: go test -count=1 -coverprofile=coverage.out ./...
 
       - name: Extract total
         run: |

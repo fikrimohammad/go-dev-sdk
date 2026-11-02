@@ -2,6 +2,8 @@ package errs
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
@@ -48,7 +50,7 @@ func TestError_Error(t *testing.T) {
 			got := tt.err.Error()
 			for _, s := range tt.contains {
 				if !strings.Contains(got, s) {
-					t.Errorf("Error() = %q, should contain %q", got, s)
+					t.Errorf("Error() = %q, want to contain %q", got, s)
 				}
 			}
 		})
@@ -83,7 +85,7 @@ func TestError_Meta_ReturnsCopy(t *testing.T) {
 	meta["key"] = "mutated"
 
 	if err.meta["key"] != "value" {
-		t.Error("Meta() should return a copy, not the internal map")
+		t.Errorf("Meta() internal meta[\"key\"] = %v, want %q", err.meta["key"], "value")
 	}
 }
 
@@ -120,32 +122,56 @@ func TestError_Is(t *testing.T) {
 		name     string
 		err      *Error
 		target   error
-		expected bool
+		matching bool
 	}{
 		{
 			name:     "same code matches",
 			err:      &Error{code: 4004},
 			target:   &Error{code: 4004},
-			expected: true,
+			matching: true,
 		},
 		{
 			name:     "different code does not match",
 			err:      &Error{code: 4004},
 			target:   &Error{code: 5001},
-			expected: false,
+			matching: false,
 		},
 		{
 			name:     "non-Error target does not match",
 			err:      &Error{code: 4004},
 			target:   errors.New("not found"),
-			expected: false,
+			matching: false,
+		},
+		{
+			name:     "two code 0 errors do not match",
+			err:      AsError(io.EOF),
+			target:   AsError(errors.New("other")),
+			matching: false,
+		},
+		{
+			name:     "code 0 does not match New(0)",
+			err:      AsError(io.EOF),
+			target:   New(0, "unknown"),
+			matching: false,
+		},
+		{
+			name:     "same non-zero code matches",
+			err:      New(4004, "not found"),
+			target:   New(4004, "other message"),
+			matching: true,
+		},
+		{
+			name:     "different non-zero codes do not match",
+			err:      New(4004, "not found"),
+			target:   New(5001, "not found"),
+			matching: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.err.Is(tt.target); got != tt.expected {
-				t.Errorf("Is() = %v, want %v", got, tt.expected)
+			if got := tt.err.Is(tt.target); got != tt.matching {
+				t.Errorf("Is() = %v, want %v", got, tt.matching)
 			}
 		})
 	}
@@ -157,21 +183,21 @@ func TestError_WithMeta_Immutable(t *testing.T) {
 	third := second.WithMeta("bucket", "reports")
 
 	if original.meta != nil {
-		t.Error("WithMeta should not modify original error")
+		t.Errorf("WithMeta() modified original: meta = %v, want nil", original.meta)
 	}
 
 	if second.meta["job_id"] != int64(123) {
-		t.Error("second should have job_id")
+		t.Errorf("WithMeta() second job_id = %v, want %v", second.meta["job_id"], int64(123))
 	}
 	if _, ok := second.meta["bucket"]; ok {
-		t.Error("second should not have bucket")
+		t.Errorf("WithMeta() second bucket = %v, want absent", second.meta["bucket"])
 	}
 
 	if third.meta["job_id"] != int64(123) {
-		t.Error("third should have job_id")
+		t.Errorf("WithMeta() third job_id = %v, want %v", third.meta["job_id"], int64(123))
 	}
 	if third.meta["bucket"] != "reports" {
-		t.Error("third should have bucket")
+		t.Errorf("WithMeta() third bucket = %v, want %q", third.meta["bucket"], "reports")
 	}
 }
 
@@ -180,7 +206,7 @@ func TestError_WithDebug_Immutable(t *testing.T) {
 	modified := original.WithDebug("detail")
 
 	if original.Debug() != "" {
-		t.Error("WithDebug should not modify original error")
+		t.Errorf("WithDebug() modified original: Debug() = %q, want empty", original.Debug())
 	}
 	if modified.Debug() != "detail" {
 		t.Errorf("modified.Debug() = %q, want %q", modified.Debug(), "detail")
@@ -191,7 +217,7 @@ func TestStackCapture(t *testing.T) {
 	err := New(5001, "error")
 
 	if len(err.stack) == 0 {
-		t.Fatal("stack should not be empty")
+		t.Fatalf("New() stack len = %d, want > 0", len(err.stack))
 	}
 
 	for i, pc := range err.stack {
@@ -206,12 +232,12 @@ func TestStackFrames(t *testing.T) {
 	frames := err.StackFrames()
 
 	if len(frames) == 0 {
-		t.Fatal("StackFrames() should not be empty")
+		t.Fatalf("StackFrames() len = %d, want > 0", len(frames))
 	}
 
 	for i, frame := range frames {
 		if !strings.Contains(frame, "\n    ") {
-			t.Errorf("StackFrames()[%d] = %q, expected format 'function\\n    file:line'", i, frame)
+			t.Errorf("StackFrames()[%d] = %q, want format 'function\\n    file:line'", i, frame)
 		}
 	}
 }
@@ -227,9 +253,9 @@ func TestFmtErrorf_Wrapping(t *testing.T) {
 	original := New(4004, "not found")
 	wrapped := errors.Join(original, nil)
 
-	var target *Error
-	if !errors.As(wrapped, &target) {
-		t.Fatal("errors.As should find *Error in errors.Join chain")
+	target, ok := errors.AsType[*Error](wrapped)
+	if !ok {
+		t.Fatalf("errors.AsType[*Error](%v) = false, want true", wrapped)
 	}
 
 	if target.Code() != 4004 {
@@ -239,13 +265,29 @@ func TestFmtErrorf_Wrapping(t *testing.T) {
 
 func TestErrorsIs_CodeMatching(t *testing.T) {
 	err := New(4004, "job not found")
+	wrapped := fmt.Errorf("handler: %w", err)
 
 	if !errors.Is(err, &Error{code: 4004}) {
-		t.Error("errors.Is should match by code")
+		t.Errorf("errors.Is(%v, code 4004) = false, want true", err)
+	}
+	if errors.Is(err, &Error{code: 5001}) {
+		t.Errorf("errors.Is(%v, code 5001) = true, want false", err)
 	}
 
-	if errors.Is(err, &Error{code: 5001}) {
-		t.Error("errors.Is should not match different codes")
+	if !errors.Is(wrapped, &Error{code: 4004}) {
+		t.Errorf("errors.Is(%v, code 4004) = false, want true", wrapped)
+	}
+	if errors.Is(wrapped, &Error{code: 5001}) {
+		t.Errorf("errors.Is(%v, code 5001) = true, want false", wrapped)
+	}
+
+	// Code 0 escape hatches: pointer identity and the Unwrap chain.
+	e0 := New(0, "x")
+	if !errors.Is(e0, e0) {
+		t.Errorf("errors.Is(%v, itself) = false, want true", e0)
+	}
+	if !errors.Is(AsError(io.EOF), io.EOF) {
+		t.Error("errors.Is(AsError(io.EOF), io.EOF) = false, want true")
 	}
 }
 
@@ -254,7 +296,7 @@ func TestErrorChain_Unwrap(t *testing.T) {
 	outer := Wrap(5001, "outer", inner)
 
 	if !errors.Is(outer, &Error{code: 4004}) {
-		t.Error("errors.Is should traverse unwrap chain")
+		t.Errorf("errors.Is(%v, code 4004) = false, want true", outer)
 	}
 }
 
@@ -266,9 +308,9 @@ func TestChainOfErrors(t *testing.T) {
 	usecaseErr := Wrap(5001, "process export report", repoErr).
 		WithMeta("job_id", int64(123))
 
-	var target *Error
-	if !errors.As(usecaseErr, &target) {
-		t.Fatal("errors.As should find *Error in chain")
+	target, ok := errors.AsType[*Error](usecaseErr)
+	if !ok {
+		t.Fatalf("errors.AsType[*Error](%v) = false, want true", usecaseErr)
 	}
 
 	if target.Code() != 5001 {
@@ -279,8 +321,7 @@ func TestChainOfErrors(t *testing.T) {
 		t.Errorf("Meta()[job_id] = %v, want %v", target.Meta()["job_id"], int64(123))
 	}
 
-	var inner *Error
-	if errors.As(target.Unwrap(), &inner) {
+	if inner, ok := errors.AsType[*Error](target.Unwrap()); ok {
 		if inner.Meta()["bucket"] != "reports" {
 			t.Errorf("inner Meta()[bucket] = %v, want %q", inner.Meta()["bucket"], "reports")
 		}

@@ -4,12 +4,13 @@ package metrics
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sync"
 	"sync/atomic"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
@@ -21,14 +22,6 @@ import (
 )
 
 var (
-	// ErrStopped indicates that the client no longer accepts measurements.
-	ErrStopped = errors.New("metrics: client is stopped")
-	// ErrInvalidMetricName indicates that a metric name is empty or invalid.
-	ErrInvalidMetricName = errors.New("metrics: invalid metric name")
-	// ErrInstrumentConflict indicates that a metric name was reused with
-	// different metadata or a different instrument kind.
-	ErrInstrumentConflict = errors.New("metrics: instrument conflict")
-
 	metricNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,254}$`)
 )
 
@@ -112,13 +105,6 @@ var (
 )
 
 var noopMeterProvider = metricnoop.NewMeterProvider()
-
-func contextOrBackground(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
-}
 
 // prepare acquires the stop read lock and resolves the instrument. The
 // returned release function must be called after recording.
@@ -210,7 +196,7 @@ func (c *otelMetrics) Add(ctx context.Context, instrument Instrument, value int6
 		return err
 	}
 	defer release()
-	entry.counter.Add(contextOrBackground(ctx), value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
+	entry.counter.Add(ctx, value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
 	return nil
 }
 
@@ -220,7 +206,7 @@ func (c *otelMetrics) Record(ctx context.Context, instrument Instrument, value f
 		return err
 	}
 	defer release()
-	entry.histogram.Record(contextOrBackground(ctx), value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
+	entry.histogram.Record(ctx, value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
 	return nil
 }
 
@@ -230,7 +216,7 @@ func (c *otelMetrics) AddUpDown(ctx context.Context, instrument Instrument, valu
 		return err
 	}
 	defer release()
-	entry.upDown.Add(contextOrBackground(ctx), value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
+	entry.upDown.Add(ctx, value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
 	return nil
 }
 
@@ -240,7 +226,7 @@ func (c *otelMetrics) RecordGauge(ctx context.Context, instrument Instrument, va
 		return err
 	}
 	defer release()
-	entry.gauge.Record(contextOrBackground(ctx), value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
+	entry.gauge.Record(ctx, value, metric.WithAttributes(attributes.ConvertMapsToKVs(attrs)...))
 	return nil
 }
 
@@ -252,7 +238,6 @@ func (c *otelMetrics) Stop(ctx context.Context) error {
 	if c.shutdown == nil {
 		return nil
 	}
-	ctx = contextOrBackground(ctx)
 	c.stopMu.Lock()
 	defer c.stopMu.Unlock()
 	if c.stopped.Load() {
@@ -299,12 +284,11 @@ func WrapWithScope(provider metric.MeterProvider, scope string) Client {
 // service.version, and deployment.environment.name. New returns an error if
 // info has no service name, cfg is invalid, or the exporter cannot be created.
 func New(ctx context.Context, info identity.Info, cfg Config) (Client, error) {
-	ctx = contextOrBackground(ctx)
 	if err := attributes.ValidateAppInfo(info); err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
 	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+	cfg = cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -312,7 +296,7 @@ func New(ctx context.Context, info identity.Info, cfg Config) (Client, error) {
 		otlpmetricgrpc.WithEndpoint(cfg.Endpoint),
 		otlpmetricgrpc.WithTimeout(cfg.Timeout),
 	}
-	if cfg.isInsecure() {
+	if cfg.Insecure {
 		opts = append(opts, otlpmetricgrpc.WithInsecure())
 	}
 	if len(cfg.Headers) > 0 {
@@ -333,7 +317,7 @@ func newClientWithExporter(ctx context.Context, info identity.Info, cfg Config, 
 	provider, err := newMeterProvider(ctx, info, cfg,
 		sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(cfg.ExportInterval)))
 	if err != nil {
-		_ = exporter.Shutdown(context.Background())
+		_ = exporter.Shutdown(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	return newInstrumentClient(provider, cfg.Scope, provider.Shutdown), nil
@@ -382,32 +366,37 @@ func (noopMetrics) Provider() metric.MeterProvider { return noopMeterProvider }
 
 func (noopMetrics) Stop(context.Context) error { return nil }
 
-var defaultMetrics atomic.Pointer[Client]
-
-func init() {
-	SetDefault(Noop())
+// defaultCache pairs a meter provider with the client wrapping it, so Default
+// reuses the client (and its instrument cache) while the provider is unchanged.
+type defaultCache struct {
+	provider metric.MeterProvider
+	client   Client
 }
+
+var defaultCached atomic.Pointer[defaultCache]
 
 // Noop returns a Client that discards all measurements.
 func Noop() Client {
 	return noopMetrics{}
 }
 
-// Default returns the Client used by the package-level funcs. It is never nil:
-// before SetDefault is called, and after SetDefault(nil), it is a noop
-// implementation.
+// Default returns a client for the current OTel global meter provider
+// (otel.GetMeterProvider), resolved on every call. The package-level funcs record
+// through it, so installing a provider with otel.SetMeterProvider routes SDK
+// metrics with no other wiring. Before any install, the OTel global is a no-op
+// and measurements are dropped.
 func Default() Client {
-	return *defaultMetrics.Load()
-}
-
-// SetDefault makes m the Client used by the package-level funcs, replacing any
-// installed earlier. A nil m restores the noop client. It is safe to call
-// concurrently with measurement calls.
-func SetDefault(m Client) {
-	if m == nil {
-		m = Noop()
+	p := otel.GetMeterProvider()
+	if !reflect.TypeOf(p).Comparable() {
+		// ponytail: uncomparable providers are wrapped per call (no instrument cache); fine for the rare value-typed provider.
+		return Wrap(p)
 	}
-	defaultMetrics.Store(&m)
+	if c := defaultCached.Load(); c != nil && c.provider == p {
+		return c.client
+	}
+	c := &defaultCache{provider: p, client: Wrap(p)}
+	defaultCached.Store(c)
+	return c.client
 }
 
 // Add records a counter measurement through the default client.
@@ -428,11 +417,4 @@ func AddUpDown(ctx context.Context, instrument Instrument, value int64, attrs ma
 // RecordGauge records an instantaneous gauge value through the default client.
 func RecordGauge(ctx context.Context, instrument Instrument, value float64, attrs map[string]any) error {
 	return Default().RecordGauge(ctx, instrument, value, attrs)
-}
-
-// Stop flushes pending telemetry and shuts down the default exporter. It is
-// safe to call before SetDefault and multiple times; the underlying client is
-// responsible for idempotency.
-func Stop(ctx context.Context) error {
-	return Default().Stop(ctx)
 }

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,5 +35,23 @@ func TestConfig_Validate(t *testing.T) {
 
 	if err := (Config{GlobalTimeout: time.Minute, ShutdownTimeout: 5 * time.Second}).Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfig_Validate_ReportsEveryProblem(t *testing.T) {
+	cfg := Config{GlobalTimeout: -time.Second, ShutdownTimeout: -time.Second}
+	err := cfg.Validate()
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("Validate(%+v) error = %v, want an errors.Join error with two problems", cfg, err)
+	}
+	if n := len(joined.Unwrap()); n != 2 {
+		t.Errorf("Validate(%+v) reported %d problems, want 2: %v", cfg, n, err)
+	}
+	if !strings.Contains(err.Error(), "cron: global_timeout must not be negative") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "cron: global_timeout must not be negative")
+	}
+	if !strings.Contains(err.Error(), "cron: shutdown_timeout must not be negative") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "cron: shutdown_timeout must not be negative")
 	}
 }

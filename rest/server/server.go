@@ -44,15 +44,15 @@ type Server struct {
 type Option func(*Server)
 
 // WithMetrics sets the metrics client for the server's measurements. Without
-// it, or with a nil m, the server uses the package-level default
-// (metrics.SetDefault), read on every request.
+// it, or with a nil m, the server uses the OTel global meter provider
+// (otel.SetMeterProvider), read on every request.
 func WithMetrics(m metrics.Client) Option {
 	return func(s *Server) { s.mc = m }
 }
 
 // WithTracer sets the tracer client for the server's spans. Without it, or
-// with a nil t, the server uses the package-level default (tracer.SetDefault),
-// read on every request.
+// with a nil t, the server uses the OTel global tracer provider
+// (otel.SetTracerProvider or tracer.SetGlobal), read on every request.
 func WithTracer(t tracer.Client) Option {
 	return func(s *Server) { s.tc = t }
 }
@@ -60,8 +60,8 @@ func WithTracer(t tracer.Client) Option {
 // New builds a Server from cfg, which is defaulted and validated first, and
 // applies opts. It returns an error if cfg is invalid.
 func New(cfg Config, opts ...Option) (*Server, error) {
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
+	cfg = cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	s := &Server{

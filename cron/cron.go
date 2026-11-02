@@ -1,3 +1,8 @@
+// Package cron defines the job model shared by the cron engine and its
+// plug-ins: a [Job] with a [HandlerFunc], the [Toggler] that can disable a job,
+// and the [Locker] and [LockToken] that keep a job running on one worker at a
+// time. A job's fencing token travels in its context (see [WithFencingToken]).
+// The engine that schedules and runs jobs lives in the engine subpackage.
 package cron
 
 import (
