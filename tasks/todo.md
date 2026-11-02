@@ -1,339 +1,249 @@
-# Tasks: messaging (SDK fix backlog, PR 3)
+# Tasks: guardrails, release, test-transports (SDK fix backlog, PR 4)
 
-Plan: [plan.md](plan.md). Spec: [SPEC-messaging](../docs/specs/sdk-fix-backlog/SPEC-messaging.md).
+Plan: [plan.md](plan.md). Spec: [SPEC-guardrails](../docs/specs/sdk-fix-backlog/SPEC-guardrails.md).
 
-**Module checks.** Run these in every module a task touches (AGENTS.md verification):
+**Module checks.** Run in every module a task touches. Every module except confloader is
+strict, so its lint is full-tree:
 - `gofmt -l .`
 - `go vet ./...`
 - `go test -count=1 -shuffle=on ./...` and `-race`
-- lint: full-tree `golangci-lint run ./...` once a module is strict, otherwise
-  `--new-from-merge-base=main`
-- gostyle
+- `golangci-lint run ./...` (confloader: `--new-from-merge-base=main`)
+- `GOWORK=off go run ../.agents/skills/go-best-practices/scripts/gostyle.go ./...`
 - `go mod tidy -diff`
-
-In parallel nats waves, an agent runs these on its own package path and the orchestrator runs
-them on the whole module.
 
 **Test-wording check.** For the lines a task changes, this must print nothing:
 `git diff -U0 | grep '^+' | grep -E 't\.(Errorf|Fatalf|Error|Fatal)\(.*\b(should|expected|actual|Expected|Actual)\b'`
 
-**TDD rule.** Every test marked *(regression)* is written first and shown failing on the current
-code. Only then is the fix implemented.
+**TDD rule.** New behaviour (the rules, the release script) is test-first. In the transport
+rewrite, each moved test must still fail when its fix is reverted. Spot-check it by mutation,
+as in PR 3.
 
-**Telemetry rule.**
-- Names, units, and descriptions come from `semconv/v1.43.0/messagingconv` where they exist.
-- Attribute keys come from semconv constants.
-- Tests assert the exact name, unit, instrument type, and attribute set.
-
-**JetStream rule.** Tests that need a server use the embedded `nats-server/v2/test` helper in
-`helpers_test.go`, which runs with JetStream on, a temp store dir, and cleanup. Timing tests
-assert order and counts, with tolerances of at least 100 ms.
-
-Each task is one commit, with the subject `<type>(<module>): <summary> (<task>, <item IDs>)`.
+Each task is one commit, with the subject `<type>(<area>): <summary> (<task>)`.
 
 ---
 
 ## Task 1: Commit the spec and plan, open a draft PR
 
-**Description:** On branch `feat/messaging` (from main @ 216b2aa), commit SPEC-messaging, the
-capability-map link, the backlog-doc sync, this plan, and the task list. Open a draft PR whose
-body links the spec.
+**Description:** On branch `feat/guardrails` (from main @ 9373090), commit SPEC-guardrails, the
+capability map, this plan, and the task list. Open a draft PR on `fikrimohammad/go-servicekit`
+that links the spec.
 
 **Acceptance criteria:**
-- [x] One `docs:` commit holds them.
-- [x] A draft PR targets `main`.
+- [ ] One `docs:` commit holds them.
+- [ ] A draft PR targets `main`.
 
-**Verification:**
-- [x] `gh pr view --json isDraft` reports true.
+**Verification:** `gh pr view --json isDraft` reports true.
 
-**Dependencies:** None · **Files:** `docs/**`, `tasks/*` · **Scope:** XS
+**Dependencies:** None · **Files:** `docs/specs/**`, `tasks/*` · **Scope:** XS
 
-## Task 2: nats/internal/wire
-
-**Description:** A new internal package, the single source of the stream layout, the headers,
-and the connection setup:
-- `StreamConfig(topic)`: subjects `[topic, topic.>, schedules.topic.>]`, plus
-  `AllowMsgSchedules`.
-- `DataSubjects(topic)` returns `[topic, topic.>]`.
-- `ScheduleSubject(topic)` returns `schedules.<topic>.<nuid>`.
-- `PatchStream(existing, topic)` adds the missing SDK subjects and sets `AllowMsgSchedules`,
-  keeping every other field.
-- Header constants: `HeaderKey = "Sdk-Msg-Key"` and `HeaderTag = "Sdk-Msg-Tag"`.
-- `ServerAddrPort(endpoints)`: moved from the two packages.
-- `Options` plus `Connect(name, opts)`: the token, user, nkey, and creds options both factories
-  copy today.
-- Nothing calls it yet; T3 and T4 switch over. The nuid import is the one go.mod change, and
-  the orchestrator promotes it after the agent stops.
-
-**Acceptance criteria:**
-- [x] Table tests cover `StreamConfig`, `DataSubjects`, `ScheduleSubject` (unique across
-      calls), `PatchStream`, and `ServerAddrPort`. For `PatchStream`: operator `MaxAge` and
-      `Replicas` are kept, subjects are de-duplicated, and an existing extra subject is kept.
-- [x] The package comment and doc comments follow Go Doc Comments.
-
-**Verification:**
-- [x] nats module checks (lint new-from-merge-base); `go test ./internal/...` covers 90% or more.
-
-**Dependencies:** T1 · **Files:** `nats/internal/wire/wire.go`, `nats/internal/wire/wire_test.go`, `nats/go.mod` (orchestrator) · **Scope:** S
-
-## Task 3: producer lifecycle
+## Task 2: Rename the module path; sibling requires at v0.1.0
 
 **Description:**
-- `Register(cfg)` validates and stores only, with no dial.
-- `Start(ctx)` connects through `wire.Connect`. It ensures the stream: if the stream exists,
-  it is `PatchStream`ed and `UpdateStream` is called only when something changed; if it is
-  missing, it is created from `StreamConfig`. All of this is bounded by ctx.
-- `Shutdown(ctx)` waits for pending `PublishAsync` callbacks (a WaitGroup) and then drains,
-  until ctx is done; then it returns `ctx.Err()`. Without `Start`, it is a no-op.
-- The `sync.Map` registry plus the mutex become a plain map under the mutex (N14).
-- `serverAddrPort` is replaced by `wire.ServerAddrPort`.
-- Keep the positional publish API (T5 changes it). Update the callers in `producer/*_test.go`
-  and `example_test.go`.
+- Replace `github.com/fikrimohammad/go-dev-sdk` with `github.com/fikrimohammad/go-servicekit`
+  in:
+  - every go.mod (`module`, `require`, `replace`);
+  - every .go import and string;
+  - `.golangci.yml` (the ireturn allow list);
+  - the READMEs, AGENTS.md, the skills, and the specs and tasks (except history quotes in the
+    backlog doc).
+- Set every sibling `require` to `v0.1.0`. That replaces the zero pseudo-versions and the
+  `v1.0.0` ones, including the indirect ones.
+- Run `go mod tidy` per module, then `go work vendor`.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestStart_PreservesOperatorStreamSettings` (embedded JetStream):
-      precreate a stream with MaxAge 1h and only `[topic]`; after `Start`, MaxAge is kept and
-      the subjects include `topic.>` and `schedules.topic.>`.
-- [x] *(regression)* `TestShutdown_WaitsForAsyncPublish`: Shutdown returns only after a pending
-      async callback has run (a stub transport that delays the ack).
-- [x] `TestRegister_NoIO`: Register with an unreachable endpoint succeeds and dials nothing.
-- [x] `TestShutdown_Deadline`: a hung drain returns `ctx.Err()` by the deadline.
+- [ ] `grep -rn 'go-dev-sdk' --exclude-dir=vendor .` matches only the history lines that
+      record the rename in `docs/ideas/sdk-fix-backlog.md` and the specs.
+- [ ] `grep -h 'go-servicekit/[a-z]* v' */go.mod | sort -u` shows only `v0.1.0`.
+- [ ] Every module passes the module checks.
 
-**Verification:**
-- [x] `./producer/...` checks; coverage ≥ 70.1%.
+**Dependencies:** T1 · **Files:** about 106 files across all modules · **Scope:** M (mechanical)
 
-**Dependencies:** T2 · **Files:** `nats/producer/producer.go`, `nats/producer/producer_test.go`, `nats/producer/helpers_test.go`, `nats/producer/mock_test.go`, `nats/producer/example_test.go` · **Scope:** M
+## Task 3: gostyle telemetry rules
 
-## Task 4: consumer lifecycle
+**Description:** In `.agents/skills/go-best-practices/scripts/gostyle.go`:
+- Add `error-type-message` and `metric-high-cardinality`, as spec assumptions 1–3 describe.
+- Add a package-scoped pass that groups the non-test files of each directory.
+- The rules follow the attribute map through identifiers, builder calls (to a fixpoint), map
+  literals, and index writes. A clone stops the trace.
+- Keys are matched as a string literal, `semconv.X`, or `string(semconv.X)`.
+- Each rule gets a `ruleDocs` entry linking the semconv guidance.
+- Standard library only.
+
+**Acceptance criteria:**
+- [ ] `testdata/bad` triggers each new rule in each shape: a direct literal, a builder
+      function, an index write, an identifier from `err.Error()`, and a builder that returns
+      `err.Error()`.
+- [ ] `testdata/good` has the safe shapes (a cloned span-only map, a coded `error.type`, a
+      bounded key) and reports nothing.
+- [ ] `TestTelemetryRules_Table` covers each key form.
+- [ ] Existing rules are unchanged; `TestCheck` passes.
+
+**Verification:** `GOWORK=off go test -count=1 gostyle.go gostyle_test.go`. The orchestrator
+then runs recall at `411bb72` and `216b2aa`, and precision on the branch (spec assumption 4).
+
+**Dependencies:** T2 · **Files:** `gostyle.go`, `gostyle_test.go`, `testdata/**` · **Scope:** M
+
+## Task 4: Release script and workflow
 
 **Description:**
-- `Register(cfg, handler)` validates and stores only.
-- `Start(ctx)`:
-  - connects through `wire.Connect`;
-  - looks the stream up, and creates it from `StreamConfig` only if it is missing;
-  - creates or updates the durable consumer, all bounded by ctx.
-- The default filter (`Tags` empty or `["*"]`) is `wire.DataSubjects(topic)`.
-- `ConsumeFromLast` maps to `DeliverNewPolicy`.
-- `Shutdown(ctx)`:
-  - stops intake: `consumeCtx.Drain()`, then wait on `Closed()` (N4: no `wg.Add` after Wait
-    can start);
-  - waits for in-flight handlers until ctx is done;
-  - drains the connection;
-  - returns `ctx.Err()` on timeout.
-  - Without `Start`, it is a no-op.
-- The plain-map registry and `wire.ServerAddrPort`.
-- Keep `HandlerFunc(ctx, []byte)` (T6 changes it). Handler ctx cancellation is T6.
+- Add a `VERSION` file at the repo root (`v0.1.0`).
+- Add `.github/scripts/release.sh <version> [--dry-run]`, which does these steps in order:
+  1. Validate the semver shape and the major against each module path.
+  2. Check that every sibling require equals `<version>`.
+  3. Check that no `<module>/<version>` tag exists and that the proxy doesn't have the
+     version.
+  4. Without `--dry-run`, tag every module on HEAD and run `git push --atomic origin <tags>`.
+- Add `.github/scripts/verify-install.sh <version>`: in a temp module outside the repo, run
+  `GOPROXY=https://proxy.golang.org GOFLAGS=-mod=mod` `go get` on every module at the
+  version, then `go build` on a file that imports one package from each module. It retries
+  while the proxy catches up, for up to about 5 minutes.
+- Rework `release.yml`: one `version` input that defaults to the `VERSION` file, the release
+  step, then a verify-install job.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestShutdown_WithoutStart`: Register then Shutdown dials nothing and
-      leaks nothing (a factory spy counts dials).
-- [x] *(regression)* `TestShutdown_RespectsDeadline`: with a handler that ignores ctx, Shutdown
-      returns `context.DeadlineExceeded` by the deadline (±200 ms).
-- [x] *(regression)* `TestConsumer_DefaultFilterSkipsSchedules` (embedded JetStream): a message
-      published raw on `schedules.<topic>.x` is not delivered; `topic` and `topic.tag` are.
-- [x] `TestBuildConsumerConfig` covers `DeliverNewPolicy` for "last".
+- [ ] `release.sh v0.1.0 --dry-run` passes on the branch.
+- [ ] It fails, with a clear message, on:
+  - a mismatched sibling require;
+  - a bad version string;
+  - a v2 version on a non-/v2 path;
+  - a version already in the proxy (use `v1.0.0` against `go-dev-sdk`, through an override
+    of the module prefix, or a stubbed curl).
+- [ ] A bats-free shell test, `.github/scripts/release_test.sh`, runs those cases.
+- [ ] `shellcheck` is clean, if it is available.
 
-**Verification:**
-- [x] `./consumer/...` checks under `-race`; coverage ≥ 68.6%.
+**Dependencies:** T2 · **Files:** `VERSION`, `.github/scripts/*`, `.github/workflows/release.yml` · **Scope:** M
 
-**Dependencies:** T2 · **Files:** `nats/consumer/consumer.go`, `nats/consumer/config.go`, `nats/consumer/consumer_test.go`, `nats/consumer/config_test.go`, `nats/consumer/helpers_test.go` · **Scope:** M
-
-## Task 7: cron lifecycle
+## Task 5: db tests on sqlmock
 
 **Description:**
-- C2: `Register`'s started/stopping check and the map write happen under the same mutex that
-  `Start` takes.
-- C3:
-  - Scheduled runs use the engine's stop context as their parent (no `Background`).
-  - `Unlock` uses `context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)`.
-- X1/C4:
-  - The chain becomes tracer → logger → toggler → locker → metrics → panicRecovery → handler.
-  - The toggler and locker return their errors without logging.
-  - The logger logs a skip (`ErrJobDisabled`, `ErrLockHeld`, `ErrJobRunning`) at Info and a
-    failure at Error.
-- C5:
-  - `fmt.Errorf("%w: %w", ErrInvalidSchedule, err)`.
-  - `inFlight` becomes a set of names under a mutex; the stored cancel funcs go, since
-    `stopCancel` covers them.
-- X7: drop the nil-ctx fallbacks in `runJob` and `Stop`.
-- Telemetry names don't change here; that is T8.
+- Rewrite the db unit tests that use the in-repo fake driver to use go-sqlmock, through
+  `Config{Driver: "sqlmock", DSN}`. That covers the query, exec, named, transaction, error,
+  telemetry, and ctx paths.
+- Delete the fake driver and its seams where sqlmock covers their cases. Keep any helper that
+  sqlmock can't replace, with a reason.
+- The env-gated MySQL and PostgreSQL integration tests stay. They must pass against real
+  servers (T9 wires CI).
+- The orchestrator adds go-sqlmock v1.5.2 to db/go.mod.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestRegister_RacesStart`: a concurrent `Register` and `Start` under
-      `-race`. Either Register returns `ErrEngineAlreadyStarted` or the job is scheduled, never
-      a race report.
-- [x] *(regression)* `TestUnlock_AfterCancel`: a job canceled by `Stop` still calls Unlock with
-      a live ctx that keeps the span context.
-- [x] *(regression)* `TestJob_PanicIsMeasured`: a panicking job produces a duration point with
-      an error, and the span has error status.
-- [x] `TestRegister_InvalidSchedule`: `errors.Is` matches both `ErrInvalidSchedule` and the
-      parser error.
+- [ ] No test depends on the deleted fake driver.
+- [ ] Coverage ≥ 88.8%.
+- [ ] PR 2's regression tests still exist and still fail when their fix is reverted
+      (orchestrator spot-check).
 
-**Verification:**
-- [x] cron module checks (lint new-from-merge-base); coverage: cron 100%, engine ≥ 93.7%.
+**Verification:** db module checks, plus the integration tests run locally against Docker
+MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 
-**Dependencies:** T1 · **Files:** `cron/engine/engine.go`, `cron/engine/middleware.go`, `cron/engine/engine_test.go`, `cron/engine/middleware_test.go` · **Scope:** M
+**Dependencies:** T2 · **Files:** `db/*_test.go`, `db/*.go` (seam removal), `db/go.mod` (orchestrator) · **Scope:** L
 
-## Task 8: cron telemetry, docs, recipe, strict
+## Task 6: redis tests on miniredis
 
 **Description:**
-- C1:
-  - Drop the `cron.job.runs` counter.
-  - `cron.job.duration` (s) keeps only `cron.job.name`, `cron.job.trigger`, and `error.type` on
-    failure.
-  - `error.type`: an `*errs.Error` code, `timeout`, `canceled`, `panic`, or `_OTHER`. The code is
-    read through `errors.AsType[interface{ Code() int }]`, so cron gains no dependency on
-    errs.
-  - The span gets `cron.job.fencing_token`, and `status` goes.
-- X6: one metrics helper and one tracer helper, resolved per call.
-- C6: package comments (cron and engine) and Config field docs.
-- Fix every full-tree lint finding (X8, X9).
-- Add a README "Testing your code" section: call the `HandlerFunc` directly, or use
-  `Engine.Trigger` with fake `Toggler`/`Locker`.
-- Add `cron` to `STRICT_LINT_MODULES`.
+- Rewrite the redis tests to run against `miniredis.RunT(t)`. That covers commands,
+  pipelines, transactions, the error prefix, telemetry, the pool poller, Close, and the New
+  ctx.
+- Delete the stub clients and the unexported seams that existed only for them.
+- Keep a stub only for a case miniredis can't produce, such as cluster and sentinel topology
+  routing (miniredis is standalone only), with a reason.
+- The orchestrator adds miniredis/v2 v2.40.0.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestMetrics_Attributes`: the exact name, unit, and attribute sets on
-      success and failure. No fencing token, status, or message; no `cron.job.runs`.
-- [x] Full-tree lint 0 and gostyle 0 in cron; `cron` is in the strict list.
+- [ ] Coverage ≥ 84.9%.
+- [ ] The regression tests still exist and still fail when their fix is reverted
+      (spot-check).
 
-**Verification:**
-- [x] cron module checks (strict).
+**Verification:** redis module checks.
 
-**Dependencies:** T7 · **Files:** `cron/engine/middleware.go`, `cron/engine/middleware_test.go`, `cron/engine/config.go`, `cron/*.go` docs, `cron/README.md`, `.github/workflows/ci.yml` · **Scope:** M
+**Dependencies:** T2 · **Files:** `redis/*_test.go`, `redis/redis.go` (seam removal), `redis/go.mod` (orchestrator) · **Scope:** L
 
-### Checkpoint A: Opus review of T1–T4, T7, T8
-- [x] The spec criteria hold for cron, and the lifecycle criteria hold for nats; CI is green;
-      review fixes are applied.
+### Checkpoint A
+- [ ] Rule recall is shown at `411bb72` and `216b2aa`, and precision is 0 on the branch.
+- [ ] Haiku review of T1–T6, with its fixes applied; CI is green.
 
-## Task 5: producer Message API, headers, delayed publish, trace parenting
+## Task 7: s3 tests on gofakes3
 
 **Description:**
-- N13: `producer.Message{Topic, Tag, Key string; Body []byte}`, used by
-  `PublishSync(ctx, msg)`, `PublishSyncWithDelay(ctx, msg, delay)`, and
-  `PublishAsync(ctx, msg, cb)`. `Client` gets the same signatures. `Message` is a struct, not
-  an interface, so it lives in `producer.go` beside `Client`.
-- N20: never set `Nats-Msg-Id`; set `wire.HeaderKey` and `wire.HeaderTag`.
-- N18 and N9: a delayed message publishes on `wire.ScheduleSubject(topic)`, with
-  `Nats-Schedule-Target` set to the data subject and `@at` in RFC3339Nano.
-- N5: the trace context is injected inside the producer span, after it starts.
+- Rewrite the s3 tests to run against gofakes3 with `s3mem` on httptest, through
+  `Config{Endpoint: ts.URL, UsePathStyle: aws.Bool(true)}`. That covers put, get (whole and
+  parts), head, delete, list, multipart upload, presign, the error codes, and telemetry.
+- Delete the API stubs and seams that existed only for them. Keep stubs for transport-level
+  failures that gofakes3 can't inject, with a reason. Close every response body.
+- The orchestrator adds gofakes3 v1.2.0.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestPublishSyncWithDelay_DeliversOnceAtDelay` (embedded JetStream, read
-      through a raw jetstream consumer filtered on `DataSubjects`):
-  - two concurrent publishes with delays of 1 s and 1.5 s each arrive exactly once, no
-    earlier than their delay minus 100 ms;
-  - no schedule-subject message is seen;
-  - `Sdk-Msg-Tag` and `traceparent` survive.
-- [x] *(regression)* `TestPublishSync_SameKeyNotDeduplicated`: two messages with one key give
-      two stored messages.
-- [x] *(regression)* `TestPublish_TraceParenting`: the injected `traceparent` span id equals
-      the producer span's.
+- [ ] Coverage ≥ 86.3%.
+- [ ] The regression tests still exist and still fail when their fix is reverted
+      (spot-check).
 
-**Verification:**
-- [x] `./producer/...` checks (`-count=3` for the timing test); coverage ≥ 70.1%.
+**Verification:** s3 module checks.
 
-**Dependencies:** T3, Checkpoint A · **Files:** `nats/producer/producer.go`, `nats/producer/telemetry.go` (inject only), `nats/producer/producer_test.go`, `nats/producer/example_test.go`, `nats/producer/mock_test.go` · **Scope:** M
+**Dependencies:** Checkpoint A · **Files:** `s3/*_test.go`, `s3/s3.go`, `s3/middleware.go` (seam removal), `s3/go.mod` (orchestrator) · **Scope:** L
 
-## Task 6: consumer Message handler, heartbeat, ErrNoRetry, ack logging, panic innermost
+## Task 8: nats tests on the embedded server
 
 **Description:**
-- N21:
-  - `type Message interface` in `consumer.go` (spec Code Style), plus an unexported wrapper
-    that parses the metadata once.
-  - `HandlerFunc(ctx, msg Message) error`.
-  - A message without JetStream metadata is nak'd before the handler runs.
-- N1 and N21 heartbeat:
-  - The handler ctx derives from the consumer's run ctx, which `Shutdown` cancels.
-  - Its deadline is `Config.HandlerTimeout`, a new field that defaults to `Timeout` (R1
-    SetDefaults and Validate; it must be > 0).
-  - While the handler runs, a heartbeat calls `msg.InProgress()` every AckWait/2.
-  - The heartbeat stops before ack, nak, or term.
-- N21 `ErrNoRetry` in `errors.go`: a handler error matching it with `errors.Is` terms the
-  message; any other error naks with RetryBackoff.
-- N8: Ack, Nak, Term, and InProgress errors are logged at Warn (topic, group, sequence) and
-  added to the span as an event.
-- X1: the chain is tracer → logger → metrics → panicRecovery → handler.
+- Rewrite the producer and consumer unit tests that use the `jsProducer` and `jsConsumer`
+  mocks and factories to run against the embedded JetStream server.
+- Delete the `jsProducer`/`jsConsumer` interfaces, the factories, and the mocks.
+- Keep a stub only where the server can't produce the case: a never-arriving async ack, or a
+  hung drain for the Shutdown-deadline tests. Each kept stub has a reason.
+- No go.mod change: nats-server is already a test dependency.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestHandler_ContextCanceledOnShutdown`: a blocked handler's ctx is done
-      after Shutdown, and its deadline is about `HandlerTimeout`.
-- [x] *(regression)* `TestHandler_HeartbeatPreventsRedelivery` (embedded JetStream): AckWait 1 s,
-      HandlerTimeout 5 s, and a 2.5 s handler give exactly one delivery.
-- [x] *(regression)* `TestHandler_ErrNoRetryTerms`: a wrapped `ErrNoRetry` gives one delivery,
-      and the message is termed.
-- [x] *(regression)* `TestHandler_MessageMetadata`: the key, tag, subject, sequence, and delivery
-      count are 1, then 2 on redelivery.
-- [x] *(regression)* `TestHandler_PanicIsMeasured`: the metrics middleware sees the recovered
-      panic as an error, the message is nak'd, and the span has error status.
+- [ ] Coverage stays at or above: consumer 93.3%, producer 96.4%, wire 95.8%.
+- [ ] PR 3's regression tests still exist and still fail when their fix is reverted
+      (spot-check).
+- [ ] Timing tests pass with `-count=3`.
 
-**Verification:**
-- [x] `./consumer/...` checks under `-race` (`-count=3` for the timing tests); coverage ≥ 68.6%.
+**Verification:** nats module checks.
 
-**Dependencies:** T4, Checkpoint A · **Files:** `nats/consumer/consumer.go`, `nats/consumer/handler.go`, `nats/consumer/middleware.go` (order only), `nats/consumer/config.go`, `nats/consumer/errors.go`, `*_test.go` · **Scope:** L
+**Dependencies:** Checkpoint A · **Files:** `nats/producer/*`, `nats/consumer/*` (tests and seam removal) · **Scope:** L
 
-## Task 9: nats telemetry, both sides
+### Checkpoint A2
+- [ ] Haiku review of T7–T8, with its fixes applied; CI is green.
+
+## Task 9: CI
+
+**Description:** In `.github/workflows/ci.yml`:
+- Replace `STRICT_LINT_MODULES` with `LAX_MODULES: '["confloader"]'`, so `only-new-issues` is
+  set only for lax modules. Update the comment: the list may only shrink.
+- Add a "Style" step that runs gostyle on `./...` for non-lax modules.
+- Add a `gostyle` job that runs the gostyle self-test.
+- Add MySQL and PostgreSQL `services:` and set `DB_MYSQL_DSN`/`DB_POSTGRES_DSN` for the db
+  module only, so its integration tests run.
+- Add a `release-dry-run` job: `.github/scripts/release.sh "$(cat VERSION)" --dry-run` and
+  `release_test.sh`.
+
+**Acceptance criteria:**
+- [ ] CI is green on the PR, with every new job present.
+- [ ] The db job's log shows the integration tests ran, not skipped.
+- [ ] Precision is checked again: gostyle reports 0 on every non-lax module after T5–T8.
+
+**Dependencies:** T3, T4, T5, T7, T8 · **Files:** `.github/workflows/ci.yml` · **Scope:** S
+
+## Task 10: Docs
 
 **Description:**
-- N11: metrics from `messagingconv`:
-  - producer: `ClientOperationDuration` and `ClientSentMessages` (success only);
-  - consumer: `ProcessDuration` and `ClientConsumedMessages` (every delivery).
-- N10, X2, X4: the metric attributes are only `messaging.system=nats`,
-  `messaging.operation.name`, `messaging.operation.type`, `messaging.destination.name`,
-  `messaging.consumer.group.name` (consumer), `server.address`, `server.port`, and
-  `error.type` on failure.
-- The spans add these:
-  - `messaging.nats.subject`
-  - `messaging.message.id` (the producer's PubAck sequence, or the consumer's stream sequence)
-  - `messaging.message.body.size`
-  - `messaging.nats.message.key` and `.tag`
-  - `messaging.nats.message.delivery_count`
-- Span names become `publish <topic>` and `process <topic>`.
-- X3 `error.type`: an `*errs.Error` code, a `jetstream.APIError` ErrorCode, `timeout`
-  (including a `net.Error` timeout), `canceled`, `panic`, or `_OTHER`.
-- X6 helpers.
+- AGENTS.md: the Verification section and the Definition of done describe strict-by-default,
+  `LAX_MODULES`, gostyle in CI, the new path, and the release flow
+  (`release.sh` plus `release.yml`).
+- The go-best-practices skill: the two rules and their ignore syntax.
+- The opentelemetry-semconv skill: a pointer to the rules.
+- The module READMEs: install lines on the new path at v0.1.0. The testing recipes already
+  exist.
+- The backlog's key assumptions are ticked, with evidence links.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestPublish_MetricAttributes` and `TestProcess_MetricAttributes`: the exact
-      names, units, and instrument types, and the exact attribute sets on success and failure.
-      No id, key, tag, subject, body size, or message on metrics.
-- [x] *(regression)* `TestErrorType` (both packages): every class above.
+- [ ] The docs match the code and CI.
+- [ ] `grep go-dev-sdk` is clean, as in T2.
 
-**Verification:**
-- [x] nats module checks; coverage ≥ baselines.
-
-**Dependencies:** T5, T6 · **Files:** `nats/producer/telemetry.go`, `nats/producer/telemetry_test.go`, `nats/consumer/middleware.go`, `nats/consumer/middleware_test.go` · **Scope:** M
-
-## Task 10: nats cleanup, docs, testing recipe, strict
-
-**Description:**
-- N16: package comments (producer, consumer, wire) and every exported declaration.
-- N17: remove the unused handlerAdapter fields and the repeated metadata lookups, and rename
-  the get-prefixed helpers.
-- X8 and X9 across nats, plus every other full-tree lint and gostyle finding.
-- The READMEs:
-  - the new APIs;
-  - at-least-once delivery both ways, and deduping on `Key()`;
-  - `ErrNoRetry` and `HandlerTimeout`;
-  - `MaxRetryAttempts` exhaustion (JetStream stops redelivering; a DLQ is a separate
-    project);
-  - a "Testing your code" section: an embedded nats-server, and a fake `consumer.Message` for
-    handler unit tests.
-- Update `example_test.go` (compile-only) and `parity_test.go`.
-- Add `nats` to `STRICT_LINT_MODULES`.
-
-**Acceptance criteria:**
-- [x] Full-tree lint 0 and gostyle 0 in nats; `nats` is in the strict list; no stale `//nolint`.
-- [x] README snippets compile; the orchestrator checks them in a scratch module.
-
-**Verification:**
-- [x] nats module checks (strict).
-
-**Dependencies:** T9 · **Files:** `nats/**/*.go` (docs and renames), `nats/README.md` or the package READMEs, `.github/workflows/ci.yml` · **Scope:** M
+**Dependencies:** T9 · **Files:** `AGENTS.md`, `.agents/skills/*/SKILL.md`, `*/README.md`, `docs/ideas/sdk-fix-backlog.md` · **Scope:** S
 
 ### Checkpoint B: complete
-- [x] SPEC-messaging success criteria 1–8 are verified with evidence.
-- [x] Final Opus review, with its fixes applied.
-- [x] The PR body (prepared by the orchestrator) lists every API break and every renamed or
-      dropped metric and attribute. The owner updates it and marks the PR ready, or tells the
-      orchestrator to.
+- [ ] SPEC-guardrails success criteria 1–8 are verified with evidence, including the rule's
+      recall and precision.
+- [ ] Haiku review of T9–T10, then one Opus review of the whole PR (all tasks), with its fixes
+      applied.
+- [ ] The PR body (prepared by the orchestrator) lists the path change, v0.1.0 and the release
+      runbook, the rules and their validation, and the kept stubs. The owner marks the PR
+      ready, or tells the orchestrator to.
