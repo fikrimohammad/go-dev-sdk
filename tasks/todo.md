@@ -164,7 +164,7 @@ the integration tests' call sites.
 **Dependencies:** T4 · **Files:** `s3/s3.go`, `s3/s3_test.go`, `s3/example_test.go`, `s3/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 
 ### Checkpoint A: Opus review of T1–T7
-- [ ] Spec criteria 2–4 hold for every module so far; CI is green; review fixes are applied.
+- [x] Spec criteria 2–4 hold for every module so far; CI is green; review fixes are applied.
 
 ## Task 8: db cleanup, testing recipe, strict
 
@@ -178,11 +178,11 @@ the integration tests' call sites.
 - Add `db` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [ ] *(regression, conditional)* D3 is fixed with a failing-first test, or dropped with evidence.
-- [ ] Full-tree lint 0 and gostyle 0 in db; `db` is in the strict list.
+- [x] *(regression, conditional)* D3 is fixed with a failing-first test, or dropped with evidence.
+- [x] Full-tree lint 0 and gostyle 0 in db; `db` is in the strict list.
 
 **Verification:**
-- [ ] db module checks (strict); coverage ≥ 87.4%.
+- [x] db module checks (strict); coverage ≥ 87.4%.
 
 **Dependencies:** T5 · **Files:** `db/bind.go`, `db/bind_test.go`, `db/config.go`, `db/drivers.go`, `db/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 

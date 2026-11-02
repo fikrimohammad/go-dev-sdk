@@ -60,9 +60,9 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T6: redis telemetry: semconv attributes, no count metric, error.type (R1, X2–X4, X6)
 - [x] T7: s3 `New(ctx)`, lint cleanup, testing recipe, strict (X5, X8, X9, S2, N19)
 
-### Checkpoint A: Opus review of T1–T7
+### Checkpoint A: Opus review of T1–T7 (done; fixes in 326fd73 and the redis fix commit)
 ### Wave 3 (parallel)
-- [ ] T8: db cleanup: D3 (prove or drop), D4, X8, X9, testing recipe, strict (N19)
+- [x] T8: db cleanup: D3 (prove or drop), D4, X8, X9, testing recipe, strict (N19)
 - [ ] T9: redis pool metrics in semconv form; Close waits for the poller (R2, R3, R4)
 
 ### Wave 4

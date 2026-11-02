@@ -79,7 +79,7 @@ func (f *fakeMetrics) lastHist() (metricRec, bool) {
 	return f.hists[len(f.hists)-1], true
 }
 
-func (f *fakeMetrics) nums() (int, int) {
+func (f *fakeMetrics) nums() (counts, hists int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.counts), len(f.hists)
@@ -682,7 +682,7 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 		"UPDATE t SET name = :name WHERE id = :id",
 		map[string]any{"id": int64(1), "name": "a"})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("NamedExecContext() err = nil, want error")
 	}
 
 	hist, ok := fm.lastHist()
@@ -718,18 +718,18 @@ func TestBindFailure_EmitsNoTelemetry(t *testing.T) {
 	_, err := dbx.NamedExecContext(context.Background(),
 		"UPDATE t SET a = :missing WHERE id = :id", map[string]any{"id": int64(1)})
 	if err == nil {
-		t.Fatal("expected bind error for missing key")
+		t.Fatal("NamedExecContext() err = nil, want bind error for missing key")
 	}
 
 	if got := numRecordedQueries(t); got != 0 {
 		t.Fatalf("query executed on bind failure: %d", got)
 	}
 	if n := ex.count(); n != 0 {
-		t.Fatalf("expected no spans, got %d", n)
+		t.Fatalf("spans = %d, want 0", n)
 	}
 	nc, nh := fm.nums()
 	if nc != 0 || nh != 0 {
-		t.Fatalf("expected no metrics, got counts=%d hists=%d", nc, nh)
+		t.Fatalf("counts = %d, hists = %d, want 0, 0", nc, nh)
 	}
 }
 
@@ -986,7 +986,7 @@ func TestPostgresErrorTelemetry(t *testing.T) {
 	_, err := dbx.NamedExecContext(context.Background(),
 		"INSERT INTO t (id) VALUES (:id)", map[string]any{"id": int64(1)})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("NamedExecContext() err = nil, want error")
 	}
 
 	hist, ok := fm.lastHist()
@@ -1063,7 +1063,7 @@ func TestINExpansionErrors(t *testing.T) {
 	dbx, fm, ex := setupTest(t, &stubDB{})
 
 	_, err := dbx.NamedExecContext(context.Background(),
-		"DELETE FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64{}})
+		"DELETE FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64(nil)})
 	if err == nil || !strings.Contains(err.Error(), "empty slice") {
 		t.Fatalf("error = %v, want empty slice error", err)
 	}

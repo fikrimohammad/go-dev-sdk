@@ -263,6 +263,56 @@ lifecycle operations and are not instrumented.
 | `DB` | `Begin`, `Close` + `Queryer` + `Execer` |
 | `Tx` | `Commit`, `Rollback` + `Queryer` + `Execer` |
 
+## Testing your code
+
+Code that uses this package can be unit-tested without a server by pointing
+`Config` at [go-sqlmock](https://github.com/DATA-DOG/go-sqlmock). Importing
+sqlmock registers a `sqlmock` driver, and `sqlmock.NewWithDSN` creates a named
+mock database. `Config{Driver: "sqlmock", DSN: ...}` uses it as-is, because the
+package accepts any driver name when `DSN` is set.
+
+```go
+package mydao_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/fikrimohammad/go-dev-sdk/db"
+)
+
+func TestInsert(t *testing.T) {
+	ctx := context.Background()
+
+	// MonitorPingsOption(true) makes ExpectPing effective. Connect pings, so the
+	// ping must be expected before Connect runs.
+	_, mock, err := sqlmock.NewWithDSN("sqlmock_db_0", sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectPing()
+	mock.ExpectExec("INSERT INTO t").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	conn, err := db.Connect(ctx, db.Config{Driver: "sqlmock", DSN: "sqlmock_db_0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Unknown drivers use "?" placeholders, so the mock sees "INSERT INTO t (id) VALUES (?)".
+	if _, err := conn.NamedExecContext(ctx, "INSERT INTO t (id) VALUES (:id)", map[string]any{"id": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+The `DB`, `Tx`, `Queryer`, and `Execer` interfaces can also be mocked with
+gomock, if a test needs to control return values rather than SQL text.
+
 ## Testing against real databases
 
 Unit tests use a stub driver and need no server. Env-gated integration tests

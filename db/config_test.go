@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -171,5 +172,25 @@ func TestValidate_PortRange(t *testing.T) {
 	cfg := Config{Host: "localhost", Port: 0, Database: "report_db", Username: "user"}.SetDefaults()
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() for defaulted port = %v, want nil", err)
+	}
+}
+
+func TestConfig_JSONRoundTrip(t *testing.T) {
+	in := Config{Driver: "pgx", Host: "db.local", MaxOpenConns: 5, ConnMaxLifetime: time.Minute}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	for _, key := range []string{`"driver":"pgx"`, `"max_open_conns":5`, `"conn_max_lifetime":60000000000`} {
+		if !strings.Contains(string(raw), key) {
+			t.Fatalf("json = %s, want it to contain %s", raw, key)
+		}
+	}
+	var out Config
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if out != in {
+		t.Fatalf("round trip = %+v, want %+v", out, in)
 	}
 }

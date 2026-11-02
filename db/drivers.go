@@ -11,6 +11,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
 	// Register pgx's database/sql driver under "pgx" (and "pgx/v5") so the
 	// built-in PostgreSQL support works without a blank import in the caller.
 	_ "github.com/jackc/pgx/v5/stdlib"

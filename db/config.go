@@ -21,32 +21,32 @@ type Config struct {
 	// "pgx/v5", "postgres", or "postgresql". The pgx, pgx/v5, postgres, and
 	// postgresql names all use the bundled pgx driver. Other driver names are
 	// accepted when DSN is set and the driver is registered with [database/sql].
-	Driver string `yaml:"driver"`
+	Driver string `yaml:"driver" json:"driver"`
 
 	// DSN, when set, is used verbatim and takes precedence over Host, Port,
 	// Database, Username, Password, and SSLMode. It may use any format the
 	// driver understands (for PostgreSQL: a postgres:// URL or a keyword=value
 	// string; for MySQL: the go-sql-driver/mysql format).
-	DSN string `yaml:"dsn"`
+	DSN string `yaml:"dsn" json:"dsn"`
 
 	// Host is the database server hostname or IP address. It is required
 	// unless DSN is set.
-	Host string `yaml:"host"`
+	Host string `yaml:"host" json:"host"`
 
 	// Port is the database server port. When it is zero and Host is set, it
 	// defaults to 3306 for MySQL and 5432 for PostgreSQL. It is ignored when
 	// DSN is set.
-	Port int `yaml:"port"`
+	Port int `yaml:"port" json:"port"`
 
 	// Database is the database name, reported as the db.namespace telemetry
 	// attribute. It is required unless DSN is set.
-	Database string `yaml:"database"`
+	Database string `yaml:"database" json:"database"`
 
 	// Username is the database user name. It is required unless DSN is set.
-	Username string `yaml:"username"`
+	Username string `yaml:"username" json:"username"`
 
 	// Password is the database user's password. It may be empty.
-	Password string `yaml:"password"`
+	Password string `yaml:"password" json:"password"`
 
 	// SSLMode selects the TLS mode: disable, allow, prefer, require,
 	// verify-ca, verify-full, or empty for the driver default. PostgreSQL
@@ -54,26 +54,26 @@ type Config struct {
 	// tls parameter (allow and prefer both use "preferred"; verify-ca and
 	// verify-full both enable full certificate and hostname verification).
 	// It is ignored when DSN is set.
-	SSLMode string `yaml:"ssl_mode"`
+	SSLMode string `yaml:"ssl_mode" json:"ssl_mode"`
 
 	// MaxOpenConns is the maximum number of open connections to the database.
 	// The zero value means the default (25); negative values are invalid.
-	MaxOpenConns int `yaml:"max_open_conns"`
+	MaxOpenConns int `yaml:"max_open_conns" json:"max_open_conns"`
 
 	// MaxIdleConns is the maximum number of idle connections in the pool. The
 	// zero value means MaxOpenConns, and the value must not exceed
 	// MaxOpenConns.
-	MaxIdleConns int `yaml:"max_idle_conns"`
+	MaxIdleConns int `yaml:"max_idle_conns" json:"max_idle_conns"`
 
 	// ConnMaxLifetime is the maximum amount of time a connection may be
 	// reused. The zero value means the default (3m); negative values are
 	// invalid.
-	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime" json:"conn_max_lifetime"`
 
 	// ConnMaxIdleTime is the maximum amount of time a connection may remain
 	// idle. The zero value means the default (5m); negative values are
 	// invalid.
-	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
+	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time" json:"conn_max_idle_time"`
 }
 
 // SetDefaults fills the zero-valued driver, port, and pool settings with

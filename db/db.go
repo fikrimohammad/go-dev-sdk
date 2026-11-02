@@ -384,8 +384,10 @@ func (m meta) tracerClient() tracer.Client {
 func (m meta) instrument(ctx context.Context, op, query string, fn func(context.Context) error) error {
 	opName := operationName(op, query)
 
+	// The base attributes are set at start so samplers can read them.
 	ctx, span := m.tracerClient().Tracer(tracerScope).Start(ctx, opName,
 		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(tracer.Attrs(m.attrs(opName, "", ""))...),
 	)
 	start := time.Now()
 	err := fn(ctx)
