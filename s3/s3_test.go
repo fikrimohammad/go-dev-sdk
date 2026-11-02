@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	aws "github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	signerv4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	tmtypes "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -286,6 +286,7 @@ type stubTransferManager struct {
 	lastDownloadInput *transfermanager.DownloadObjectInput
 }
 
+// gostyle:ignore getter-prefix S3's API names the operation GetObject.
 func (s *stubTransferManager) GetObject(_ context.Context, input *transfermanager.GetObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
 	s.getObjectCalls++
 	s.lastGetInput = input
@@ -337,7 +338,7 @@ type stubPresigner struct {
 	lastPutInput    *s3.PutObjectInput
 }
 
-func (s *stubPresigner) PresignGetObject(_ context.Context, input *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+func (s *stubPresigner) PresignGetObject(_ context.Context, input *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error) {
 	s.presignGetCalls++
 	s.lastGetInput = input
 	o := s3.PresignOptions{}
@@ -348,10 +349,10 @@ func (s *stubPresigner) PresignGetObject(_ context.Context, input *s3.GetObjectI
 	if s.returnErr != nil {
 		return nil, s.returnErr
 	}
-	return &v4.PresignedHTTPRequest{URL: "https://s3.example.com/reports/test.csv"}, nil
+	return &signerv4.PresignedHTTPRequest{URL: "https://s3.example.com/reports/test.csv"}, nil
 }
 
-func (s *stubPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+func (s *stubPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error) {
 	s.presignPutCalls++
 	s.lastPutInput = input
 	o := s3.PresignOptions{}
@@ -362,7 +363,7 @@ func (s *stubPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectI
 	if s.returnErr != nil {
 		return nil, s.returnErr
 	}
-	return &v4.PresignedHTTPRequest{URL: "https://s3.example.com/upload/test.csv"}, nil
+	return &signerv4.PresignedHTTPRequest{URL: "https://s3.example.com/upload/test.csv"}, nil
 }
 
 // setup returns an instrumented client wired to the stubs alongside assertion handles.
@@ -389,9 +390,26 @@ func setup(api s3API, tm transferManager, presigner presigner) (*client, *fakeMe
 // --- tests -------------------------------------------------------------------------
 
 func TestNew_RejectsMissingRegion(t *testing.T) {
-	_, err := New(Config{})
+	_, err := New(t.Context(), Config{})
 	if err == nil {
-		t.Fatal("New: expected error for missing region")
+		t.Fatal("New(missing region) error = nil, want non-nil")
+	}
+}
+
+func TestNew_ContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	cli, err := New(ctx, Config{
+		Region:          "us-east-1",
+		AccessKeyID:     "test-key",
+		SecretAccessKey: "test-secret",
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("New(canceled ctx) error = %v, want wrapping context.Canceled", err)
+	}
+	if cli != nil {
+		t.Errorf("New(canceled ctx) client = %v, want nil", cli)
 	}
 }
 
@@ -413,7 +431,7 @@ func TestUploadObject_Success(t *testing.T) {
 		t.Fatalf("UploadObject: %v", err)
 	}
 	if *res.ETag != `"upload-etag"` || *res.Location != "https://s3.example.com/reports/test.csv" {
-		t.Fatalf("unexpected UploadObject output: %+v", res)
+		t.Fatalf("UploadObject output = %+v, want ETag and Location", res)
 	}
 	if tm.uploadCalls != 1 {
 		t.Fatalf("upload calls = %d, want 1", tm.uploadCalls)
@@ -429,7 +447,7 @@ func TestUploadObject_Error(t *testing.T) {
 		Key:    aws.String("k"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("UploadObject error = nil, want non-nil")
 	}
 }
 
@@ -462,7 +480,7 @@ func TestGetObject_Error(t *testing.T) {
 		Key:    aws.String("k"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("GetObject error = nil, want non-nil")
 	}
 }
 
@@ -526,7 +544,7 @@ func TestDownloadObject_Error(t *testing.T) {
 		WriterAt: buf,
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("DownloadObject error = nil, want non-nil")
 	}
 }
 
@@ -559,28 +577,28 @@ func TestCopyObject_Error(t *testing.T) {
 		Key:    aws.String("k2"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("CopyObject error = nil, want non-nil")
 	}
 }
 
 func TestIsNotFound(t *testing.T) {
 	if IsNotFound(nil) {
-		t.Fatal("IsNotFound(nil) must be false")
+		t.Fatal("IsNotFound(nil) = true, want false")
 	}
 	if IsNotFound(errors.New("generic error")) {
-		t.Fatal("IsNotFound(generic) must be false")
+		t.Fatal("IsNotFound(generic) = true, want false")
 	}
 	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchKey"}) {
-		t.Fatal("IsNotFound(NoSuchKey) must be true")
+		t.Fatal("IsNotFound(NoSuchKey) = false, want true")
 	}
 	if !IsNotFound(&smithy.GenericAPIError{Code: "NotFound"}) {
-		t.Fatal("IsNotFound(NotFound) must be true")
+		t.Fatal("IsNotFound(NotFound) = false, want true")
 	}
 	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchBucket"}) {
-		t.Fatal("IsNotFound(NoSuchBucket) must be true")
+		t.Fatal("IsNotFound(NoSuchBucket) = false, want true")
 	}
 	if !IsNotFound(&smithy.GenericAPIError{Code: "404"}) {
-		t.Fatal("IsNotFound(404) must be true")
+		t.Fatal("IsNotFound(404) = false, want true")
 	}
 }
 
@@ -609,7 +627,7 @@ func TestDeleteObject_Error(t *testing.T) {
 		Key:    aws.String("k"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("DeleteObject error = nil, want non-nil")
 	}
 }
 
@@ -642,7 +660,7 @@ func TestDeleteObjects_Error(t *testing.T) {
 		Bucket: aws.String("b"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("DeleteObjects error = nil, want non-nil")
 	}
 }
 
@@ -665,7 +683,7 @@ func TestHeadObject_Success(t *testing.T) {
 		t.Fatalf("HeadObject: %v", err)
 	}
 	if *out.ContentType != ct || *out.ContentLength != cl {
-		t.Fatalf("unexpected HeadObjectOutput: %+v", out)
+		t.Fatalf("HeadObject output = %+v, want matching ContentType and ContentLength", out)
 	}
 }
 
@@ -678,7 +696,7 @@ func TestHeadObject_Error(t *testing.T) {
 		Key:    aws.String("k"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("HeadObject error = nil, want non-nil")
 	}
 }
 
@@ -700,7 +718,7 @@ func TestListObjectsV2_Success(t *testing.T) {
 		t.Fatalf("ListObjectsV2: %v", err)
 	}
 	if len(res.Contents) != 1 || *res.Contents[0].Key != key {
-		t.Fatalf("unexpected ListObjectsV2 output: %+v", res)
+		t.Fatalf("ListObjectsV2 output = %+v, want one object with key %q", res, key)
 	}
 }
 
@@ -712,7 +730,7 @@ func TestListObjectsV2_Error(t *testing.T) {
 		Bucket: aws.String("b"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("ListObjectsV2 error = nil, want non-nil")
 	}
 }
 
@@ -739,7 +757,7 @@ func TestCreateBucket_Error(t *testing.T) {
 		Bucket: aws.String("existing-bucket"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("CreateBucket error = nil, want non-nil")
 	}
 }
 
@@ -766,7 +784,7 @@ func TestDeleteBucket_Error(t *testing.T) {
 		Bucket: aws.String("nonempty-bucket"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("DeleteBucket error = nil, want non-nil")
 	}
 }
 
@@ -804,7 +822,7 @@ func TestListBuckets_Success(t *testing.T) {
 		t.Fatalf("ListBuckets: %v", err)
 	}
 	if len(res.Buckets) != 2 || *res.Buckets[0].Name != "bucket-a" {
-		t.Fatalf("unexpected buckets: %+v", res)
+		t.Fatalf("ListBuckets output = %+v, want two buckets starting with bucket-a", res)
 	}
 	if api.listBucketsCalls != 1 {
 		t.Fatalf("listBucketsCalls = %d, want 1", api.listBucketsCalls)
@@ -817,7 +835,7 @@ func TestListBuckets_Error(t *testing.T) {
 
 	_, err := c.ListBuckets(context.Background(), &s3.ListBucketsInput{})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("ListBuckets error = nil, want non-nil")
 	}
 }
 
@@ -854,15 +872,15 @@ func TestPresignGetObject_Success(t *testing.T) {
 	}
 	attrs := spanAttrs(span)
 	if attrs["aws.s3.bucket"] != "reports" || attrs["rpc.method"] != "S3/PresignGetObject" {
-		t.Fatalf("unexpected span attrs: %+v", attrs)
+		t.Fatalf("span attrs = %+v, want bucket reports and rpc.method S3/PresignGetObject", attrs)
 	}
 	if _, hasErr := attrs["error.type"]; hasErr {
-		t.Fatalf("error.type should be absent on success, got: %v", attrs["error.type"])
+		t.Fatalf("error.type on success = %v, want absent", attrs["error.type"])
 	}
 
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignGetObject" || hist.attrs["aws.s3.bucket"] != "reports" {
-		t.Fatalf("unexpected duration metric: %+v", hist)
+		t.Fatalf("duration metric = %+v, want the PresignGetObject attributes", hist)
 	}
 	if _, hasErr := hist.attrs["error.type"]; hasErr {
 		t.Fatalf("metric error.type = %v, want absent on success", hist.attrs["error.type"])
@@ -895,7 +913,7 @@ func TestPresignGetObject_Error(t *testing.T) {
 		Key:    aws.String("test.csv"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("PresignGetObject error = nil, want non-nil")
 	}
 
 	span, ok := ex.last()
@@ -912,7 +930,7 @@ func TestPresignGetObject_Error(t *testing.T) {
 
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["error.type"] != "_OTHER" {
-		t.Fatalf("unexpected duration metric: %+v", hist)
+		t.Fatalf("duration metric = %+v, want error.type _OTHER", hist)
 	}
 }
 
@@ -949,12 +967,12 @@ func TestPresignPutObject_Success(t *testing.T) {
 	}
 	attrs := spanAttrs(span)
 	if attrs["aws.s3.bucket"] != "uploads" || attrs["rpc.method"] != "S3/PresignPutObject" {
-		t.Fatalf("unexpected span attrs: %+v", attrs)
+		t.Fatalf("span attrs = %+v, want bucket uploads and rpc.method S3/PresignPutObject", attrs)
 	}
 
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignPutObject" {
-		t.Fatalf("unexpected duration metric: %+v", hist)
+		t.Fatalf("duration metric = %+v, want the PresignPutObject attributes", hist)
 	}
 }
 
@@ -984,7 +1002,7 @@ func TestPresignPutObject_Error(t *testing.T) {
 		Key:    aws.String("avatar.png"),
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("PresignPutObject error = nil, want non-nil")
 	}
 
 	span, ok := ex.last()
@@ -997,7 +1015,7 @@ func TestPresignPutObject_Error(t *testing.T) {
 
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["error.type"] != "_OTHER" {
-		t.Fatalf("unexpected duration metric: %+v", hist)
+		t.Fatalf("duration metric = %+v, want error.type _OTHER", hist)
 	}
 }
 
@@ -1166,10 +1184,10 @@ func TestInstrumentationMiddleware_HandleInitialize_Success(t *testing.T) {
 	}
 	attrs := spanAttrs(span)
 	if attrs["aws.s3.bucket"] != "my-bucket" || attrs["rpc.method"] != "S3/PutObject" || attrs["cloud.region"] != "us-east-1" {
-		t.Fatalf("unexpected attrs: %+v", attrs)
+		t.Fatalf("span attrs = %+v, want bucket my-bucket, rpc.method S3/PutObject, and region us-east-1", attrs)
 	}
 	if errType, hasErr := attrs["error.type"]; hasErr && errType != "" {
-		t.Fatalf("error.type should be absent or empty on success, got %v", errType)
+		t.Fatalf("error.type on success = %v, want absent or empty", errType)
 	}
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["aws.s3.bucket"] != "my-bucket" || hist.attrs["rpc.method"] != "S3/PutObject" {
@@ -1208,7 +1226,7 @@ func TestInstrumentationMiddleware_HandleInitialize_Error(t *testing.T) {
 
 	_, _, err := mw.HandleInitialize(ctx, in, next)
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("HandleInitialize error = nil, want non-nil")
 	}
 
 	span, ok := ex.last()
@@ -1287,7 +1305,7 @@ func TestMiddleware_MetricAttributes(t *testing.T) {
 			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 			t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
-			cli, err := New(Config{
+			cli, err := New(t.Context(), Config{
 				Region:          "us-east-1",
 				Endpoint:        srv.URL,
 				AccessKeyID:     "test-key",
@@ -1476,12 +1494,12 @@ func TestOptions_WithMetrics_WithTracer(t *testing.T) {
 	tr := tracer.Wrap(tp)
 
 	cfg := Config{Region: "us-east-1"}
-	cli, err := New(cfg, WithMetrics(fm), WithTracer(tr))
+	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tr))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if cli == nil {
-		t.Fatal("expected non-nil client")
+		t.Fatal("New client = nil, want non-nil")
 	}
 }
 
@@ -1504,7 +1522,7 @@ func TestMiddleware_EndToEnd_LivePutObject(t *testing.T) {
 		SecretAccessKey: "test-secret",
 	}
 
-	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1520,7 +1538,7 @@ func TestMiddleware_EndToEnd_LivePutObject(t *testing.T) {
 
 	span, ok := ex.last()
 	if !ok {
-		t.Fatal("expected a span to be recorded by middleware")
+		t.Fatal("middleware span recorded = false, want true")
 	}
 	if span.Name() != "PutObject" {
 		t.Fatalf("span name = %q, want PutObject", span.Name())
@@ -1530,7 +1548,7 @@ func TestMiddleware_EndToEnd_LivePutObject(t *testing.T) {
 		t.Fatalf("span aws.s3.bucket = %v, want production-data", attrs["aws.s3.bucket"])
 	}
 	if attrs["rpc.method"] != "S3/PutObject" || attrs["rpc.system.name"] != "aws-api" {
-		t.Fatalf("unexpected RPC attributes: %+v", attrs)
+		t.Fatalf("RPC attrs = %+v, want rpc.method S3/PutObject and rpc.system.name aws-api", attrs)
 	}
 	if _, ok := attrs["rpc.system"]; ok {
 		t.Errorf("span has removed rpc.system attribute")
@@ -1541,7 +1559,7 @@ func TestMiddleware_EndToEnd_LivePutObject(t *testing.T) {
 
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["aws.s3.bucket"] != "production-data" || hist.attrs["rpc.method"] != "S3/PutObject" {
-		t.Fatalf("unexpected duration metric: %+v", hist)
+		t.Fatalf("duration metric = %+v, want the PutObject attributes", hist)
 	}
 }
 
@@ -1570,7 +1588,7 @@ func TestMiddleware_EndToEnd_LiveErrorHandling(t *testing.T) {
 		SecretAccessKey: "test-secret",
 	}
 
-	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1579,12 +1597,12 @@ func TestMiddleware_EndToEnd_LiveErrorHandling(t *testing.T) {
 		Bucket: aws.String("missing-bucket"),
 	})
 	if err == nil {
-		t.Fatal("expected DeleteBucket to fail")
+		t.Fatal("DeleteBucket(missing-bucket) error = nil, want non-nil")
 	}
 
 	span, ok := ex.last()
 	if !ok {
-		t.Fatal("expected span to be recorded")
+		t.Fatal("span recorded = false, want true")
 	}
 	if span.Status().Code != codes.Error {
 		t.Fatalf("span status = %v, want Error", span.Status().Code)
@@ -1607,7 +1625,7 @@ func TestMiddleware_EndToEnd_PresignGetObject(t *testing.T) {
 		SecretAccessKey: "test-secret",
 	}
 
-	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1620,7 +1638,7 @@ func TestMiddleware_EndToEnd_PresignGetObject(t *testing.T) {
 		t.Fatalf("PresignGetObject: %v", err)
 	}
 	if req.URL == "" {
-		t.Fatal("expected non-empty presigned URL")
+		t.Fatal("PresignGetObject URL = empty, want non-empty")
 	}
 
 	span, ok := ex.last()
@@ -1632,15 +1650,15 @@ func TestMiddleware_EndToEnd_PresignGetObject(t *testing.T) {
 	}
 	attrs := spanAttrs(span)
 	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "S3/PresignGetObject" {
-		t.Fatalf("unexpected attrs: %+v", attrs)
+		t.Fatalf("span attrs = %+v, want bucket presigned-bucket and rpc.method S3/PresignGetObject", attrs)
 	}
 	if _, hasErr := attrs["error.type"]; hasErr {
-		t.Fatalf("expected error.type to be absent on success, got %v", attrs["error.type"])
+		t.Fatalf("error.type on success = %v, want absent", attrs["error.type"])
 	}
 
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignGetObject" || hist.attrs["aws.s3.bucket"] != "presigned-bucket" {
-		t.Fatalf("unexpected duration metric: %+v", hist)
+		t.Fatalf("duration metric = %+v, want the PresignGetObject attributes", hist)
 	}
 	if _, hasErr := hist.attrs["error.type"]; hasErr {
 		t.Fatalf("metric error.type = %v, want absent on success", hist.attrs["error.type"])
@@ -1659,7 +1677,7 @@ func TestMiddleware_EndToEnd_PresignPutObject(t *testing.T) {
 		SecretAccessKey: "test-secret",
 	}
 
-	cli, err := New(cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1672,7 +1690,7 @@ func TestMiddleware_EndToEnd_PresignPutObject(t *testing.T) {
 		t.Fatalf("PresignPutObject: %v", err)
 	}
 	if req.URL == "" {
-		t.Fatal("expected non-empty presigned URL")
+		t.Fatal("PresignPutObject URL = empty, want non-empty")
 	}
 
 	span, ok := ex.last()
@@ -1684,11 +1702,11 @@ func TestMiddleware_EndToEnd_PresignPutObject(t *testing.T) {
 	}
 	attrs := spanAttrs(span)
 	if attrs["aws.s3.bucket"] != "presigned-bucket" || attrs["rpc.method"] != "S3/PresignPutObject" {
-		t.Fatalf("unexpected attrs: %+v", attrs)
+		t.Fatalf("span attrs = %+v, want bucket presigned-bucket and rpc.method S3/PresignPutObject", attrs)
 	}
 
 	hist, ok := fm.lastHist()
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["rpc.method"] != "S3/PresignPutObject" {
-		t.Fatalf("unexpected duration metric: %+v", hist)
+		t.Fatalf("duration metric = %+v, want the PresignPutObject attributes", hist)
 	}
 }

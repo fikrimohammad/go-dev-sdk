@@ -45,9 +45,11 @@ cfg := s3.Config{
 ### 2. Connect
 
 ```go
-cli, err := s3.New(cfg)
+cli, err := s3.New(ctx, cfg)
 if err != nil { /* handle */ }
 ```
+
+`ctx` bounds the AWS configuration load. A canceled context makes `New` return an error that wraps `context.Canceled`.
 
 ### 3. Upload an object (Transfer Manager Multipart Upload)
 
@@ -149,6 +151,38 @@ if err == nil {
 }
 ```
 
+## Testing your code
+
+Test code that uses this package against a fake S3 server, with no AWS account and no changes to your production code. Run [gofakes3](https://github.com/johannesboyne/gofakes3) in-process behind `httptest`, then point `Config.Endpoint` at it:
+
+```go
+import (
+    "net/http/httptest"
+
+    "github.com/aws/aws-sdk-go-v2/aws"
+    "github.com/johannesboyne/gofakes3"
+    "github.com/johannesboyne/gofakes3/backend/s3mem"
+
+    "github.com/fikrimohammad/go-dev-sdk/s3"
+)
+
+backend := s3mem.New()
+faker := gofakes3.New(backend)
+ts := httptest.NewServer(faker.Server())
+defer ts.Close()
+
+cli, err := s3.New(ctx, s3.Config{
+    Region:          "us-east-1",
+    Endpoint:        ts.URL,
+    UsePathStyle:    aws.Bool(true),
+    AccessKeyID:     "x",
+    SecretAccessKey: "x",
+})
+if err != nil { /* handle */ }
+```
+
+The gofakes3 dependency belongs to your test code, not to this package. To stub the `Client` interface without any server, generate a gomock mock of it and pass the mock wherever your code takes a `Client`.
+
 ## Config reference
 
 | Field | Default | Notes |
@@ -168,7 +202,7 @@ if err == nil {
 | Symbol | Description |
 | --- | --- |
 | `Config` | Connection + transfer settings; `SetDefaults()`, `Validate()` |
-| `New(cfg, opts...)` | Build an instrumented `Client` |
+| `New(ctx, cfg, opts...)` | Build an instrumented `Client`; `ctx` bounds the AWS config load |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
 | `Client` | Unified S3 client interface providing standard AWS SDK methods, Transfer Manager methods, Presign methods, and helpers |
 | `IsNotFound(err)` | Helper returns `true` for 404 / `NoSuchKey` / `NoSuchBucket` errors |

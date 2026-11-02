@@ -27,8 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	aws "github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	signerv4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
@@ -61,8 +61,7 @@ func IsNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	var aerr smithy.APIError
-	if errors.As(err, &aerr) {
+	if aerr, ok := errors.AsType[smithy.APIError](err); ok {
 		switch aerr.ErrorCode() {
 		case "NoSuchKey", "NotFound", "NoSuchBucket", "404":
 			return true
@@ -73,7 +72,7 @@ func IsNotFound(err error) bool {
 
 // Client describes the unified S3 client interface, providing native AWS S3 SDK operations,
 // TransferManager multipart operations, PresignClient utilities, and telemetry.
-type Client interface {
+type Client interface { //nolint:interfacebloat // caller-facing S3 surface kept whole for gomock
 	// Standard AWS S3 operations
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
@@ -92,8 +91,8 @@ type Client interface {
 	DownloadObject(ctx context.Context, input *transfermanager.DownloadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error)
 
 	// Presign operations
-	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
-	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
+	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
+	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
 }
 
 // s3API abstracts the raw s3.Client operations needed by our Client implementation for unit tests.
@@ -119,8 +118,8 @@ type transferManager interface {
 
 // presigner is the presign-client contract, letting tests stub the SDK.
 type presigner interface {
-	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
-	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
+	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
+	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
 }
 
 // meta carries the attributes held by every instrumented operation.
@@ -160,7 +159,15 @@ func WithTracer(t tracer.Client) Option {
 // manager and a presign client from the underlying AWS config, registers the
 // Smithy OpenTelemetry middleware on the operational client, and returns an
 // instrumented Client.
-func New(cfg Config, opts ...Option) (Client, error) {
+//
+// ctx bounds the AWS configuration load. New checks ctx first and returns an
+// error that wraps ctx.Err() when ctx is already done, because the AWS config
+// load does not observe cancellation when static credentials are configured.
+func New(ctx context.Context, cfg Config, opts ...Option) (Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("s3: %w", err)
+	}
+
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -181,7 +188,7 @@ func New(cfg Config, opts ...Option) (Client, error) {
 		tracer:               o.tracer,
 	}
 
-	s3Client, uninstrumentedClient, err := buildClients(cfg, m)
+	s3Client, uninstrumentedClient, err := buildClients(ctx, cfg, m)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +217,7 @@ func New(cfg Config, opts ...Option) (Client, error) {
 // buildClients loads the AWS configuration from cfg and returns an instrumented
 // s3.Client (with OTel Smithy middleware) and an uninstrumented s3.Client
 // (for local URL presigning without fake RPC spans).
-func buildClients(cfg Config, m meta) (*s3.Client, *s3.Client, error) {
+func buildClients(ctx context.Context, cfg Config, m meta) (instrumented, uninstrumented *s3.Client, err error) {
 	loadOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
 	}
@@ -220,7 +227,7 @@ func buildClients(cfg Config, m meta) (*s3.Client, *s3.Client, error) {
 		))
 	}
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), loadOpts...)
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("s3: loading aws config: %w", err)
 	}
@@ -302,6 +309,7 @@ func (c *client) PutObject(ctx context.Context, params *s3.PutObjectInput, optFn
 }
 
 // GetObject retrieves an object as a stream using the S3 Transfer Manager.
+// gostyle:ignore getter-prefix S3's API names the operation GetObject.
 func (c *client) GetObject(ctx context.Context, input *transfermanager.GetObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
 	return c.tmAPI.GetObject(ctx, input, opts...)
 }
@@ -362,7 +370,7 @@ func (c *client) DownloadObject(ctx context.Context, input *transfermanager.Down
 }
 
 // PresignGetObject returns a presigned URL for GET requests on an object.
-func (c *client) PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+func (c *client) PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error) {
 	opName := "PresignGetObject"
 	bucket := ""
 	if params != nil && params.Bucket != nil {
@@ -392,7 +400,7 @@ func (c *client) PresignGetObject(ctx context.Context, params *s3.GetObjectInput
 }
 
 // PresignPutObject returns a presigned URL for PUT requests to upload an object directly.
-func (c *client) PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+func (c *client) PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error) {
 	opName := "PresignPutObject"
 	bucket := ""
 	if params != nil && params.Bucket != nil {
@@ -481,15 +489,13 @@ func (m meta) finish(ctx context.Context, span trace.Span, attrs map[string]any,
 // errorType returns the error.type value for a non-nil err: the AWS API error
 // code, a transport label, "timeout", "canceled", or "_OTHER".
 func errorType(err error) string {
-	var aerr smithy.APIError
-	if errors.As(err, &aerr) {
+	if aerr, ok := errors.AsType[smithy.APIError](err); ok {
 		if code := aerr.ErrorCode(); code != "" {
 			return code
 		}
 	}
 
-	var operr *smithy.OperationError
-	if errors.As(err, &operr) {
+	if operr, ok := errors.AsType[*smithy.OperationError](err); ok {
 		if operr.Err != nil {
 			if code := errorType(operr.Err); code != "_OTHER" {
 				return code
@@ -505,16 +511,13 @@ func errorType(err error) string {
 		return "canceled"
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 		return "timeout"
 	}
 
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if opErr, ok := errors.AsType[*net.OpError](err); ok {
 		if opErr.Err != nil {
-			var scErr syscall.Errno
-			if errors.As(opErr.Err, &scErr) {
+			if scErr, ok := errors.AsType[syscall.Errno](opErr.Err); ok {
 				switch scErr {
 				case syscall.ECONNREFUSED:
 					return "connection_refused"
@@ -525,15 +528,13 @@ func errorType(err error) string {
 				}
 			}
 		}
-		var dnsErr *net.DNSError
-		if errors.As(opErr.Err, &dnsErr) {
+		if _, ok := errors.AsType[*net.DNSError](opErr.Err); ok {
 			return "dns_error"
 		}
 		return "network_error"
 	}
 
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return "dns_error"
 	}
 

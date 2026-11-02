@@ -155,11 +155,11 @@ the integration tests' call sites.
 - Update `example_test.go`. Add `s3` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestNew_ContextCanceled`: a canceled ctx makes `New` fail.
-- [ ] Full-tree lint 0 and gostyle 0 in s3; `s3` is in the strict list.
+- [x] *(regression)* `TestNew_ContextCanceled`: a canceled ctx makes `New` fail.
+- [x] Full-tree lint 0 and gostyle 0 in s3; `s3` is in the strict list.
 
 **Verification:**
-- [ ] s3 module checks (strict).
+- [x] s3 module checks (strict).
 
 **Dependencies:** T4 · **Files:** `s3/s3.go`, `s3/s3_test.go`, `s3/example_test.go`, `s3/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 
