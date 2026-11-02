@@ -8,13 +8,15 @@ executed command.
 
 - **Instrumentation hook** — rides go-redis' hook pipeline, so every command
   (current and future) is covered without per-method wrapping. One client span
-  per command plus `db.client.operation.{count,duration}` metrics.
-- **Value redaction** — `db.query.text` renders the command name followed by one
-  `?` per argument (`SET ? ?`), so literal values never leak into telemetry.
+  per command plus one `db.client.operation.duration` histogram sample.
+- **Value redaction** — `db.query.text` (span only) renders the command name
+  followed by one `?` per argument (`SET ? ?`), so literal values never leak into
+  telemetry.
 - **`goredis.Nil` is not an error** — a missing-key result records no error
   telemetry.
 - **Pipelines & Transactions** — batched commands and atomic `MULTI`...`EXEC`
-  transaction blocks record a single `PIPELINE` span with `db.operation.batch.size`.
+  transaction blocks record a single `PIPELINE` span with `db.operation.batch.size`
+  (span only).
 - **TLS encryption** — built-in support for TLS with server name verification,
   insecure skip verify, and custom CA/client certificates.
 - **Context-aware startup** — `New(ctx, ...)` bounds the initial ping by the
@@ -208,12 +210,24 @@ cli, err := redis.New(
 
 ## Telemetry attributes
 
-Per command: `server.address`, `server.port`, `db.system.name` (`redis`),
-`db.namespace` (database index), `db.operation.name` (e.g. `GET`),
-`db.query.text` (values redacted as `?`), `db.response.status_code` (Redis
-simple-error prefix like `ERR`/`WRONGTYPE`, empty on success), and
-`error.type` (error message, empty on success). Pipelines add
-`db.operation.batch.size`.
+Each command or pipeline records one `db.client.operation.duration` histogram
+sample (seconds) with `db.system.name` (`redis`), `db.namespace` (database
+index), `db.operation.name` (e.g. `GET`, or `PIPELINE`), `server.address`, and
+`server.port`, each omitted when unknown.
+
+On failure the metric also carries:
+
+- `error.type`: the Redis simple-error prefix (`ERR`, `WRONGTYPE`, ...),
+  `timeout` (deadline exceeded), `canceled`, or `_OTHER`. Error messages never
+  appear on metrics.
+- `db.response.status_code`: the simple-error prefix, when the server sends one.
+
+`redis.Nil` is a normal lookup result and records no error telemetry.
+
+The span (named after the command, or `PIPELINE`) carries the same attributes
+plus `db.query.text`, with values redacted as `?`. Pipeline spans also carry
+`db.operation.batch.size`. Neither is set on the metric, to keep its
+cardinality bounded.
 
 ## Config reference
 

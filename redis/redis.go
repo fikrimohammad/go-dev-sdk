@@ -9,17 +9,19 @@
 //
 // Instrumentation rides go-redis' hook pipeline, so every command, current
 // and future, is covered without per-method wrapping. Per executed command
-// one span named after the command (client kind) and the
-// db.client.operation.{count,duration} metrics are recorded with OTel
-// attributes following the Redis semantic conventions:
-// server.address, server.port, db.system.name, db.namespace (the database
-// index), db.operation.name, db.query.text (values redacted as "?"),
-// db.response.status_code (the Redis simple-error prefix, empty on success)
-// and error.type (the error message, empty on success). redis.Nil is treated
-// as a successful lookup and does not set error telemetry.
+// one client span named after the command and one
+// db.client.operation.duration histogram sample are recorded. The metric
+// carries db.system.name ("redis"), db.namespace (the database index),
+// db.operation.name, server.address and server.port (when known). On failure
+// it also carries error.type (the Redis simple-error prefix such as "WRONGTYPE",
+// "timeout", "canceled", or "_OTHER") and db.response.status_code (the
+// simple-error prefix, when the server reports one). The span also carries
+// db.query.text (values redacted as "?"); the metric does not, to keep its
+// cardinality bounded. redis.Nil is treated as a successful lookup and does
+// not set error telemetry.
 //
-// Pipelines are recorded as a single span "PIPELINE" with
-// db.operation.batch.size set to the number of queued commands.
+// Pipelines are recorded as a single span "PIPELINE", with
+// db.operation.batch.size (the number of queued commands) on the span only.
 //
 // Tracing and metrics use the OTel global providers (otel.SetTracerProvider and
 // otel.SetMeterProvider) unless overridden with [WithMetrics] or [WithTracer].
@@ -31,6 +33,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"strconv"
@@ -40,6 +43,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/codes"
+	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
@@ -50,17 +54,11 @@ const (
 	// tracerScope is the OTel instrumentation scope name.
 	tracerScope = "redis.client"
 
-	// metricCount and metricDuration are the OTel metric names emitted per executed command.
-	metricCount    = "db.client.operation.count"
+	// metricDuration is the OTel metric name emitted per executed command.
 	metricDuration = "db.client.operation.duration"
 )
 
 var (
-	metricCountInstrument = metrics.Instrument{
-		Name:        metricCount,
-		Unit:        "{operation}",
-		Description: "Redis client operations",
-	}
 	metricDurationInstrument = metrics.Instrument{
 		Name:        metricDuration,
 		Unit:        "s",
@@ -107,6 +105,26 @@ type meta struct {
 	// metrics and tracer override the OTel global providers when non-nil.
 	metrics metrics.Client
 	tracer  tracer.Client
+}
+
+// metricsClient returns the injected metrics client, or metrics.Default() when
+// none was injected. It is resolved per call so a later otel.SetMeterProvider
+// still applies.
+func (m meta) metricsClient() metrics.Client {
+	if m.metrics != nil {
+		return m.metrics
+	}
+	return metrics.Default()
+}
+
+// tracerClient returns the injected tracer client, or tracer.Default() when
+// none was injected. It is resolved per call so a later otel.SetTracerProvider
+// still applies.
+func (m meta) tracerClient() tracer.Client {
+	if m.tracer != nil {
+		return m.tracer
+	}
+	return tracer.Default()
 }
 
 // Option configures a client returned by New.
@@ -447,7 +465,7 @@ func (h *instrumentHook) DialHook(next redis.DialHook) redis.DialHook {
 	return next
 }
 
-// ProcessHook records one span and one count + duration histogram around the
+// ProcessHook records one span and one duration histogram sample around the
 // execution of a single command.
 func (h *instrumentHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
@@ -467,62 +485,46 @@ func (h *instrumentHook) ProcessPipelineHook(next redis.ProcessPipelineHook) red
 	}
 }
 
-// instrument records one span and one count + duration histogram around fn,
+// instrument records one span and one duration histogram sample around fn,
 // which is the actual command execution.
 func (m meta) instrument(ctx context.Context, cmd redis.Cmder, fn func(context.Context) error) error {
 	op := commandName(cmd)
-	start := time.Now()
-
-	var tr trace.Tracer
-	if m.tracer != nil {
-		tr = m.tracer.Tracer(tracerScope)
-	} else {
-		tr = tracer.Tracer(tracerScope)
-	}
-	ctx, span := tr.Start(ctx, op,
+	// The base attributes are set at start so samplers can read them.
+	ctx, span := m.tracerClient().Tracer(tracerScope).Start(ctx, op,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(tracer.Attrs(m.samplingAttrs(op))...),
+		trace.WithAttributes(tracer.Attrs(m.attrs(op, "", ""))...),
 	)
+	start := time.Now()
 	err := fn(ctx)
 
-	// db.response.status_code and error.type are set on every event: to the
-	// redis simple-error prefix / message on failure, and to the empty string
-	// on success. redis.Nil is a normal "key not found" result, not an error.
-	code, etype := "", ""
+	// redis.Nil is a normal "key not found" result, not an error.
+	var code, errType string
 	if err != nil && !errors.Is(err, redis.Nil) {
 		span.SetStatus(codes.Error, err.Error())
 		code = redisErrorCode(err)
-		etype = errorMessage(err)
+		errType = errorType(err)
 	}
 
-	span.SetAttributes(tracer.Attrs(map[string]any{
-		"db.query.text":           queryText(cmd),
-		"db.response.status_code": code,
-		"error.type":              etype,
-	})...)
+	attrs := m.attrs(op, code, errType)
+	spanAttrs := maps.Clone(attrs)
+	spanAttrs[string(otelsemconv.DBQueryTextKey)] = queryText(cmd)
+	span.SetAttributes(tracer.Attrs(spanAttrs)...)
 	span.End()
 
-	attrs := m.attrs(op, cmd, code, etype)
-	m.record(ctx, time.Since(start), attrs)
+	_ = m.metricsClient().Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 	return err
 }
 
-// instrumentPipeline records one span and one count + duration histogram
-// around the execution of a pipeline batch.
+// instrumentPipeline records one span and one duration histogram sample around
+// the execution of a pipeline batch.
 func (m meta) instrumentPipeline(ctx context.Context, cmds []redis.Cmder, fn func(context.Context) error) error {
 	const op = "PIPELINE"
-	start := time.Now()
-
-	var tr trace.Tracer
-	if m.tracer != nil {
-		tr = m.tracer.Tracer(tracerScope)
-	} else {
-		tr = tracer.Tracer(tracerScope)
-	}
-	ctx, span := tr.Start(ctx, op,
+	// The base attributes are set at start so samplers can read them.
+	ctx, span := m.tracerClient().Tracer(tracerScope).Start(ctx, op,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(tracer.Attrs(m.samplingAttrs(op))...),
+		trace.WithAttributes(tracer.Attrs(m.attrs(op, "", ""))...),
 	)
+	start := time.Now()
 	err := fn(ctx)
 
 	// In go-redis, fn(ctx) returns the first error among cmds.
@@ -540,76 +542,48 @@ func (m meta) instrumentPipeline(ctx context.Context, cmds []redis.Cmder, fn fun
 		}
 	}
 
-	code, etype := "", ""
+	var code, errType string
 	if errToReport != nil {
 		span.SetStatus(codes.Error, errToReport.Error())
 		code = redisErrorCode(errToReport)
-		etype = errorMessage(errToReport)
+		errType = errorType(errToReport)
 	}
 
-	span.SetAttributes(tracer.Attrs(map[string]any{
-		"db.operation.batch.size": len(cmds),
-		"db.query.text":           pipelineText(cmds),
-		"db.response.status_code": code,
-		"error.type":              etype,
-	})...)
+	attrs := m.attrs(op, code, errType)
+	spanAttrs := maps.Clone(attrs)
+	spanAttrs[string(otelsemconv.DBOperationBatchSizeKey)] = len(cmds)
+	spanAttrs[string(otelsemconv.DBQueryTextKey)] = pipelineText(cmds)
+	span.SetAttributes(tracer.Attrs(spanAttrs)...)
 	span.End()
 
-	attrs := m.attrsPipeline(op, cmds, code, etype)
-	m.record(ctx, time.Since(start), attrs)
+	_ = m.metricsClient().Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 	return err
 }
 
-// record emits the count and duration metrics for a single event.
-func (m meta) record(ctx context.Context, d time.Duration, attrs map[string]any) {
-	if m.metrics != nil {
-		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = m.metrics.Record(ctx, metricDurationInstrument, d.Seconds(), attrs)
-	} else {
-		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = metrics.Record(ctx, metricDurationInstrument, d.Seconds(), attrs)
+// attrs builds the metric attributes for one command or pipeline. Empty values
+// are omitted, so error.type and db.response.status_code appear only on failure,
+// and db.response.status_code only when the server reports a simple-error prefix.
+func (m meta) attrs(op, code, errType string) map[string]any {
+	a := map[string]any{
+		string(otelsemconv.DBSystemNameKey):    "redis",
+		string(otelsemconv.DBOperationNameKey): op,
 	}
-}
-
-// samplingAttrs returns the attributes that matter for sampling decisions and
-// are therefore set at span creation time.
-func (m meta) samplingAttrs(op string) map[string]any {
-	return map[string]any{
-		"server.address":    m.serverAddr,
-		"server.port":       m.serverPort,
-		"db.system.name":    "redis",
-		"db.operation.name": op,
-		"db.namespace":      m.namespace,
+	if m.namespace != "" {
+		a[string(otelsemconv.DBNamespaceKey)] = m.namespace
 	}
-}
-
-// attrs builds the OTel attributes for a single command span / metric event.
-func (m meta) attrs(op string, cmd redis.Cmder, code, etype string) map[string]any {
-	return map[string]any{
-		"server.address":          m.serverAddr,
-		"server.port":             m.serverPort,
-		"db.system.name":          "redis",
-		"db.operation.name":       op,
-		"db.namespace":            m.namespace,
-		"db.query.text":           queryText(cmd),
-		"db.response.status_code": code,
-		"error.type":              etype,
+	if m.serverAddr != "" {
+		a[string(otelsemconv.ServerAddressKey)] = m.serverAddr
 	}
-}
-
-// attrsPipeline builds the OTel attributes for a pipeline span / metric event.
-func (m meta) attrsPipeline(op string, cmds []redis.Cmder, code, etype string) map[string]any {
-	return map[string]any{
-		"server.address":          m.serverAddr,
-		"server.port":             m.serverPort,
-		"db.system.name":          "redis",
-		"db.operation.name":       op,
-		"db.namespace":            m.namespace,
-		"db.operation.batch.size": len(cmds),
-		"db.query.text":           pipelineText(cmds),
-		"db.response.status_code": code,
-		"error.type":              etype,
+	if m.serverPort > 0 {
+		a[string(otelsemconv.ServerPortKey)] = m.serverPort
 	}
+	if code != "" {
+		a[string(otelsemconv.DBResponseStatusCodeKey)] = code
+	}
+	if errType != "" {
+		a[string(otelsemconv.ErrorTypeKey)] = errType
+	}
+	return a
 }
 
 // commandName returns the upper-cased redis command name, e.g. "GET".
@@ -674,7 +648,17 @@ func isUpperASCII(s string) bool {
 	return true
 }
 
-// errorMessage returns err's text verbatim.
-func errorMessage(err error) string {
-	return err.Error()
+// errorType returns the error.type value for a failed command: the Redis
+// simple-error prefix (ERR, WRONGTYPE, ...), "timeout", "canceled", or "_OTHER".
+func errorType(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	if code := redisErrorCode(err); code != "" {
+		return code
+	}
+	return "_OTHER"
 }

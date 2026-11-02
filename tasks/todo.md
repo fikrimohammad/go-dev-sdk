@@ -135,11 +135,11 @@ the integration tests' call sites.
 - Semconv constants.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestInstrumentHook_MetricAttributes` (commands and pipelines): exact
+- [x] *(regression)* `TestInstrumentHook_MetricAttributes` (commands and pipelines): exact
       attribute sets; no query text, batch size, or message on metrics.
 
 **Verification:**
-- [ ] redis module checks; coverage ≥ 68.2%.
+- [x] redis module checks; coverage ≥ 68.2%.
 
 **Dependencies:** T3 · **Files:** `redis/redis.go`, `redis/redis_test.go` · **Scope:** M
 

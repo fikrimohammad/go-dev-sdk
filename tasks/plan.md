@@ -57,7 +57,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Wave 2 (parallel)
 - [x] T5: db `Connect(ctx)`; examples and README updated (X5)
-- [ ] T6: redis telemetry: semconv attributes, no count metric, error.type (R1, X2–X4, X6)
+- [x] T6: redis telemetry: semconv attributes, no count metric, error.type (R1, X2–X4, X6)
 - [ ] T7: s3 `New(ctx)`, lint cleanup, testing recipe, strict (X5, X8, X9, S2, N19)
 
 ### Checkpoint A: Opus review of T1–T7
