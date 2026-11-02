@@ -98,33 +98,6 @@ type Client interface { //nolint:interfacebloat // caller-facing S3 surface kept
 	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
 }
 
-// s3API abstracts the raw s3.Client operations needed by our Client implementation for unit tests.
-type s3API interface {
-	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
-	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
-	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
-	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
-	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
-	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
-	CreateBucket(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error)
-	DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error)
-	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
-	ListBuckets(ctx context.Context, params *s3.ListBucketsInput, optFns ...func(*s3.Options)) (*s3.ListBucketsOutput, error)
-}
-
-// transferManager is the transfer-manager contract, letting tests stub the SDK.
-type transferManager interface {
-	GetObject(ctx context.Context, input *transfermanager.GetObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error)
-	UploadObject(ctx context.Context, input *transfermanager.UploadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error)
-	DownloadObject(ctx context.Context, input *transfermanager.DownloadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error)
-}
-
-// presigner is the presign-client contract, letting tests stub the SDK.
-type presigner interface {
-	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
-	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
-}
-
 // meta carries the attributes held by every instrumented operation.
 type meta struct {
 	region               string // cloud.region
@@ -298,9 +271,9 @@ func endpointAddress(endpoint string) (string, int) {
 
 // client implements Client.
 type client struct {
-	s3API     s3API
-	tmAPI     transferManager
-	presigner presigner
+	s3API     *s3.Client
+	tmAPI     *transfermanager.Client
+	presigner *s3.PresignClient
 	meta
 }
 
@@ -499,13 +472,11 @@ func errorType(err error) string {
 		}
 	}
 
-	if operr, ok := errors.AsType[*smithy.OperationError](err); ok {
-		if operr.Err != nil {
-			if code := errorType(operr.Err); code != "_OTHER" {
-				return code
-			}
-		}
-		return "network_error"
+	// An OperationError takes the class of the error it wraps: a transport
+	// failure is classified below, while an SDK validation error (for example
+	// a nil Bucket) is _OTHER, not a network error.
+	if operr, ok := errors.AsType[*smithy.OperationError](err); ok && operr.Err != nil {
+		return errorType(operr.Err)
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -540,6 +511,9 @@ func errorType(err error) string {
 
 	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return "dns_error"
+	}
+	if _, ok := errors.AsType[net.Error](err); ok {
+		return "network_error"
 	}
 
 	msg := err.Error()

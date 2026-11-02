@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -11,7 +12,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -23,369 +23,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
-	"github.com/aws/smithy-go/middleware"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-servicekit/observability/attributes"
 	"github.com/fikrimohammad/go-servicekit/observability/metrics"
 	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
-
-// --- fake metrics client -----------------------------------------------------------
-
-type metricRec struct {
-	name  string
-	value float64
-	attrs map[string]any
-}
-
-type fakeMetrics struct {
-	mu    sync.Mutex
-	hists []metricRec
-}
-
-func (f *fakeMetrics) Add(context.Context, metrics.Instrument, int64, map[string]any) error {
-	return nil
-}
-
-func (f *fakeMetrics) Record(_ context.Context, instrument metrics.Instrument, value float64, attrs map[string]any) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hists = append(f.hists, metricRec{instrument.Name, value, normalizeAttrs(attrs)})
-	return nil
-}
-
-func (f *fakeMetrics) AddUpDown(context.Context, metrics.Instrument, int64, map[string]any) error {
-	return nil
-}
-
-func (f *fakeMetrics) RecordGauge(context.Context, metrics.Instrument, float64, map[string]any) error {
-	return nil
-}
-
-func (f *fakeMetrics) Provider() metric.MeterProvider { return nil }
-
-func (f *fakeMetrics) Stop(context.Context) error { return nil }
-
-func (f *fakeMetrics) lastHist() (metricRec, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.hists) == 0 {
-		return metricRec{}, false
-	}
-	return f.hists[len(f.hists)-1], true
-}
-
-func normalizeAttrs(attrs map[string]any) map[string]any {
-	out := make(map[string]any, len(attrs))
-	for k, v := range attrs {
-		out[attributes.NormalizeKey(k)] = v
-	}
-	return out
-}
-
-// --- fake: span capture ------------------------------------------------------------
-
-type recordingExporter struct {
-	mu    sync.Mutex
-	spans []sdktrace.ReadOnlySpan
-}
-
-func (e *recordingExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.spans = append(e.spans, spans...)
-	return nil
-}
-
-func (e *recordingExporter) Shutdown(context.Context) error { return nil }
-
-func (e *recordingExporter) last() (sdktrace.ReadOnlySpan, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if len(e.spans) == 0 {
-		return nil, false
-	}
-	return e.spans[len(e.spans)-1], true
-}
-
-func spanAttrs(s sdktrace.ReadOnlySpan) map[string]any {
-	out := make(map[string]any)
-	for _, kv := range s.Attributes() {
-		out[string(kv.Key)] = kv.Value.String()
-	}
-	return out
-}
-
-// --- fake: AWS SDK stubs -----------------------------------------------------------
-
-type stubS3API struct {
-	putObjectCalls        int
-	putObjectOut          *s3.PutObjectOutput
-	putObjectErr          error
-	copyObjectCalls       int
-	copyObjectOut         *s3.CopyObjectOutput
-	copyObjectErr         error
-	lastCopyInput         *s3.CopyObjectInput
-	createBucketCalls     int
-	createBucketErr       error
-	lastCreateBucketInput *s3.CreateBucketInput
-	deleteBucketCalls     int
-	deleteBucketErr       error
-	headBucketCalls       int
-	headBucketErr         error
-	listBucketsCalls      int
-	listBucketsOut        *s3.ListBucketsOutput
-	listBucketsErr        error
-	deleteObjectCalls     int
-	deleteObjectErr       error
-	deleteObjectsCalls    int
-	deleteObjectsOut      *s3.DeleteObjectsOutput
-	deleteObjectsErr      error
-	headObjectCalls       int
-	headObjectOut         *s3.HeadObjectOutput
-	headObjectErr         error
-	listObjectsCalls      int
-	listObjectsOut        *s3.ListObjectsV2Output
-	listObjectsErr        error
-}
-
-func (s *stubS3API) PutObject(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	s.putObjectCalls++
-	if s.putObjectErr != nil {
-		return nil, s.putObjectErr
-	}
-	if s.putObjectOut != nil {
-		return s.putObjectOut, nil
-	}
-	return &s3.PutObjectOutput{}, nil
-}
-
-func (s *stubS3API) CreateBucket(_ context.Context, input *s3.CreateBucketInput, _ ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
-	s.createBucketCalls++
-	s.lastCreateBucketInput = input
-	if s.createBucketErr != nil {
-		return nil, s.createBucketErr
-	}
-	return &s3.CreateBucketOutput{}, nil
-}
-
-func (s *stubS3API) DeleteBucket(_ context.Context, _ *s3.DeleteBucketInput, _ ...func(*s3.Options)) (*s3.DeleteBucketOutput, error) {
-	s.deleteBucketCalls++
-	if s.deleteBucketErr != nil {
-		return nil, s.deleteBucketErr
-	}
-	return &s3.DeleteBucketOutput{}, nil
-}
-
-func (s *stubS3API) HeadBucket(_ context.Context, _ *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
-	s.headBucketCalls++
-	if s.headBucketErr != nil {
-		return nil, s.headBucketErr
-	}
-	return &s3.HeadBucketOutput{}, nil
-}
-
-func (s *stubS3API) ListBuckets(_ context.Context, _ *s3.ListBucketsInput, _ ...func(*s3.Options)) (*s3.ListBucketsOutput, error) {
-	s.listBucketsCalls++
-	if s.listBucketsErr != nil {
-		return nil, s.listBucketsErr
-	}
-	if s.listBucketsOut != nil {
-		return s.listBucketsOut, nil
-	}
-	b1 := "bucket-a"
-	b2 := "bucket-b"
-	return &s3.ListBucketsOutput{
-		Buckets: []types.Bucket{
-			{Name: &b1},
-			{Name: &b2},
-		},
-	}, nil
-}
-
-func (s *stubS3API) CopyObject(_ context.Context, input *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	s.copyObjectCalls++
-	s.lastCopyInput = input
-	if s.copyObjectErr != nil {
-		return nil, s.copyObjectErr
-	}
-	if s.copyObjectOut != nil {
-		return s.copyObjectOut, nil
-	}
-	etag := `"copy-etag"`
-	now := time.Now()
-	return &s3.CopyObjectOutput{
-		CopyObjectResult: &types.CopyObjectResult{
-			ETag:         &etag,
-			LastModified: &now,
-		},
-	}, nil
-}
-
-func (s *stubS3API) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	s.deleteObjectCalls++
-	if s.deleteObjectErr != nil {
-		return nil, s.deleteObjectErr
-	}
-	return &s3.DeleteObjectOutput{}, nil
-}
-
-func (s *stubS3API) DeleteObjects(_ context.Context, _ *s3.DeleteObjectsInput, _ ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
-	s.deleteObjectsCalls++
-	if s.deleteObjectsErr != nil {
-		return nil, s.deleteObjectsErr
-	}
-	if s.deleteObjectsOut != nil {
-		return s.deleteObjectsOut, nil
-	}
-	return &s3.DeleteObjectsOutput{}, nil
-}
-
-func (s *stubS3API) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	s.headObjectCalls++
-	if s.headObjectErr != nil {
-		return nil, s.headObjectErr
-	}
-	if s.headObjectOut != nil {
-		return s.headObjectOut, nil
-	}
-	return &s3.HeadObjectOutput{}, nil
-}
-
-func (s *stubS3API) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	s.listObjectsCalls++
-	if s.listObjectsErr != nil {
-		return nil, s.listObjectsErr
-	}
-	if s.listObjectsOut != nil {
-		return s.listObjectsOut, nil
-	}
-	return &s3.ListObjectsV2Output{}, nil
-}
-
-type stubTransferManager struct {
-	getObjectCalls    int
-	getObjectOut      *transfermanager.GetObjectOutput
-	getObjectErr      error
-	lastGetInput      *transfermanager.GetObjectInput
-	uploadCalls       int
-	uploadErr         error
-	lastInput         *transfermanager.UploadObjectInput
-	downloadCalls     int
-	downloadOut       *transfermanager.DownloadObjectOutput
-	downloadErr       error
-	lastDownloadInput *transfermanager.DownloadObjectInput
-}
-
-// gostyle:ignore getter-prefix S3's API names the operation GetObject.
-func (s *stubTransferManager) GetObject(_ context.Context, input *transfermanager.GetObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
-	s.getObjectCalls++
-	s.lastGetInput = input
-	if s.getObjectErr != nil {
-		return nil, s.getObjectErr
-	}
-	if s.getObjectOut != nil {
-		return s.getObjectOut, nil
-	}
-	return &transfermanager.GetObjectOutput{Body: io.NopCloser(strings.NewReader("content"))}, nil
-}
-
-func (s *stubTransferManager) UploadObject(_ context.Context, input *transfermanager.UploadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error) {
-	s.uploadCalls++
-	s.lastInput = input
-	if s.uploadErr != nil {
-		return nil, s.uploadErr
-	}
-	etag := `"upload-etag"`
-	loc := "https://s3.example.com/reports/test.csv"
-	ver := "v123"
-	upID := "upload-id-456"
-	return &transfermanager.UploadObjectOutput{
-		ETag:      &etag,
-		Location:  &loc,
-		VersionID: &ver,
-		UploadID:  &upID,
-	}, nil
-}
-
-func (s *stubTransferManager) DownloadObject(_ context.Context, input *transfermanager.DownloadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error) {
-	s.downloadCalls++
-	s.lastDownloadInput = input
-	if s.downloadErr != nil {
-		return nil, s.downloadErr
-	}
-	if s.downloadOut != nil {
-		return s.downloadOut, nil
-	}
-	return &transfermanager.DownloadObjectOutput{}, nil
-}
-
-type stubPresigner struct {
-	presignGetCalls int
-	presignPutCalls int
-	returnErr       error
-	expires         time.Duration
-	lastGetInput    *s3.GetObjectInput
-	lastPutInput    *s3.PutObjectInput
-}
-
-func (s *stubPresigner) PresignGetObject(_ context.Context, input *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error) {
-	s.presignGetCalls++
-	s.lastGetInput = input
-	o := s3.PresignOptions{}
-	for _, fn := range optFns {
-		fn(&o)
-	}
-	s.expires = o.Expires
-	if s.returnErr != nil {
-		return nil, s.returnErr
-	}
-	return &signerv4.PresignedHTTPRequest{URL: "https://s3.example.com/reports/test.csv"}, nil
-}
-
-func (s *stubPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error) {
-	s.presignPutCalls++
-	s.lastPutInput = input
-	o := s3.PresignOptions{}
-	for _, fn := range optFns {
-		fn(&o)
-	}
-	s.expires = o.Expires
-	if s.returnErr != nil {
-		return nil, s.returnErr
-	}
-	return &signerv4.PresignedHTTPRequest{URL: "https://s3.example.com/upload/test.csv"}, nil
-}
-
-// setup returns an instrumented client wired to the stubs alongside assertion handles.
-func setup(api s3API, tm transferManager, presigner presigner) (*client, *fakeMetrics, *recordingExporter) {
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	fm := &fakeMetrics{}
-
-	return &client{
-		s3API:     api,
-		tmAPI:     tm,
-		presigner: presigner,
-		meta: meta{
-			region:               "us-east-1",
-			serverAddr:           "localhost",
-			serverPort:           9000,
-			presignDefaultExpiry: 15 * time.Minute,
-			metrics:              fm,
-			tracer:               tracer.Wrap(tp),
-		},
-	}, fm, ex
-}
 
 // --- tests -------------------------------------------------------------------------
 
@@ -413,146 +61,282 @@ func TestNew_ContextCanceled(t *testing.T) {
 	}
 }
 
-func TestUploadObject_Success(t *testing.T) {
-	tm := &stubTransferManager{}
-	pr := &stubPresigner{}
-	api := &stubS3API{}
-	c, _, _ := setup(api, tm, pr)
+func TestOptions_WithMetrics_WithTracer(t *testing.T) {
+	fm := &fakeMetrics{}
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
-	res, err := c.UploadObject(context.Background(), &transfermanager.UploadObjectInput{
-		Bucket:             aws.String("reports"),
-		Key:                aws.String("test.csv"),
-		Body:               strings.NewReader("x"),
-		ContentType:        aws.String("text/csv"),
-		ContentDisposition: aws.String("attachment; filename=test.csv"),
-		ChecksumAlgorithm:  tmtypes.ChecksumAlgorithmCrc32,
-	})
-	if err != nil {
-		t.Fatalf("UploadObject: %v", err)
-	}
-	if *res.ETag != `"upload-etag"` || *res.Location != "https://s3.example.com/reports/test.csv" {
-		t.Fatalf("UploadObject output = %+v, want ETag and Location", res)
-	}
-	if tm.uploadCalls != 1 {
-		t.Fatalf("upload calls = %d, want 1", tm.uploadCalls)
-	}
-}
-
-func TestUploadObject_Error(t *testing.T) {
-	tm := &stubTransferManager{uploadErr: errors.New("upload failed")}
-	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
-
-	_, err := c.UploadObject(context.Background(), &transfermanager.UploadObjectInput{
-		Bucket: aws.String("reports"),
-		Key:    aws.String("k"),
-	})
-	if err == nil {
-		t.Fatal("UploadObject error = nil, want non-nil")
-	}
-}
-
-func TestGetObject_Success(t *testing.T) {
-	tm := &stubTransferManager{}
-	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
-
-	res, err := c.GetObject(context.Background(), &transfermanager.GetObjectInput{
-		Bucket: aws.String("reports"),
-		Key:    aws.String("data.json"),
-	})
-	if err != nil {
-		t.Fatalf("GetObject: %v", err)
-	}
-	if tm.getObjectCalls != 1 {
-		t.Fatalf("getObjectCalls = %d, want 1", tm.getObjectCalls)
-	}
-	data, _ := io.ReadAll(res.Body)
-	if string(data) != "content" {
-		t.Fatalf("body = %q", string(data))
-	}
-}
-
-func TestGetObject_Error(t *testing.T) {
-	tm := &stubTransferManager{getObjectErr: errors.New("not found")}
-	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
-
-	_, err := c.GetObject(context.Background(), &transfermanager.GetObjectInput{
-		Bucket: aws.String("b"),
-		Key:    aws.String("k"),
-	})
-	if err == nil {
-		t.Fatal("GetObject error = nil, want non-nil")
+	cli := newTestClient(t, Config{Region: "us-east-1"}, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	if cli == nil {
+		t.Fatal("New client = nil, want non-nil")
 	}
 }
 
 func TestPutObject_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
 
-	_, err := c.PutObject(context.Background(), &s3.PutObjectInput{
+	putObject(t, cli, "reports", "data.json", "content")
+
+	head, err := cli.HeadObject(t.Context(), &s3.HeadObjectInput{
 		Bucket: aws.String("reports"),
 		Key:    aws.String("data.json"),
-		Body:   strings.NewReader("content"),
 	})
 	if err != nil {
-		t.Fatalf("PutObject: %v", err)
+		t.Fatalf("HeadObject: %v", err)
 	}
-	if api.putObjectCalls != 1 {
-		t.Fatalf("putObjectCalls = %d, want 1", api.putObjectCalls)
+	if got := *head.ContentLength; got != int64(len("content")) {
+		t.Fatalf("ContentLength = %d, want %d", got, len("content"))
 	}
 }
 
-type bufferWriterAt struct {
-	buf []byte
+func TestPutObject_NoSuchBucket(t *testing.T) {
+	f := newFakeS3(t)
+	cli := newTestClient(t, testConfig(f.URL))
+
+	_, err := cli.PutObject(t.Context(), &s3.PutObjectInput{
+		Bucket: aws.String("missing"),
+		Key:    aws.String("k"),
+		Body:   strings.NewReader("x"),
+	})
+	if !IsNotFound(err) {
+		t.Fatalf("IsNotFound(PutObject to missing bucket) = false, want true; err = %v", err)
+	}
 }
 
-func (b *bufferWriterAt) WriteAt(p []byte, off int64) (n int, err error) {
-	if int(off)+len(p) > len(b.buf) {
-		newBuf := make([]byte, int(off)+len(p))
-		copy(newBuf, b.buf)
-		b.buf = newBuf
+func TestGetObject(t *testing.T) {
+	cases := []struct {
+		name string
+		rng  *string
+		want string
+	}{
+		{name: "whole object", want: "0123456789"},
+		{name: "byte range", rng: aws.String("bytes=2-4"), want: "234"},
 	}
-	copy(b.buf[off:], p)
-	return len(p), nil
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeS3(t)
+			f.bucket(t, "reports")
+			cli := newTestClient(t, testConfig(f.URL))
+			putObject(t, cli, "reports", "digits.txt", "0123456789")
+
+			res, err := cli.GetObject(t.Context(), &transfermanager.GetObjectInput{
+				Bucket: aws.String("reports"),
+				Key:    aws.String("digits.txt"),
+				Range:  tc.rng,
+			}, func(o *transfermanager.Options) {
+				// Range applies only in ranges mode.
+				if tc.rng != nil {
+					o.GetObjectType = tmtypes.GetObjectRanges
+				}
+			})
+			if err != nil {
+				t.Fatalf("GetObject: %v", err)
+			}
+			if got := readAndClose(t, res.Body); got != tc.want {
+				t.Fatalf("body = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetObject_NoSuchKey(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
+
+	_, err := cli.GetObject(t.Context(), &transfermanager.GetObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("absent.txt"),
+	})
+	if !IsNotFound(err) {
+		t.Fatalf("IsNotFound(GetObject of absent key) = false, want true; err = %v", err)
+	}
 }
 
 func TestDownloadObject_Success(t *testing.T) {
-	tm := &stubTransferManager{}
-	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
+	putObject(t, cli, "reports", "doc.pdf", "pdf-bytes")
 
-	buf := &bufferWriterAt{}
-	_, err := c.DownloadObject(context.Background(), &transfermanager.DownloadObjectInput{
+	buf := &tmtypes.WriteAtBuffer{}
+	if _, err := cli.DownloadObject(t.Context(), &transfermanager.DownloadObjectInput{
 		Bucket:   aws.String("reports"),
 		Key:      aws.String("doc.pdf"),
 		WriterAt: buf,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("DownloadObject: %v", err)
 	}
-	if tm.downloadCalls != 1 {
-		t.Fatalf("download calls = %d, want 1", tm.downloadCalls)
+	if got := string(buf.Bytes()); got != "pdf-bytes" {
+		t.Fatalf("downloaded = %q, want %q", got, "pdf-bytes")
 	}
 }
 
-func TestDownloadObject_Error(t *testing.T) {
-	tm := &stubTransferManager{downloadErr: errors.New("download failed")}
-	c, _, _ := setup(&stubS3API{}, tm, &stubPresigner{})
+func TestUploadObject_SinglePart(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
 
-	buf := &bufferWriterAt{}
-	_, err := c.DownloadObject(context.Background(), &transfermanager.DownloadObjectInput{
-		Bucket:   aws.String("reports"),
-		Key:      aws.String("doc.pdf"),
-		WriterAt: buf,
+	res, err := cli.UploadObject(t.Context(), &transfermanager.UploadObjectInput{
+		Bucket:            aws.String("reports"),
+		Key:               aws.String("small.csv"),
+		Body:              strings.NewReader("x"),
+		ChecksumAlgorithm: tmtypes.ChecksumAlgorithmCrc32,
 	})
-	if err == nil {
-		t.Fatal("DownloadObject error = nil, want non-nil")
+	if err != nil {
+		t.Fatalf("UploadObject: %v", err)
+	}
+	if res.ETag == nil || *res.ETag == "" {
+		t.Fatalf("UploadObject ETag = %v, want non-empty", res.ETag)
+	}
+	if got := f.count("uploads"); got != 0 {
+		t.Fatalf("multipart initiations = %d, want 0 for a small body", got)
+	}
+	if got := readObject(t, cli, "reports", "small.csv"); got != "x" {
+		t.Fatalf("stored body = %q, want %q", got, "x")
 	}
 }
 
-func TestCopyObject_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+// TestUploadObject_Multipart uploads 12 MiB with a 5 MiB threshold and part size,
+// which the transfer manager sends as three parts.
+func TestUploadObject_Multipart(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cfg := testConfig(f.URL)
+	cfg.UploadMultipartThreshold = minimumUploadPartSize
+	cfg.UploadPartSizeBytes = minimumUploadPartSize
+	cli := newTestClient(t, cfg)
 
-	res, err := c.CopyObject(context.Background(), &s3.CopyObjectInput{
+	body := bytes.Repeat([]byte("m"), 12<<20)
+	if _, err := cli.UploadObject(t.Context(), &transfermanager.UploadObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("big.bin"),
+		Body:   bytes.NewReader(body),
+	}); err != nil {
+		t.Fatalf("UploadObject: %v", err)
+	}
+	if got := f.count("uploads"); got != 1 {
+		t.Fatalf("multipart initiations = %d, want 1", got)
+	}
+	if got := f.count("partNumber"); got != 3 {
+		t.Fatalf("uploaded parts = %d, want 3", got)
+	}
+	if got := readObject(t, cli, "reports", "big.bin"); got != string(body) {
+		t.Fatalf("stored body length = %d, want %d", len(got), len(body))
+	}
+}
+
+func TestHeadObject_NotFound(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
+
+	_, err := cli.HeadObject(t.Context(), &s3.HeadObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("absent"),
+	})
+	if !IsNotFound(err) {
+		t.Fatalf("IsNotFound(HeadObject of absent key) = false, want true; err = %v", err)
+	}
+}
+
+func TestHeadBucket(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
+
+	if _, err := cli.HeadBucket(t.Context(), &s3.HeadBucketInput{Bucket: aws.String("reports")}); err != nil {
+		t.Fatalf("HeadBucket(reports): %v", err)
+	}
+	_, err := cli.HeadBucket(t.Context(), &s3.HeadBucketInput{Bucket: aws.String("private")})
+	if !IsNotFound(err) {
+		t.Fatalf("IsNotFound(HeadBucket of missing bucket) = false, want true; err = %v", err)
+	}
+}
+
+func TestDeleteObject(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
+	putObject(t, cli, "reports", "old.csv", "old")
+
+	if _, err := cli.DeleteObject(t.Context(), &s3.DeleteObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("old.csv"),
+	}); err != nil {
+		t.Fatalf("DeleteObject: %v", err)
+	}
+	_, err := cli.HeadObject(t.Context(), &s3.HeadObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("old.csv"),
+	})
+	if !IsNotFound(err) {
+		t.Fatalf("IsNotFound(HeadObject after delete) = false, want true; err = %v", err)
+	}
+}
+
+func TestDeleteObjects(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli := newTestClient(t, testConfig(f.URL))
+	putObject(t, cli, "reports", "k1", "1")
+	putObject(t, cli, "reports", "k2", "2")
+	putObject(t, cli, "reports", "keep", "3")
+
+	if _, err := cli.DeleteObjects(t.Context(), &s3.DeleteObjectsInput{
+		Bucket: aws.String("reports"),
+		Delete: &types.Delete{Objects: []types.ObjectIdentifier{
+			{Key: aws.String("k1")},
+			{Key: aws.String("k2")},
+		}},
+	}); err != nil {
+		t.Fatalf("DeleteObjects: %v", err)
+	}
+	if got := listKeys(t, cli, "reports", ""); !slices.Equal(got, []string{"keep"}) {
+		t.Fatalf("remaining keys = %v, want [keep]", got)
+	}
+}
+
+func TestListObjectsV2(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "docs")
+	cli := newTestClient(t, testConfig(f.URL))
+	for _, key := range []string{"guides/a.md", "guides/b.md", "readme.md"} {
+		putObject(t, cli, "docs", key, "x")
+	}
+
+	if got := listKeys(t, cli, "docs", "guides/"); !slices.Equal(got, []string{"guides/a.md", "guides/b.md"}) {
+		t.Fatalf("keys under guides/ = %v, want [guides/a.md guides/b.md]", got)
+	}
+}
+
+// listKeys returns the keys in bucket that start with prefix.
+func listKeys(t *testing.T, cli Client, bucket, prefix string) []string {
+	t.Helper()
+	res, err := cli.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsV2(%s, %q): %v", bucket, prefix, err)
+	}
+	keys := make([]string, 0, len(res.Contents))
+	for _, obj := range res.Contents {
+		keys = append(keys, *obj.Key)
+	}
+	return keys
+}
+
+func TestCopyObject(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "src-bucket")
+	f.bucket(t, "dest-bucket")
+	cli := newTestClient(t, testConfig(f.URL))
+	putObject(t, cli, "src-bucket", "source.png", "pixels")
+
+	res, err := cli.CopyObject(t.Context(), &s3.CopyObjectInput{
 		Bucket:     aws.String("dest-bucket"),
 		Key:        aws.String("copied.png"),
 		CopySource: aws.String("src-bucket/source.png"),
@@ -560,291 +344,83 @@ func TestCopyObject_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CopyObject: %v", err)
 	}
-	if *res.CopyObjectResult.ETag != `"copy-etag"` {
-		t.Fatalf("res.ETag = %q, want \"copy-etag\"", *res.CopyObjectResult.ETag)
+	if res.CopyObjectResult == nil || res.CopyObjectResult.ETag == nil {
+		t.Fatalf("CopyObject result = %+v, want an ETag", res.CopyObjectResult)
 	}
-	if api.copyObjectCalls != 1 {
-		t.Fatalf("copyObjectCalls = %d, want 1", api.copyObjectCalls)
-	}
-}
-
-func TestCopyObject_Error(t *testing.T) {
-	api := &stubS3API{copyObjectErr: errors.New("copy failed")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.CopyObject(context.Background(), &s3.CopyObjectInput{
-		Bucket: aws.String("b2"),
-		Key:    aws.String("k2"),
-	})
-	if err == nil {
-		t.Fatal("CopyObject error = nil, want non-nil")
+	if got := readObject(t, cli, "dest-bucket", "copied.png"); got != "pixels" {
+		t.Fatalf("copied body = %q, want %q", got, "pixels")
 	}
 }
 
-func TestIsNotFound(t *testing.T) {
-	if IsNotFound(nil) {
-		t.Fatal("IsNotFound(nil) = true, want false")
-	}
-	if IsNotFound(errors.New("generic error")) {
-		t.Fatal("IsNotFound(generic) = true, want false")
-	}
-	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchKey"}) {
-		t.Fatal("IsNotFound(NoSuchKey) = false, want true")
-	}
-	if !IsNotFound(&smithy.GenericAPIError{Code: "NotFound"}) {
-		t.Fatal("IsNotFound(NotFound) = false, want true")
-	}
-	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchBucket"}) {
-		t.Fatal("IsNotFound(NoSuchBucket) = false, want true")
-	}
-	if !IsNotFound(&smithy.GenericAPIError{Code: "404"}) {
-		t.Fatal("IsNotFound(404) = false, want true")
-	}
-}
+func TestCreateBucket(t *testing.T) {
+	f := newFakeS3(t)
+	cli := newTestClient(t, testConfig(f.URL))
 
-func TestDeleteObject_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.DeleteObject(context.Background(), &s3.DeleteObjectInput{
-		Bucket: aws.String("reports"),
-		Key:    aws.String("old.csv"),
-	})
-	if err != nil {
-		t.Fatalf("DeleteObject: %v", err)
-	}
-	if api.deleteObjectCalls != 1 {
-		t.Fatalf("delete calls = %d, want 1", api.deleteObjectCalls)
-	}
-}
-
-func TestDeleteObject_Error(t *testing.T) {
-	api := &stubS3API{deleteObjectErr: errors.New("delete failed")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.DeleteObject(context.Background(), &s3.DeleteObjectInput{
-		Bucket: aws.String("b"),
-		Key:    aws.String("k"),
-	})
-	if err == nil {
-		t.Fatal("DeleteObject error = nil, want non-nil")
-	}
-}
-
-func TestDeleteObjects_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
-		Bucket: aws.String("reports"),
-		Delete: &types.Delete{
-			Objects: []types.ObjectIdentifier{
-				{Key: aws.String("k1")},
-				{Key: aws.String("k2")},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("DeleteObjects: %v", err)
-	}
-	if api.deleteObjectsCalls != 1 {
-		t.Fatalf("deleteObjectsCalls = %d, want 1", api.deleteObjectsCalls)
-	}
-}
-
-func TestDeleteObjects_Error(t *testing.T) {
-	api := &stubS3API{deleteObjectsErr: errors.New("delete batch failed")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
-		Bucket: aws.String("b"),
-	})
-	if err == nil {
-		t.Fatal("DeleteObjects error = nil, want non-nil")
-	}
-}
-
-func TestHeadObject_Success(t *testing.T) {
-	ct := "image/png"
-	cl := int64(1024)
-	api := &stubS3API{
-		headObjectOut: &s3.HeadObjectOutput{
-			ContentType:   &ct,
-			ContentLength: &cl,
-		},
-	}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	out, err := c.HeadObject(context.Background(), &s3.HeadObjectInput{
-		Bucket: aws.String("images"),
-		Key:    aws.String("avatar.png"),
-	})
-	if err != nil {
-		t.Fatalf("HeadObject: %v", err)
-	}
-	if *out.ContentType != ct || *out.ContentLength != cl {
-		t.Fatalf("HeadObject output = %+v, want matching ContentType and ContentLength", out)
-	}
-}
-
-func TestHeadObject_Error(t *testing.T) {
-	api := &stubS3API{headObjectErr: errors.New("head failed")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.HeadObject(context.Background(), &s3.HeadObjectInput{
-		Bucket: aws.String("b"),
-		Key:    aws.String("k"),
-	})
-	if err == nil {
-		t.Fatal("HeadObject error = nil, want non-nil")
-	}
-}
-
-func TestListObjectsV2_Success(t *testing.T) {
-	key := "docs/readme.md"
-	api := &stubS3API{
-		listObjectsOut: &s3.ListObjectsV2Output{
-			Contents: []types.Object{
-				{Key: &key},
-			},
-		},
-	}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	res, err := c.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-		Bucket: aws.String("docs"),
-	})
-	if err != nil {
-		t.Fatalf("ListObjectsV2: %v", err)
-	}
-	if len(res.Contents) != 1 || *res.Contents[0].Key != key {
-		t.Fatalf("ListObjectsV2 output = %+v, want one object with key %q", res, key)
-	}
-}
-
-func TestListObjectsV2_Error(t *testing.T) {
-	api := &stubS3API{listObjectsErr: errors.New("list failed")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-		Bucket: aws.String("b"),
-	})
-	if err == nil {
-		t.Fatal("ListObjectsV2 error = nil, want non-nil")
-	}
-}
-
-func TestCreateBucket_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.CreateBucket(context.Background(), &s3.CreateBucketInput{
-		Bucket: aws.String("new-bucket"),
-	})
-	if err != nil {
+	if _, err := cli.CreateBucket(t.Context(), &s3.CreateBucketInput{Bucket: aws.String("new-bucket")}); err != nil {
 		t.Fatalf("CreateBucket: %v", err)
 	}
-	if api.createBucketCalls != 1 {
-		t.Fatalf("createBucketCalls = %d, want 1", api.createBucketCalls)
+	if _, err := cli.HeadBucket(t.Context(), &s3.HeadBucketInput{Bucket: aws.String("new-bucket")}); err != nil {
+		t.Fatalf("HeadBucket after CreateBucket: %v", err)
+	}
+	if _, err := cli.CreateBucket(t.Context(), &s3.CreateBucketInput{Bucket: aws.String("new-bucket")}); err == nil {
+		t.Fatal("CreateBucket of an existing bucket error = nil, want non-nil")
 	}
 }
 
-func TestCreateBucket_Error(t *testing.T) {
-	api := &stubS3API{createBucketErr: errors.New("bucket already exists")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+func TestDeleteBucket(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "old-bucket")
+	f.bucket(t, "nonempty-bucket")
+	cli := newTestClient(t, testConfig(f.URL))
+	putObject(t, cli, "nonempty-bucket", "k", "v")
 
-	_, err := c.CreateBucket(context.Background(), &s3.CreateBucketInput{
-		Bucket: aws.String("existing-bucket"),
-	})
-	if err == nil {
-		t.Fatal("CreateBucket error = nil, want non-nil")
+	if _, err := cli.DeleteBucket(t.Context(), &s3.DeleteBucketInput{Bucket: aws.String("old-bucket")}); err != nil {
+		t.Fatalf("DeleteBucket(old-bucket): %v", err)
+	}
+	if !IsNotFound(headBucket(t, cli, "old-bucket")) {
+		t.Fatal("old-bucket still exists after DeleteBucket, want NotFound")
+	}
+
+	_, err := cli.DeleteBucket(t.Context(), &s3.DeleteBucketInput{Bucket: aws.String("nonempty-bucket")})
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "BucketNotEmpty" {
+		t.Fatalf("DeleteBucket(nonempty) error = %v, want BucketNotEmpty", err)
 	}
 }
 
-func TestDeleteBucket_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
-		Bucket: aws.String("old-bucket"),
-	})
-	if err != nil {
-		t.Fatalf("DeleteBucket: %v", err)
-	}
-	if api.deleteBucketCalls != 1 {
-		t.Fatalf("deleteBucketCalls = %d, want 1", api.deleteBucketCalls)
-	}
+// headBucket returns the HeadBucket error for bucket, or nil when it exists.
+func headBucket(t *testing.T, cli Client, bucket string) error {
+	t.Helper()
+	_, err := cli.HeadBucket(t.Context(), &s3.HeadBucketInput{Bucket: aws.String(bucket)})
+	return err
 }
 
-func TestDeleteBucket_Error(t *testing.T) {
-	api := &stubS3API{deleteBucketErr: errors.New("bucket not empty")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
+func TestListBuckets(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "bucket-a")
+	f.bucket(t, "bucket-b")
+	cli := newTestClient(t, testConfig(f.URL))
 
-	_, err := c.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
-		Bucket: aws.String("nonempty-bucket"),
-	})
-	if err == nil {
-		t.Fatal("DeleteBucket error = nil, want non-nil")
-	}
-}
-
-func TestHeadBucket_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	if _, err := c.HeadBucket(context.Background(), &s3.HeadBucketInput{
-		Bucket: aws.String("reports"),
-	}); err != nil {
-		t.Fatalf("HeadBucket: %v", err)
-	}
-	if api.headBucketCalls != 1 {
-		t.Fatalf("headBucketCalls = %d, want 1", api.headBucketCalls)
-	}
-}
-
-func TestHeadBucket_Error(t *testing.T) {
-	api := &stubS3API{headBucketErr: errors.New("forbidden")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	if _, err := c.HeadBucket(context.Background(), &s3.HeadBucketInput{
-		Bucket: aws.String("private"),
-	}); err == nil {
-		t.Fatalf("HeadBucket(%q) = %v, want error", "private", err)
-	}
-}
-
-func TestListBuckets_Success(t *testing.T) {
-	api := &stubS3API{}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	res, err := c.ListBuckets(context.Background(), &s3.ListBucketsInput{})
+	res, err := cli.ListBuckets(t.Context(), &s3.ListBucketsInput{})
 	if err != nil {
 		t.Fatalf("ListBuckets: %v", err)
 	}
-	if len(res.Buckets) != 2 || *res.Buckets[0].Name != "bucket-a" {
-		t.Fatalf("ListBuckets output = %+v, want two buckets starting with bucket-a", res)
+	var names []string
+	for _, b := range res.Buckets {
+		names = append(names, *b.Name)
 	}
-	if api.listBucketsCalls != 1 {
-		t.Fatalf("listBucketsCalls = %d, want 1", api.listBucketsCalls)
-	}
-}
-
-func TestListBuckets_Error(t *testing.T) {
-	api := &stubS3API{listBucketsErr: errors.New("unauthorized")}
-	c, _, _ := setup(api, &stubTransferManager{}, &stubPresigner{})
-
-	_, err := c.ListBuckets(context.Background(), &s3.ListBucketsInput{})
-	if err == nil {
-		t.Fatal("ListBuckets error = nil, want non-nil")
+	if !slices.Equal(names, []string{"bucket-a", "bucket-b"}) {
+		t.Fatalf("ListBuckets names = %v, want [bucket-a bucket-b]", names)
 	}
 }
 
 func TestPresignGetObject_Success(t *testing.T) {
-	up := &stubTransferManager{}
-	pr := &stubPresigner{}
-	c, fm, ex := setup(&stubS3API{}, up, pr)
+	f := newFakeS3(t)
+	f.bucket(t, "reports")
+	cli, fm, ex := newInstrumentedClient(t, testConfig(f.URL))
+	putObject(t, cli, "reports", "test.csv", "a,b")
 
-	req, err := c.PresignGetObject(context.Background(), &s3.GetObjectInput{
+	req, err := cli.PresignGetObject(t.Context(), &s3.GetObjectInput{
 		Bucket: aws.String("reports"),
 		Key:    aws.String("test.csv"),
 	}, func(o *s3.PresignOptions) {
@@ -853,14 +429,11 @@ func TestPresignGetObject_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PresignGetObject: %v", err)
 	}
-	if req.URL != "https://s3.example.com/reports/test.csv" {
-		t.Fatalf("url = %q", req.URL)
+	if got := queryValue(t, req.URL, "X-Amz-Expires"); got != "300" {
+		t.Fatalf("X-Amz-Expires = %q, want 300", got)
 	}
-	if pr.presignGetCalls != 1 {
-		t.Fatalf("presign calls = %d, want 1", pr.presignGetCalls)
-	}
-	if pr.expires != 5*time.Minute {
-		t.Fatalf("expires = %v, want 5m", pr.expires)
+	if got := fetch(t, req.URL); got != "a,b" {
+		t.Fatalf("presigned GET body = %q, want %q", got, "a,b")
 	}
 
 	span, ok := ex.last()
@@ -888,32 +461,29 @@ func TestPresignGetObject_Success(t *testing.T) {
 }
 
 func TestPresignGetObject_AppliesDefaultExpiry(t *testing.T) {
-	up := &stubTransferManager{}
-	pr := &stubPresigner{}
-	c, _, _ := setup(&stubS3API{}, up, pr)
+	f := newFakeS3(t)
+	cli := newTestClient(t, testConfig(f.URL))
 
-	if _, err := c.PresignGetObject(context.Background(), &s3.GetObjectInput{
+	req, err := cli.PresignGetObject(t.Context(), &s3.GetObjectInput{
 		Bucket: aws.String("reports"),
 		Key:    aws.String("test.csv"),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("PresignGetObject: %v", err)
 	}
-	if pr.expires != 15*time.Minute {
-		t.Fatalf("expires = %v, want default 15m", pr.expires)
+	if got := queryValue(t, req.URL, "X-Amz-Expires"); got != "900" {
+		t.Fatalf("X-Amz-Expires = %q, want default 900", got)
 	}
 }
 
 func TestPresignGetObject_Error(t *testing.T) {
-	up := &stubTransferManager{}
-	pr := &stubPresigner{returnErr: errors.New("presign failed")}
-	c, fm, ex := setup(&stubS3API{}, up, pr)
+	f := newFakeS3(t)
+	cli, fm, ex := newInstrumentedClient(t, testConfig(f.URL))
 
-	_, err := c.PresignGetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String("reports"),
-		Key:    aws.String("test.csv"),
-	})
+	// A nil bucket fails parameter validation before any request is signed.
+	_, err := cli.PresignGetObject(t.Context(), &s3.GetObjectInput{Key: aws.String("test.csv")})
 	if err == nil {
-		t.Fatal("PresignGetObject error = nil, want non-nil")
+		t.Fatal("PresignGetObject(nil bucket) error = nil, want non-nil")
 	}
 
 	span, ok := ex.last()
@@ -923,9 +493,10 @@ func TestPresignGetObject_Error(t *testing.T) {
 	if span.Status().Code != codes.Error {
 		t.Fatalf("span status = %v, want Error", span.Status().Code)
 	}
-	attrs := spanAttrs(span)
-	if attrs["error.type"] != "_OTHER" {
-		t.Fatalf("error.type = %v, want _OTHER", attrs["error.type"])
+	// The SDK wraps the validation error in an OperationError; its class is the
+	// wrapped error's, which is not a network failure.
+	if got := spanAttrs(span)["error.type"]; got != "_OTHER" {
+		t.Fatalf("error.type = %v, want _OTHER", got)
 	}
 
 	hist, ok := fm.lastHist()
@@ -935,11 +506,11 @@ func TestPresignGetObject_Error(t *testing.T) {
 }
 
 func TestPresignPutObject_Success(t *testing.T) {
-	up := &stubTransferManager{}
-	pr := &stubPresigner{}
-	c, fm, ex := setup(&stubS3API{}, up, pr)
+	f := newFakeS3(t)
+	f.bucket(t, "uploads")
+	cli, fm, ex := newInstrumentedClient(t, testConfig(f.URL))
 
-	req, err := c.PresignPutObject(context.Background(), &s3.PutObjectInput{
+	req, err := cli.PresignPutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("uploads"),
 		Key:    aws.String("avatar.png"),
 	}, func(o *s3.PresignOptions) {
@@ -948,14 +519,14 @@ func TestPresignPutObject_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PresignPutObject: %v", err)
 	}
-	if req.URL != "https://s3.example.com/upload/test.csv" {
-		t.Fatalf("url = %q", req.URL)
+	if got := queryValue(t, req.URL, "X-Amz-Expires"); got != "600" {
+		t.Fatalf("X-Amz-Expires = %q, want 600", got)
 	}
-	if pr.presignPutCalls != 1 {
-		t.Fatalf("presign put calls = %d, want 1", pr.presignPutCalls)
+	if got := presignedPut(t, req, "uploaded-by-url"); got != http.StatusOK {
+		t.Fatalf("presigned PUT status = %d, want 200", got)
 	}
-	if pr.expires != 10*time.Minute {
-		t.Fatalf("expires = %v, want 10m", pr.expires)
+	if got := readObject(t, newTestClient(t, testConfig(f.URL)), "uploads", "avatar.png"); got != "uploaded-by-url" {
+		t.Fatalf("stored body = %q, want %q", got, "uploaded-by-url")
 	}
 
 	span, ok := ex.last()
@@ -977,32 +548,28 @@ func TestPresignPutObject_Success(t *testing.T) {
 }
 
 func TestPresignPutObject_AppliesDefaultExpiry(t *testing.T) {
-	up := &stubTransferManager{}
-	pr := &stubPresigner{}
-	c, _, _ := setup(&stubS3API{}, up, pr)
+	f := newFakeS3(t)
+	cli := newTestClient(t, testConfig(f.URL))
 
-	if _, err := c.PresignPutObject(context.Background(), &s3.PutObjectInput{
+	req, err := cli.PresignPutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("uploads"),
 		Key:    aws.String("avatar.png"),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("PresignPutObject: %v", err)
 	}
-	if pr.expires != 15*time.Minute {
-		t.Fatalf("expires = %v, want default 15m", pr.expires)
+	if got := queryValue(t, req.URL, "X-Amz-Expires"); got != "900" {
+		t.Fatalf("X-Amz-Expires = %q, want default 900", got)
 	}
 }
 
 func TestPresignPutObject_Error(t *testing.T) {
-	up := &stubTransferManager{}
-	pr := &stubPresigner{returnErr: errors.New("put signing failed")}
-	c, fm, ex := setup(&stubS3API{}, up, pr)
+	f := newFakeS3(t)
+	cli, fm, ex := newInstrumentedClient(t, testConfig(f.URL))
 
-	_, err := c.PresignPutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("uploads"),
-		Key:    aws.String("avatar.png"),
-	})
+	_, err := cli.PresignPutObject(t.Context(), &s3.PutObjectInput{Key: aws.String("avatar.png")})
 	if err == nil {
-		t.Fatal("PresignPutObject error = nil, want non-nil")
+		t.Fatal("PresignPutObject(nil bucket) error = nil, want non-nil")
 	}
 
 	span, ok := ex.last()
@@ -1017,6 +584,55 @@ func TestPresignPutObject_Error(t *testing.T) {
 	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["error.type"] != "_OTHER" {
 		t.Fatalf("duration metric = %+v, want error.type _OTHER", hist)
 	}
+}
+
+// queryValue returns the query parameter key of the raw URL.
+func queryValue(t *testing.T, raw, key string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", raw, err)
+	}
+	return u.Query().Get(key)
+}
+
+// fetch performs a GET on the presigned URL and returns the body, closing the response.
+func fetch(t *testing.T, raw string) string {
+	t.Helper()
+	res, err := http.Get(raw)
+	if err != nil {
+		t.Fatalf("GET %s: %v", raw, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", res.StatusCode)
+	}
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read presigned body: %v", err)
+	}
+	return string(data)
+}
+
+// presignedPut sends body with a presigned PUT request and returns the response
+// status, closing the response.
+func presignedPut(t *testing.T, req *signerv4.PresignedHTTPRequest, body string) int {
+	t.Helper()
+	httpReq, err := http.NewRequestWithContext(t.Context(), req.Method, req.URL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest(%s): %v", req.URL, err)
+	}
+	for k, v := range req.SignedHeader {
+		if k != "Host" {
+			httpReq.Header[k] = v
+		}
+	}
+	res, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", req.URL, err)
+	}
+	defer res.Body.Close()
+	return res.StatusCode
 }
 
 func TestEndpointAddress(t *testing.T) {
@@ -1039,6 +655,27 @@ func TestEndpointAddress(t *testing.T) {
 				t.Fatalf("endpointAddress(%q) = %q/%d, want %q/%d", tc.endpoint, addr, port, tc.wantAddr, tc.wantPort)
 			}
 		})
+	}
+}
+
+func TestIsNotFound(t *testing.T) {
+	if IsNotFound(nil) {
+		t.Fatal("IsNotFound(nil) = true, want false")
+	}
+	if IsNotFound(errors.New("generic error")) {
+		t.Fatal("IsNotFound(generic) = true, want false")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchKey"}) {
+		t.Fatal("IsNotFound(NoSuchKey) = false, want true")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "NotFound"}) {
+		t.Fatal("IsNotFound(NotFound) = false, want true")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "NoSuchBucket"}) {
+		t.Fatal("IsNotFound(NoSuchBucket) = false, want true")
+	}
+	if !IsNotFound(&smithy.GenericAPIError{Code: "404"}) {
+		t.Fatal("IsNotFound(404) = false, want true")
 	}
 }
 
@@ -1084,8 +721,13 @@ func TestErrorType(t *testing.T) {
 			want: "dns_error",
 		},
 		{
-			name: "unknown transport error",
+			name: "operation error with an unclassified cause",
 			err:  &smithy.OperationError{Err: errors.New("boom")},
+			want: "_OTHER",
+		},
+		{
+			name: "operation error with a non-timeout net.Error",
+			err:  &smithy.OperationError{Err: &net.AddrError{Err: "missing port", Addr: "minio.local"}},
 			want: "network_error",
 		},
 		{
@@ -1138,185 +780,70 @@ func TestErrorType(t *testing.T) {
 	}
 }
 
-func TestInstrumentationMiddleware_HandleInitialize_Success(t *testing.T) {
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	fm := &fakeMetrics{}
+// TestPutObject_ConnectionRefused points the client at a closed server, so the
+// dial fails at the transport level and the telemetry records the transport label.
+func TestPutObject_ConnectionRefused(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	endpoint := ts.URL
+	ts.Close()
 
-	mw := &instrumentationMiddleware{
-		meta: meta{
-			region:     "us-east-1",
-			serverAddr: "minio.local",
-			serverPort: 9000,
-			metrics:    fm,
-			tracer:     tracer.Wrap(tp),
-		},
-	}
-
-	if mw.ID() != instrumentationMiddlewareID {
-		t.Fatalf("ID = %q, want %q", mw.ID(), instrumentationMiddlewareID)
-	}
-
-	ctx := middleware.WithOperationName(context.Background(), "PutObject")
-	bucketName := "my-bucket"
-	in := middleware.InitializeInput{
-		Parameters: &s3.PutObjectInput{
-			Bucket: &bucketName,
-		},
-	}
-
-	next := middleware.InitializeHandlerFunc(func(_ context.Context, _ middleware.InitializeInput) (middleware.InitializeOutput, middleware.Metadata, error) {
-		return middleware.InitializeOutput{Result: "ok"}, middleware.Metadata{}, nil
+	cli, fm, ex := newInstrumentedClient(t, testConfig(endpoint))
+	_, err := cli.PutObject(t.Context(), &s3.PutObjectInput{
+		Bucket: aws.String("reports"),
+		Key:    aws.String("k"),
+		Body:   strings.NewReader("x"),
 	})
-
-	out, _, err := mw.HandleInitialize(ctx, in, next)
-	if err != nil {
-		t.Fatalf("HandleInitialize: %v", err)
+	if err == nil {
+		t.Fatal("PutObject(closed endpoint) error = nil, want non-nil")
 	}
-	if out.Result != "ok" {
-		t.Fatalf("result = %v, want ok", out.Result)
+	if IsNotFound(err) {
+		t.Fatalf("IsNotFound(transport failure) = true, want false; err = %v", err)
 	}
 
 	span, ok := ex.last()
-	if !ok || span.Name() != "PutObject" {
-		t.Fatalf("span = %+v, want PutObject", span)
+	if !ok || span.Status().Code != codes.Error {
+		t.Fatalf("span = %+v, want an errored PutObject span", span)
 	}
-	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "my-bucket" || attrs["rpc.method"] != "S3/PutObject" || attrs["cloud.region"] != "us-east-1" {
-		t.Fatalf("span attrs = %+v, want bucket my-bucket, rpc.method S3/PutObject, and region us-east-1", attrs)
-	}
-	if errType, hasErr := attrs["error.type"]; hasErr && errType != "" {
-		t.Fatalf("error.type on success = %v, want absent or empty", errType)
+	if got := spanAttrs(span)["error.type"]; got != "connection_refused" {
+		t.Fatalf("error.type = %v, want connection_refused", got)
 	}
 	hist, ok := fm.lastHist()
-	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["aws.s3.bucket"] != "my-bucket" || hist.attrs["rpc.method"] != "S3/PutObject" {
-		t.Fatalf("duration metric = %+v", hist)
-	}
-	if _, hasErr := hist.attrs["error.type"]; hasErr {
-		t.Fatalf("metric error.type = %v, want absent on success", hist.attrs["error.type"])
+	if !ok || hist.attrs["error.type"] != "connection_refused" {
+		t.Fatalf("duration metric = %+v, want error.type connection_refused", hist)
 	}
 }
 
-func TestInstrumentationMiddleware_HandleInitialize_Error(t *testing.T) {
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	fm := &fakeMetrics{}
-
-	mw := &instrumentationMiddleware{
-		meta: meta{
-			region:  "us-east-1",
-			metrics: fm,
-			tracer:  tracer.Wrap(tp),
-		},
-	}
-
-	ctx := middleware.WithOperationName(context.Background(), "DeleteBucket")
-	bucketName := "old-bucket"
-	in := middleware.InitializeInput{
-		Parameters: &s3.DeleteBucketInput{
-			Bucket: &bucketName,
-		},
-	}
-
-	next := middleware.InitializeHandlerFunc(func(_ context.Context, _ middleware.InitializeInput) (middleware.InitializeOutput, middleware.Metadata, error) {
-		return middleware.InitializeOutput{}, middleware.Metadata{}, &smithy.GenericAPIError{Code: "BucketNotEmpty", Message: "bucket not empty"}
-	})
-
-	_, _, err := mw.HandleInitialize(ctx, in, next)
-	if err == nil {
-		t.Fatal("HandleInitialize error = nil, want non-nil")
-	}
-
-	span, ok := ex.last()
-	if !ok || span.Name() != "DeleteBucket" {
-		t.Fatalf("span = %+v, want DeleteBucket", span)
-	}
-	if span.Status().Code != codes.Error {
-		t.Fatalf("status = %v, want error", span.Status().Code)
-	}
-	attrs := spanAttrs(span)
-	if attrs["error.type"] != "BucketNotEmpty" {
-		t.Fatalf("error.type = %v, want BucketNotEmpty", attrs["error.type"])
-	}
-}
-
-// --- test: metric and span attributes ----------------------------------------------
-
-// collectMetrics returns every metric the reader has collected, keyed by name.
-func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
-	t.Helper()
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(t.Context(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	out := make(map[string]metricdata.Metrics)
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			out[m.Name] = m
-		}
-	}
-	return out
-}
-
-// attrStrings returns the emitted value of each attribute, keyed by attribute name.
-func attrStrings(kvs []attribute.KeyValue) map[string]string {
-	out := make(map[string]string, len(kvs))
-	for _, kv := range kvs {
-		out[string(kv.Key)] = kv.Value.String()
-	}
-	return out
-}
-
+// TestMiddleware_MetricAttributes asserts the exact attribute set on the span and
+// the rpc.client.call.duration point, for a success and a NoSuchBucket failure.
 func TestMiddleware_MetricAttributes(t *testing.T) {
-	const noSuchBucket = `<?xml version="1.0" encoding="UTF-8"?>
-<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`
-
 	tests := []struct {
 		name   string
-		status int
-		body   string
+		bucket string
 		// wantErrType is the expected error.type, empty on success.
 		wantErrType string
 	}{
-		{name: "success", status: http.StatusOK},
-		{name: "failure", status: http.StatusNotFound, body: noSuchBucket, wantErrType: "NoSuchBucket"},
+		{name: "success", bucket: "production-data"},
+		{name: "failure", bucket: "missing-bucket", wantErrType: "NoSuchBucket"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/xml")
-				w.Header().Set("ETag", `"etag-123"`)
-				w.WriteHeader(tt.status)
-				_, _ = io.WriteString(w, tt.body)
-			}))
-			t.Cleanup(srv.Close)
-
-			u, err := url.Parse(srv.URL)
+			f := newFakeS3(t)
+			f.bucket(t, "production-data")
+			u, err := url.Parse(f.URL)
 			if err != nil {
-				t.Fatalf("url.Parse(%q): %v", srv.URL, err)
+				t.Fatalf("url.Parse(%q): %v", f.URL, err)
 			}
 
-			ex := &recordingExporter{}
-			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 			reader := sdkmetric.NewManualReader()
 			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 			t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+			ex := &recordingExporter{}
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
-			cli, err := New(t.Context(), Config{
-				Region:          "us-east-1",
-				Endpoint:        srv.URL,
-				AccessKeyID:     "test-key",
-				SecretAccessKey: "test-secret",
-			}, WithMetrics(metrics.Wrap(mp)), WithTracer(tracer.Wrap(tp)))
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-
+			cli := newTestClient(t, testConfig(f.URL), WithMetrics(metrics.Wrap(mp)), WithTracer(tracer.Wrap(tp)))
 			_, err = cli.PutObject(t.Context(), &s3.PutObjectInput{
-				Bucket: aws.String("production-data"),
+				Bucket: aws.String(tt.bucket),
 				Key:    aws.String("report.pdf"),
 				Body:   strings.NewReader("pdf-content"),
 			})
@@ -1327,7 +854,7 @@ func TestMiddleware_MetricAttributes(t *testing.T) {
 			want := map[string]string{
 				"rpc.system.name": "aws-api",
 				"rpc.method":      "S3/PutObject",
-				"aws.s3.bucket":   "production-data",
+				"aws.s3.bucket":   tt.bucket,
 				"cloud.region":    "us-east-1",
 				"server.address":  u.Hostname(),
 				"server.port":     u.Port(),
@@ -1367,9 +894,12 @@ func TestMiddleware_MetricAttributes(t *testing.T) {
 	}
 }
 
-// --- test: OTel global fallback ----------------------------------------------------
-
+// TestMiddleware_FallsBackToOTelGlobal checks that a client built without
+// injected providers records through the OTel global providers.
 func TestMiddleware_FallsBackToOTelGlobal(t *testing.T) {
+	f := newFakeS3(t)
+	f.bucket(t, "global-bucket")
+
 	prevTP := otel.GetTracerProvider()
 	prevMP := otel.GetMeterProvider()
 
@@ -1391,18 +921,8 @@ func TestMiddleware_FallsBackToOTelGlobal(t *testing.T) {
 		}
 	})
 
-	// No injected metrics or tracer: the middleware must use the OTel globals.
-	mw := &instrumentationMiddleware{meta: meta{region: "us-east-1"}}
-	ctx := middleware.WithOperationName(t.Context(), "PutObject")
-	bucketName := "global-bucket"
-	in := middleware.InitializeInput{Parameters: &s3.PutObjectInput{Bucket: &bucketName}}
-	next := middleware.InitializeHandlerFunc(func(_ context.Context, _ middleware.InitializeInput) (middleware.InitializeOutput, middleware.Metadata, error) {
-		return middleware.InitializeOutput{}, middleware.Metadata{}, nil
-	})
-
-	if _, _, err := mw.HandleInitialize(ctx, in, next); err != nil {
-		t.Fatalf("HandleInitialize: %v", err)
-	}
+	cli := newTestClient(t, testConfig(f.URL))
+	putObject(t, cli, "global-bucket", "k", "v")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -1413,7 +933,7 @@ func TestMiddleware_FallsBackToOTelGlobal(t *testing.T) {
 	}
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
+	if err := reader.Collect(t.Context(), &rm); err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
 	var hist metricdata.Histogram[float64]
@@ -1440,197 +960,20 @@ func TestMiddleware_FallsBackToOTelGlobal(t *testing.T) {
 	if dp.Count != 1 {
 		t.Errorf("%s count = %d, want 1", "rpc.client.call.duration", dp.Count)
 	}
-	if v, ok := dp.Attributes.Value(attribute.Key("rpc.method")); !ok || v.AsString() != "S3/PutObject" {
+	if v, ok := dp.Attributes.Value("rpc.method"); !ok || v.AsString() != "S3/PutObject" {
 		t.Errorf("%s rpc.method = %v, want S3/PutObject", "rpc.client.call.duration", v.AsString())
 	}
 }
 
-func TestExtractBucket(t *testing.T) {
-	b := "target-bucket"
-	cases := []struct {
-		name   string
-		input  any
-		expect string
-	}{
-		{"nil input", nil, ""},
-		{"PutObjectInput", &s3.PutObjectInput{Bucket: &b}, "target-bucket"},
-		{"GetObjectInput", &s3.GetObjectInput{Bucket: &b}, "target-bucket"},
-		{"HeadObjectInput", &s3.HeadObjectInput{Bucket: &b}, "target-bucket"},
-		{"DeleteObjectInput", &s3.DeleteObjectInput{Bucket: &b}, "target-bucket"},
-		{"DeleteObjectsInput", &s3.DeleteObjectsInput{Bucket: &b}, "target-bucket"},
-		{"ListObjectsV2Input", &s3.ListObjectsV2Input{Bucket: &b}, "target-bucket"},
-		{"CreateBucketInput", &s3.CreateBucketInput{Bucket: &b}, "target-bucket"},
-		{"DeleteBucketInput", &s3.DeleteBucketInput{Bucket: &b}, "target-bucket"},
-		{"HeadBucketInput", &s3.HeadBucketInput{Bucket: &b}, "target-bucket"},
-		{"CopyObjectInput", &s3.CopyObjectInput{Bucket: &b}, "target-bucket"},
-		{"PutBucketPolicyInput", &s3.PutBucketPolicyInput{Bucket: &b}, "target-bucket"},
-		{"GetBucketPolicyInput", &s3.GetBucketPolicyInput{Bucket: &b}, "target-bucket"},
-		{"CreateMultipartUploadInput", &s3.CreateMultipartUploadInput{Bucket: &b}, "target-bucket"},
-		{"UploadPartInput", &s3.UploadPartInput{Bucket: &b}, "target-bucket"},
-		{"CompleteMultipartUploadInput", &s3.CompleteMultipartUploadInput{Bucket: &b}, "target-bucket"},
-		{"SelectObjectContentInput", &s3.SelectObjectContentInput{Bucket: &b}, "target-bucket"},
-		{"tm.GetObjectInput", &transfermanager.GetObjectInput{Bucket: &b}, "target-bucket"},
-		{"tm.UploadObjectInput", &transfermanager.UploadObjectInput{Bucket: &b}, "target-bucket"},
-		{"tm.DownloadObjectInput", &transfermanager.DownloadObjectInput{Bucket: &b}, "target-bucket"},
-		{"Custom struct pointer with Bucket pointer", &struct{ Bucket *string }{Bucket: &b}, "target-bucket"},
-		{"Custom struct value with Bucket string", struct{ Bucket string }{Bucket: "custom-str"}, "custom-str"},
-		{"Struct without Bucket field", struct{ Other string }{Other: "foo"}, ""},
-		{"Non-struct type", 12345, ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := extractBucket(tc.input); got != tc.expect {
-				t.Fatalf("extractBucket(%+v) = %q, want %q", tc.input, got, tc.expect)
-			}
-		})
-	}
-}
-
-func TestOptions_WithMetrics_WithTracer(t *testing.T) {
-	fm := &fakeMetrics{}
-	tp := sdktrace.NewTracerProvider()
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	tr := tracer.Wrap(tp)
-
-	cfg := Config{Region: "us-east-1"}
-	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tr))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if cli == nil {
-		t.Fatal("New client = nil, want non-nil")
-	}
-}
-
-func TestMiddleware_EndToEnd_LivePutObject(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("ETag", `"etag-123"`)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	fm := &fakeMetrics{}
-
-	cfg := Config{
-		Region:          "us-east-1",
-		Endpoint:        srv.URL,
-		AccessKeyID:     "test-key",
-		SecretAccessKey: "test-secret",
-	}
-
-	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	_, err = cli.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("production-data"),
-		Key:    aws.String("report.pdf"),
-		Body:   strings.NewReader("pdf-content"),
-	})
-	if err != nil {
-		t.Fatalf("PutObject: %v", err)
-	}
-
-	span, ok := ex.last()
-	if !ok {
-		t.Fatal("middleware span recorded = false, want true")
-	}
-	if span.Name() != "PutObject" {
-		t.Fatalf("span name = %q, want PutObject", span.Name())
-	}
-	attrs := spanAttrs(span)
-	if attrs["aws.s3.bucket"] != "production-data" {
-		t.Fatalf("span aws.s3.bucket = %v, want production-data", attrs["aws.s3.bucket"])
-	}
-	if attrs["rpc.method"] != "S3/PutObject" || attrs["rpc.system.name"] != "aws-api" {
-		t.Fatalf("RPC attrs = %+v, want rpc.method S3/PutObject and rpc.system.name aws-api", attrs)
-	}
-	if _, ok := attrs["rpc.system"]; ok {
-		t.Errorf("span has removed rpc.system attribute")
-	}
-	if _, ok := attrs["rpc.service"]; ok {
-		t.Errorf("span has removed rpc.service attribute")
-	}
-
-	hist, ok := fm.lastHist()
-	if !ok || hist.name != "rpc.client.call.duration" || hist.attrs["aws.s3.bucket"] != "production-data" || hist.attrs["rpc.method"] != "S3/PutObject" {
-		t.Fatalf("duration metric = %+v, want the PutObject attributes", hist)
-	}
-}
-
-func TestMiddleware_EndToEnd_LiveErrorHandling(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
-<Error>
-  <Code>NoSuchBucket</Code>
-  <Message>The specified bucket does not exist</Message>
-  <BucketName>missing-bucket</BucketName>
-</Error>`))
-	}))
-	defer srv.Close()
-
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	fm := &fakeMetrics{}
-
-	cfg := Config{
-		Region:          "us-east-1",
-		Endpoint:        srv.URL,
-		AccessKeyID:     "test-key",
-		SecretAccessKey: "test-secret",
-	}
-
-	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	_, err = cli.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
-		Bucket: aws.String("missing-bucket"),
-	})
-	if err == nil {
-		t.Fatal("DeleteBucket(missing-bucket) error = nil, want non-nil")
-	}
-
-	span, ok := ex.last()
-	if !ok {
-		t.Fatal("span recorded = false, want true")
-	}
-	if span.Status().Code != codes.Error {
-		t.Fatalf("span status = %v, want Error", span.Status().Code)
-	}
-	attrs := spanAttrs(span)
-	if attrs["error.type"] != "NoSuchBucket" {
-		t.Fatalf("error.type = %v, want NoSuchBucket", attrs["error.type"])
-	}
-}
-
 func TestMiddleware_EndToEnd_PresignGetObject(t *testing.T) {
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	fm := &fakeMetrics{}
-
 	cfg := Config{
 		Region:          "us-east-1",
 		AccessKeyID:     "test-key",
 		SecretAccessKey: "test-secret",
 	}
+	cli, fm, ex := newInstrumentedClient(t, cfg)
 
-	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	req, err := cli.PresignGetObject(context.Background(), &s3.GetObjectInput{
+	req, err := cli.PresignGetObject(t.Context(), &s3.GetObjectInput{
 		Bucket: aws.String("presigned-bucket"),
 		Key:    aws.String("document.pdf"),
 	})
@@ -1666,23 +1009,14 @@ func TestMiddleware_EndToEnd_PresignGetObject(t *testing.T) {
 }
 
 func TestMiddleware_EndToEnd_PresignPutObject(t *testing.T) {
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	fm := &fakeMetrics{}
-
 	cfg := Config{
 		Region:          "us-east-1",
 		AccessKeyID:     "test-key",
 		SecretAccessKey: "test-secret",
 	}
+	cli, fm, ex := newInstrumentedClient(t, cfg)
 
-	cli, err := New(t.Context(), cfg, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	req, err := cli.PresignPutObject(context.Background(), &s3.PutObjectInput{
+	req, err := cli.PresignPutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("presigned-bucket"),
 		Key:    aws.String("upload.pdf"),
 	})

@@ -171,8 +171,8 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 - The orchestrator adds gofakes3 v1.2.0.
 
 **Acceptance criteria:**
-- [ ] Coverage ≥ 86.3%.
-- [ ] The regression tests still exist and still fail when their fix is reverted
+- [x] Coverage ≥ 86.3%.
+- [x] The regression tests still exist and still fail when their fix is reverted
       (spot-check).
 
 **Verification:** s3 module checks.
