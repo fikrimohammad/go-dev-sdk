@@ -256,19 +256,19 @@ and the connection setup:
 - X1: the chain is tracer → logger → metrics → panicRecovery → handler.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestHandler_ContextCanceledOnShutdown`: a blocked handler's ctx is done
+- [x] *(regression)* `TestHandler_ContextCanceledOnShutdown`: a blocked handler's ctx is done
       after Shutdown, and its deadline is about `HandlerTimeout`.
-- [ ] *(regression)* `TestHandler_HeartbeatPreventsRedelivery` (embedded JetStream): AckWait 1 s,
+- [x] *(regression)* `TestHandler_HeartbeatPreventsRedelivery` (embedded JetStream): AckWait 1 s,
       HandlerTimeout 5 s, and a 2.5 s handler give exactly one delivery.
-- [ ] *(regression)* `TestHandler_ErrNoRetryTerms`: a wrapped `ErrNoRetry` gives one delivery,
+- [x] *(regression)* `TestHandler_ErrNoRetryTerms`: a wrapped `ErrNoRetry` gives one delivery,
       and the message is termed.
-- [ ] *(regression)* `TestHandler_MessageMetadata`: the key, tag, subject, sequence, and delivery
+- [x] *(regression)* `TestHandler_MessageMetadata`: the key, tag, subject, sequence, and delivery
       count are 1, then 2 on redelivery.
-- [ ] *(regression)* `TestHandler_PanicIsMeasured`: the metrics middleware sees the recovered
+- [x] *(regression)* `TestHandler_PanicIsMeasured`: the metrics middleware sees the recovered
       panic as an error, the message is nak'd, and the span has error status.
 
 **Verification:**
-- [ ] `./consumer/...` checks under `-race` (`-count=3` for the timing tests); coverage ≥ 68.6%.
+- [x] `./consumer/...` checks under `-race` (`-count=3` for the timing tests); coverage ≥ 68.6%.
 
 **Dependencies:** T4, Checkpoint A · **Files:** `nats/consumer/consumer.go`, `nats/consumer/handler.go`, `nats/consumer/middleware.go` (order only), `nats/consumer/config.go`, `nats/consumer/errors.go`, `*_test.go` · **Scope:** L
 

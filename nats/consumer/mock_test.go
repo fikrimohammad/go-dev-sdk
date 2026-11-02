@@ -43,12 +43,15 @@ type mockMsg struct {
 	headers  nats.Header
 	acked    bool
 	nacked   bool
+	termed   bool
 	nakDelay time.Duration
 	meta     *jetstream.MsgMetadata
+	metaErr  error
+	ackErr   error
 }
 
 func (m *mockMsg) Metadata() (*jetstream.MsgMetadata, error) {
-	return m.meta, nil
+	return m.meta, m.metaErr
 }
 
 func (m *mockMsg) Data() []byte {
@@ -69,7 +72,7 @@ func (m *mockMsg) Reply() string {
 
 func (m *mockMsg) Ack() error {
 	m.acked = true
-	return nil
+	return m.ackErr
 }
 
 func (m *mockMsg) DoubleAck(_ context.Context) error {
@@ -89,6 +92,7 @@ func (m *mockMsg) NakWithDelay(delay time.Duration) error {
 }
 
 func (m *mockMsg) Term() error {
+	m.termed = true
 	return nil
 }
 

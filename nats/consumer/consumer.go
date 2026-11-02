@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -16,6 +17,25 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
+
+// Message is one delivered message, as a handler sees it. Its values are
+// parsed once when the message arrives.
+type Message interface {
+	// Key returns the business key set by the producer (Sdk-Msg-Key), or "".
+	Key() string
+	// Tag returns the producer's tag (Sdk-Msg-Tag), or "".
+	Tag() string
+	// Subject returns the NATS subject the message was published to.
+	Subject() string
+	// Body returns the message payload.
+	Body() []byte
+	// Sequence is the stream sequence: unique per stored message.
+	Sequence() uint64
+	// DeliveryCount is 1 on first delivery and grows on each redelivery.
+	DeliveryCount() uint64
+	// Timestamp returns when the message was stored in the stream.
+	Timestamp() time.Time
+}
 
 // jsConsumer is one durable JetStream consumer run by a Consumer.
 type jsConsumer interface {
@@ -179,6 +199,9 @@ type Consumer struct {
 	regs    map[string]registration // keyed by durable name
 	running []jsConsumer
 	started bool
+	// cancelRun cancels runCtx, the context every handler call derives from. It
+	// is set by Start and called by Shutdown before the consumers are drained.
+	cancelRun context.CancelFunc
 }
 
 // New returns an empty, ready-to-use Consumer. The service identity is taken
@@ -242,7 +265,7 @@ func (c *Consumer) Register(cfg Config, handlerFunc HandlerFunc) error {
 		propagator: otel.GetTextMapPropagator(),
 		metrics:    c.metrics,
 		tracer:     c.tracer,
-	}, cfg.RetryBackoff, handlerFunc)
+	}, cfg, handlerFunc)
 	if err != nil {
 		return fmt.Errorf("consumer: create handler adapter: %w", err)
 	}
@@ -252,9 +275,9 @@ func (c *Consumer) Register(cfg Config, handlerFunc HandlerFunc) error {
 }
 
 // Start connects every registered consumer, ensures its stream and durable
-// consumer exist, and starts delivery. ctx bounds the setup. If any consumer
-// fails, Start shuts down the ones already started and returns the error. Start
-// does nothing once it has succeeded.
+// consumer exist, and starts delivery. ctx bounds the setup only; handlers run
+// until Shutdown. If any consumer fails, Start shuts down the ones already started
+// and returns the error. Start does nothing once it has succeeded.
 func (c *Consumer) Start(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -263,38 +286,46 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return nil
 	}
 
+	// Handlers outlive Start, so runCtx keeps Start's values but not its deadline.
+	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	var running []jsConsumer
 	for name, reg := range c.regs {
-		cn, err := c.startOne(ctx, name, reg)
+		cn, err := c.startOne(ctx, runCtx, name, reg)
 		if err != nil {
+			cancelRun()
 			return errors.Join(err, shutdownAll(ctx, running))
 		}
 		running = append(running, cn)
 	}
 
 	c.running = running
+	c.cancelRun = cancelRun
 	c.started = true
 	return nil
 }
 
-// startOne creates the durable consumer for reg and starts its delivery. On a
-// failure after creation it shuts that consumer down.
-func (c *Consumer) startOne(ctx context.Context, name string, reg registration) (jsConsumer, error) {
+// startOne creates the durable consumer for reg and starts its delivery. Handler
+// calls derive from runCtx. On a failure after creation it shuts that consumer
+// down.
+func (c *Consumer) startOne(ctx, runCtx context.Context, name string, reg registration) (jsConsumer, error) {
 	cn, err := c.consumerFactory(ctx, reg.cfg, name)
 	if err != nil {
 		return nil, fmt.Errorf("consumer: create %s: %w", name, err)
 	}
 
-	if err := cn.Consume(reg.handler.Handle); err != nil {
+	handle := func(msg jetstream.Msg) {
+		_ = reg.handler.HandleMsg(runCtx, msg)
+	}
+	if err := cn.Consume(handle); err != nil {
 		return nil, errors.Join(fmt.Errorf("consumer: subscribe %s: %w", name, err), cn.Shutdown(ctx))
 	}
 	return cn, nil
 }
 
-// Shutdown stops intake for every started consumer, waits for in-flight
-// handlers, and drains the connections, all bounded by ctx. It returns ctx.Err()
-// when ctx ends first. Shutdown does nothing if Start has not succeeded, and a
-// second call does nothing.
+// Shutdown cancels the context of in-flight handlers, stops intake for every
+// started consumer, waits for the handlers, and drains the connections, all
+// bounded by ctx. It returns ctx.Err() when ctx ends first. Shutdown does nothing
+// if Start has not succeeded, and a second call does nothing.
 func (c *Consumer) Shutdown(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -303,8 +334,12 @@ func (c *Consumer) Shutdown(ctx context.Context) error {
 		return nil
 	}
 
+	// Cancel before draining, so a handler that honors its ctx returns and the
+	// drain does not wait out its full deadline.
+	c.cancelRun()
 	running := c.running
 	c.running = nil
+	c.cancelRun = nil
 	c.started = false
 	return shutdownAll(ctx, running)
 }

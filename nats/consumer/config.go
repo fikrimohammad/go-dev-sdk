@@ -30,11 +30,17 @@ const (
 
 // Config describes a single NATS JetStream consumer instance.
 type Config struct {
-	Endpoints        []string      `yaml:"endpoints" json:"endpoints"`
-	Topic            string        `yaml:"topic" json:"topic"`
-	Group            string        `yaml:"group" json:"group"`
-	Tags             []string      `yaml:"consumption_tags" json:"consumption_tags"`
-	Timeout          time.Duration `yaml:"timeout" json:"timeout"`
+	Endpoints []string `yaml:"endpoints" json:"endpoints"`
+	Topic     string   `yaml:"topic" json:"topic"`
+	Group     string   `yaml:"group" json:"group"`
+	Tags      []string `yaml:"consumption_tags" json:"consumption_tags"`
+	// Timeout is the JetStream AckWait: how long the server waits for an ack
+	// before it redelivers. While a handler runs, the consumer sends an InProgress
+	// heartbeat every Timeout/2.
+	Timeout time.Duration `yaml:"timeout" json:"timeout"`
+	// HandlerTimeout bounds each handler call. Its context is canceled when the
+	// deadline passes or when Shutdown starts. Zero uses Timeout.
+	HandlerTimeout   time.Duration `yaml:"handler_timeout" json:"handler_timeout"`
 	MaxRetryAttempts int           `yaml:"max_retry_attempts" json:"max_retry_attempts"`
 	MaxConcurrent    int           `yaml:"max_concurrent" json:"max_concurrent"`
 
@@ -60,6 +66,10 @@ type Config struct {
 func (c Config) SetDefaults() Config {
 	if c.Timeout <= 0 {
 		c.Timeout = DefaultTimeout
+	}
+
+	if c.HandlerTimeout == 0 {
+		c.HandlerTimeout = c.Timeout
 	}
 
 	if c.MaxRetryAttempts <= 0 {
@@ -123,6 +133,10 @@ func (c Config) Validate() error {
 
 	if c.RetryBackoff < 0 {
 		errs = append(errs, ErrNegativeRetryBackoff)
+	}
+
+	if c.HandlerTimeout <= 0 {
+		errs = append(errs, ErrInvalidHandlerTimeout)
 	}
 
 	return errors.Join(errs...)

@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
@@ -158,7 +160,7 @@ func setupAdapter(t *testing.T, retryBackoff time.Duration, handler HandlerFunc)
 		propagator: testPropagator,
 		metrics:    fm,
 		tracer:     tracer.Wrap(tp),
-	}, retryBackoff, handler)
+	}, Config{RetryBackoff: retryBackoff}.SetDefaults(), handler)
 	if err != nil {
 		t.Fatalf("newHandlerAdapter: %v", err)
 	}
@@ -168,12 +170,16 @@ func setupAdapter(t *testing.T, retryBackoff time.Duration, handler HandlerFunc)
 // testMsg builds a message on the "reporting" topic with a tag and an ID.
 func testMsg(body string) *mockMsg {
 	h := make(nats.Header)
-	h.Set("Nats-Msg-Id", "MSG-1")
-	h.Set("Nats-Msg-Tag", "export_report_process")
+	h.Set(wire.HeaderTag, "export_report_process")
 	return &mockMsg{
 		subject: "reporting.export_report_process",
 		data:    []byte(body),
 		headers: h,
+		meta: &jetstream.MsgMetadata{
+			Sequence:     jetstream.SequencePair{Stream: 1},
+			NumDelivered: 1,
+			Timestamp:    time.Unix(1_700_000_000, 0),
+		},
 	}
 }
 
@@ -181,8 +187,8 @@ func testMsg(body string) *mockMsg {
 
 func TestHandle_Success(t *testing.T) {
 	var gotBody []byte
-	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error {
-		gotBody = msgBody
+	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
+		gotBody = msg.Body()
 		return nil
 	})
 
@@ -218,7 +224,7 @@ func TestHandle_Success(t *testing.T) {
 		"messaging.nats.subject":      "reporting.export_report_process",
 		"messaging.nats.client_group": "export_consumer",
 		"messaging.nats.message.tag":  "export_report_process",
-		"messaging.message.id":        "MSG-1",
+		"messaging.message.id":        "1",
 		"messaging.message.body.size": 5,
 		"server.address":              "localhost",
 		"server.port":                 4222,
@@ -240,7 +246,7 @@ func TestHandle_Success(t *testing.T) {
 		"messaging.nats.subject":      "reporting.export_report_process",
 		"messaging.nats.client_group": "export_consumer",
 		"messaging.nats.message.tag":  "export_report_process",
-		"messaging.message.id":        "MSG-1",
+		"messaging.message.id":        "1",
 		"messaging.message.body.size": "5",
 		"server.address":              "localhost",
 		"server.port":                 "4222",
@@ -253,7 +259,7 @@ func TestHandle_Success(t *testing.T) {
 }
 
 func TestHandle_Error(t *testing.T) {
-	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error {
+	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		return errHandler
 	})
 
@@ -281,7 +287,7 @@ func TestHandle_Error(t *testing.T) {
 
 func TestHandle_RetryBackoff(t *testing.T) {
 	delay := 3 * time.Second
-	a, _, _ := setupAdapter(t, delay, func(ctx context.Context, msgBody []byte) error {
+	a, _, _ := setupAdapter(t, delay, func(ctx context.Context, msg Message) error {
 		return errHandler
 	})
 
@@ -299,7 +305,7 @@ func TestHandle_RetryBackoff(t *testing.T) {
 }
 
 func TestHandle_PanicRecovery(t *testing.T) {
-	a, _, _ := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error {
+	a, _, _ := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		panic("boom")
 	})
 
@@ -313,6 +319,38 @@ func TestHandle_PanicRecovery(t *testing.T) {
 	}
 }
 
+// regression: a panicking handler is recovered inside the metrics middleware, so
+// metrics record an error, the span has error status, and the message is nak'd.
+func TestHandler_PanicIsMeasured(t *testing.T) {
+	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
+		panic("boom")
+	})
+
+	msg := testMsg("hello")
+	if err := a.HandleMsg(context.Background(), msg); err == nil {
+		t.Fatal("HandleMsg() error = nil, want error from recovered panic")
+	}
+	if !msg.nacked {
+		t.Fatal("message was not nacked")
+	}
+
+	count, ok := fm.lastCount()
+	if !ok {
+		t.Fatal("no count recorded")
+	}
+	if v, ok := count.attrs["error.type"]; !ok || v == "" {
+		t.Fatalf("error.type = %#v, want a non-empty value", v)
+	}
+
+	sp, ok := ex.last()
+	if !ok {
+		t.Fatal("no span recorded")
+	}
+	if sp.Status().Code != codes.Error {
+		t.Fatalf("status = %v, want error", sp.Status().Code)
+	}
+}
+
 func TestHandle_ExtractsParentTrace(t *testing.T) {
 	parentEx := &recordingExporter{}
 	parentTP := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(parentEx)))
@@ -323,7 +361,7 @@ func TestHandle_ExtractsParentTrace(t *testing.T) {
 	testPropagator.Inject(parentCtx, natsHeaderCarrier{header: msg.headers})
 	parentSpan.End()
 
-	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error { return nil })
+	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error { return nil })
 	if err := a.HandleMsg(context.Background(), msg); err != nil {
 		t.Fatalf("HandleMsg: %v", err)
 	}

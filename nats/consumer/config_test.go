@@ -63,6 +63,28 @@ func TestConfig_SetDefaults_Explicit(t *testing.T) {
 	}
 }
 
+func TestConfig_SetDefaults_HandlerTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  Config
+		want time.Duration
+	}{
+		{name: "defaults to Timeout", cfg: Config{Timeout: 30 * time.Second}, want: 30 * time.Second},
+		{name: "defaults to DefaultTimeout", cfg: Config{}, want: DefaultTimeout},
+		{name: "keeps explicit value", cfg: Config{Timeout: 30 * time.Second, HandlerTimeout: 5 * time.Second}, want: 5 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.cfg.SetDefaults().HandlerTimeout; got != tc.want {
+				t.Fatalf("HandlerTimeout = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConfig_Validate_Valid(t *testing.T) {
 	t.Parallel()
 
@@ -96,6 +118,7 @@ func TestConfig_Validate_Errors(t *testing.T) {
 		{"timestamp missing when required", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", ConsumeFromWhere: ConsumeFromTimestamp}, ErrInvalidConsumeTimestamp},
 		{"timestamp malformed", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", ConsumeFromWhere: ConsumeFromTimestamp, ConsumeTimestamp: "not-a-time"}, ErrInvalidConsumeTimestamp},
 		{"negative retry backoff", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", RetryBackoff: -time.Second}, ErrNegativeRetryBackoff},
+		{"negative handler timeout", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", HandlerTimeout: -time.Second}, ErrInvalidHandlerTimeout},
 		{"topic with dots", Config{Endpoints: valid.Endpoints, Topic: "has.dots", Group: "g"}, ErrInvalidTopic},
 		{"group with dots", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "has.dots"}, ErrInvalidGroup},
 		{"tag with dots", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Tags: []string{"has.dots"}}, ErrInvalidTag},

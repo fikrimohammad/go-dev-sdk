@@ -80,7 +80,7 @@ func TestRegistrationDotRejection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("p.Register: %v", err)
 	}
-	err = p.PublishSync(context.Background(), "oec_order_event", "order.created", "key", []byte("data"))
+	err = p.PublishSync(context.Background(), producer.Message{Topic: "oec_order_event", Tag: "order.created", Key: "key", Body: []byte("data")})
 	if !errors.Is(err, producer.ErrInvalidTag) {
 		t.Errorf("p.PublishSync(tag with dots) = %v, want %v", err, producer.ErrInvalidTag)
 	}
@@ -100,7 +100,7 @@ func TestRegistrationDotRejection(t *testing.T) {
 		Endpoints: []string{serverURL},
 		Topic:     "oec.order.event",
 		Group:     "order_created",
-	}, func(ctx context.Context, body []byte) error { return nil })
+	}, func(context.Context, consumer.Message) error { return nil })
 	if !errors.Is(err, consumer.ErrInvalidTopic) {
 		t.Errorf("c.Register(topic with dots) = %v, want %v", err, consumer.ErrInvalidTopic)
 	}
@@ -110,7 +110,7 @@ func TestRegistrationDotRejection(t *testing.T) {
 		Endpoints: []string{serverURL},
 		Topic:     "oec_order_event",
 		Group:     "order.created",
-	}, func(ctx context.Context, body []byte) error { return nil })
+	}, func(context.Context, consumer.Message) error { return nil })
 	if !errors.Is(err, consumer.ErrInvalidGroup) {
 		t.Errorf("c.Register(group with dots) = %v, want %v", err, consumer.ErrInvalidGroup)
 	}
@@ -121,7 +121,7 @@ func TestRegistrationDotRejection(t *testing.T) {
 		Topic:     "oec_order_event",
 		Group:     "order_created",
 		Tags:      []string{"order.created"},
-	}, func(ctx context.Context, body []byte) error { return nil })
+	}, func(context.Context, consumer.Message) error { return nil })
 	if !errors.Is(err, consumer.ErrInvalidTag) {
 		t.Errorf("c.Register(tags with dots) = %v, want %v", err, consumer.ErrInvalidTag)
 	}
@@ -200,9 +200,9 @@ func TestMultiConsumerParity(t *testing.T) {
 		MaxRetryAttempts: 3,
 		MaxConcurrent:    5,
 		ConsumeFromWhere: consumer.ConsumeFromFirst,
-	}, func(ctx context.Context, body []byte) error {
+	}, func(ctx context.Context, msg consumer.Message) error {
 		var evt orderEvent
-		if err := json.Unmarshal(body, &evt); err != nil {
+		if err := json.Unmarshal(msg.Body(), &evt); err != nil {
 			return err
 		}
 		// Verify trace context was propagated
@@ -240,9 +240,9 @@ func TestMultiConsumerParity(t *testing.T) {
 		MaxRetryAttempts: 3,
 		MaxConcurrent:    10,
 		ConsumeFromWhere: consumer.ConsumeFromFirst,
-	}, func(ctx context.Context, body []byte) error {
+	}, func(ctx context.Context, msg consumer.Message) error {
 		var evt orderEvent
-		if err := json.Unmarshal(body, &evt); err != nil {
+		if err := json.Unmarshal(msg.Body(), &evt); err != nil {
 			return err
 		}
 		// Verify trace context was propagated
@@ -281,7 +281,7 @@ func TestMultiConsumerParity(t *testing.T) {
 			Amount:  float64(i * 100),
 		})
 
-		err := p.PublishSync(parentCtx, topicName, targetTag, orderID, payload)
+		err := p.PublishSync(parentCtx, producer.Message{Topic: topicName, Tag: targetTag, Key: orderID, Body: payload})
 		if err != nil {
 			t.Fatalf("PublishSync %s: %v", orderID, err)
 		}
@@ -293,7 +293,7 @@ func TestMultiConsumerParity(t *testing.T) {
 		OrderID: "order-cancelled-999",
 		Amount:  999.0,
 	})
-	err = p.PublishSync(parentCtx, topicName, otherTag, "order-cancelled-999", cancelledPayload)
+	err = p.PublishSync(parentCtx, producer.Message{Topic: topicName, Tag: otherTag, Key: "order-cancelled-999", Body: cancelledPayload})
 	if err != nil {
 		t.Fatalf("PublishSync cancelled: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestConsumerRetryRedelivery(t *testing.T) {
 		Timeout:          2 * time.Second,
 		MaxRetryAttempts: 3,
 		RetryBackoff:     50 * time.Millisecond,
-	}, func(ctx context.Context, body []byte) error {
+	}, func(ctx context.Context, msg consumer.Message) error {
 		cnt := attempts.Add(1)
 		if cnt == 1 {
 			// Fail on first attempt to trigger NAK redelivery
@@ -403,7 +403,7 @@ func TestConsumerRetryRedelivery(t *testing.T) {
 	}
 	defer func() { _ = c.Shutdown(context.Background()) }()
 
-	if err := p.PublishSync(context.Background(), topicName, tag, "retry-order", []byte("retry-data")); err != nil {
+	if err := p.PublishSync(context.Background(), producer.Message{Topic: topicName, Tag: tag, Key: "retry-order", Body: []byte("retry-data")}); err != nil {
 		t.Fatalf("PublishSync: %v", err)
 	}
 
@@ -465,7 +465,7 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 		Tags:             []string{tag},
 		MaxConcurrent:    numMsgs,
 		ConsumeFromWhere: consumer.ConsumeFromFirst,
-	}, func(ctx context.Context, body []byte) error {
+	}, func(ctx context.Context, msg consumer.Message) error {
 		cur := inFlight.Add(1)
 		for {
 			old := maxObserved.Load()
@@ -497,7 +497,7 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 	defer func() { _ = c.Shutdown(context.Background()) }()
 
 	for i := range numMsgs {
-		if err := p.PublishSync(context.Background(), topicName, tag, fmt.Sprintf("id-%d", i), []byte("test")); err != nil {
+		if err := p.PublishSync(context.Background(), producer.Message{Topic: topicName, Tag: tag, Key: fmt.Sprintf("id-%d", i), Body: []byte("test")}); err != nil {
 			t.Fatalf("PublishSync: %v", err)
 		}
 	}

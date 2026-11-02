@@ -31,16 +31,20 @@ func ExampleNew() {
 		Endpoints: []string{"nats://localhost:4222"},
 		Topic:     "orders",
 		Group:     "billing",
-	}, func(ctx context.Context, body []byte) error {
+	}, func(ctx context.Context, msg consumer.Message) error {
 		var order struct {
 			ID string `json:"id"`
 		}
-		if err := json.Unmarshal(body, &order); err != nil {
-			// Returning an error asks the broker to redeliver the message. A message that
-			// can never decode is redelivered until Config.MaxRetryAttempts is reached.
-			return fmt.Errorf("decode order: %w", err)
+		if err := json.Unmarshal(msg.Body(), &order); err != nil {
+			// Returning consumer.ErrNoRetry (wrapped) terms a message that can never
+			// decode. Any other error redelivers it, up to Config.MaxRetryAttempts.
+			return fmt.Errorf("%w: decode order: %w", consumer.ErrNoRetry, err)
 		}
-		fmt.Println("billing received order", order.ID)
+		// Delivery is at least once, so handlers dedupe on the business key. The
+		// same key can arrive again after a redelivery, so check it before side effects:
+		//
+		//	if seen(msg.Key()) { return nil }
+		fmt.Println("billing received order", order.ID, "key", msg.Key())
 		return nil
 	})
 	if err != nil {

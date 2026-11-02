@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -45,7 +42,7 @@ var (
 )
 
 // consumeHandler processes a single consumed message.
-type consumeHandler func(ctx context.Context, msg jetstream.Msg) error
+type consumeHandler func(ctx context.Context, msg *message) error
 
 // meta carries the attributes held by every instrumented message.
 type meta struct {
@@ -53,6 +50,9 @@ type meta struct {
 	group      string // messaging.nats.client_group
 	serverAddr string // server.address, from the first endpoint
 	serverPort int    // server.port
+
+	// retryBackoff is the NakWithDelay used for a failed message, or zero for Nak.
+	retryBackoff time.Duration
 
 	// propagator extracts the incoming trace context from message headers.
 	propagator propagation.TextMapPropagator
@@ -76,56 +76,15 @@ func (m meta) processSpanName() string {
 	return m.topic + " process"
 }
 
-// resolveMsgID extracts a message ID from headers or stream metadata sequence.
-func resolveMsgID(msg jetstream.Msg) string {
-	if msg == nil {
-		return ""
-	}
-	if headers := msg.Headers(); headers != nil {
-		if id := headers.Get("Nats-Msg-Id"); id != "" {
-			return id
-		}
-	}
-	if meta, err := msg.Metadata(); err == nil && meta != nil {
-		return strconv.FormatUint(meta.Sequence.Stream, 10)
-	}
-	return ""
-}
-
-// resolveTag extracts a message tag from headers or the subject suffix.
-func (m meta) resolveTag(msg jetstream.Msg) string {
-	if msg == nil {
-		return ""
-	}
-	if headers := msg.Headers(); headers != nil {
-		if tag := headers.Get("Nats-Msg-Tag"); tag != "" {
-			return tag
-		}
-	}
-	subject := msg.Subject()
-	prefix := m.topic + "."
-	if after, ok := strings.CutPrefix(subject, prefix); ok {
-		return after
-	}
-	return ""
-}
-
 // consumeAttrs builds the OTel messaging attributes for a consumed message.
-func (m meta) consumeAttrs(msg jetstream.Msg) map[string]any {
-	bodyLen := 0
-	subject := ""
-	if msg != nil {
-		bodyLen = len(msg.Data())
-		subject = msg.Subject()
-	}
-
+func (m meta) consumeAttrs(msg *message) map[string]any {
 	a := map[string]any{
 		"messaging.system":            "nats",
 		"messaging.operation":         "process",
 		"messaging.destination.name":  m.topic,
-		"messaging.nats.subject":      subject,
-		"messaging.message.id":        resolveMsgID(msg),
-		"messaging.message.body.size": bodyLen,
+		"messaging.nats.subject":      msg.subject,
+		"messaging.message.id":        msg.id,
+		"messaging.message.body.size": len(msg.body),
 	}
 	if m.group != "" {
 		a["messaging.nats.client_group"] = m.group
@@ -134,14 +93,14 @@ func (m meta) consumeAttrs(msg jetstream.Msg) map[string]any {
 		a["server.address"] = m.serverAddr
 		a["server.port"] = m.serverPort
 	}
-	if tag := m.resolveTag(msg); tag != "" {
-		a["messaging.nats.message.tag"] = tag
+	if msg.tag != "" {
+		a["messaging.nats.message.tag"] = msg.tag
 	}
 	return a
 }
 
 // eventAttrs returns the full attribute set for a completed consume event.
-func (m meta) eventAttrs(msg jetstream.Msg, etype string) map[string]any {
+func (m meta) eventAttrs(msg *message, etype string) map[string]any {
 	a := m.consumeAttrs(msg)
 	a["error.type"] = etype
 	return a
@@ -150,7 +109,7 @@ func (m meta) eventAttrs(msg jetstream.Msg, etype string) map[string]any {
 // panicRecovery recovers panics raised while consuming a message, logs the
 // stack trace, and converts them into errors so the message is retried.
 func (m meta) panicRecovery(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) (err error) {
+	return func(ctx context.Context, msg *message) (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
@@ -171,14 +130,11 @@ func (m meta) panicRecovery(next consumeHandler) consumeHandler {
 }
 
 // tracerMW extracts the incoming trace context from the message headers,
-// starts a CONSUMER span, and sets error status on failure.
+// starts a CONSUMER span, settles the message from the outcome while the span is
+// open, and sets error status on failure.
 func (m meta) tracerMW(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) error {
-		var headers nats.Header
-		if msg != nil {
-			headers = msg.Headers()
-		}
-		ctx = m.propagator.Extract(ctx, natsHeaderCarrier{header: headers})
+	return func(ctx context.Context, msg *message) error {
+		ctx = m.propagator.Extract(ctx, natsHeaderCarrier{header: msg.raw.Headers()})
 
 		ctx, span := m.tracerOr().Start(ctx, m.processSpanName(),
 			trace.WithSpanKind(trace.SpanKindConsumer),
@@ -187,6 +143,7 @@ func (m meta) tracerMW(next consumeHandler) consumeHandler {
 		defer span.End()
 
 		err := next(ctx, msg)
+		m.settleOutcome(ctx, msg, err)
 
 		etype := ""
 		if err != nil {
@@ -201,20 +158,16 @@ func (m meta) tracerMW(next consumeHandler) consumeHandler {
 // logger logs every consumed message as structured attributes: success at
 // Info level, failure at Error level.
 func (m meta) logger(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) error {
+	return func(ctx context.Context, msg *message) error {
 		start := time.Now()
 		err := next(ctx, msg)
 
-		msgID := resolveMsgID(msg)
-		tag := m.resolveTag(msg)
 		attrs := []slog.Attr{
 			slog.String("topic", m.topic),
-			slog.String("tag", tag),
-			slog.String("message_id", msgID),
+			slog.String("tag", msg.tag),
+			slog.String("message_id", msg.id),
 			slog.Duration("duration", time.Since(start)),
-		}
-		if msg != nil {
-			attrs = append(attrs, slog.String("subject", msg.Subject()))
+			slog.String("subject", msg.subject),
 		}
 		if m.group != "" {
 			attrs = append(attrs, slog.String("group", m.group))
@@ -235,7 +188,7 @@ func (m meta) logger(next consumeHandler) consumeHandler {
 
 // metricsMW records one count + duration pair per processed message.
 func (m meta) metricsMW(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) error {
+	return func(ctx context.Context, msg *message) error {
 		start := time.Now()
 		err := next(ctx, msg)
 

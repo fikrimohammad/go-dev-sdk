@@ -116,7 +116,7 @@ func TestConsumerRegister(t *testing.T) {
 				t.Fatalf("New() error = %v", err)
 			}
 
-			handler := func(ctx context.Context, msgBody []byte) error { return nil }
+			handler := func(ctx context.Context, msg Message) error { return nil }
 			err = c.Register(tt.cfg, handler)
 			if !errors.Is(err, tt.wantErr) {
 				t.Errorf("Register() error = %v, wantErr %v", err, tt.wantErr)
@@ -138,7 +138,7 @@ func TestConsumerRegisterDuplicateTopicGroup(t *testing.T) {
 		Topic:     "test-topic",
 		Group:     "test-group",
 	}
-	handler := func(ctx context.Context, msgBody []byte) error { return nil }
+	handler := func(ctx context.Context, msg Message) error { return nil }
 
 	if err := c.Register(cfg, handler); err != nil {
 		t.Fatalf("Register() first error = %v", err)
@@ -158,7 +158,7 @@ func TestConsumerRegisterDifferentGroups(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	handler := func(ctx context.Context, msgBody []byte) error { return nil }
+	handler := func(ctx context.Context, msg Message) error { return nil }
 	for _, group := range []string{"group1", "group2"} {
 		cfg := Config{Endpoints: []string{"localhost:4222"}, Topic: "test-topic", Group: group}
 		if err := c.Register(cfg, handler); err != nil {
@@ -186,7 +186,7 @@ func TestConsumerRegisterDoesNotDial(t *testing.T) {
 	}
 
 	cfg := Config{Endpoints: []string{"localhost:4222"}, Topic: "test-topic", Group: "test-group"}
-	handler := func(ctx context.Context, msgBody []byte) error { return nil }
+	handler := func(ctx context.Context, msg Message) error { return nil }
 	if err := c.Register(cfg, handler); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -308,7 +308,7 @@ func TestConsumerRegisterWithHandler(t *testing.T) {
 	}
 
 	var handlerCalled atomic.Bool
-	handler := func(ctx context.Context, msgBody []byte) error {
+	handler := func(ctx context.Context, msg Message) error {
 		handlerCalled.Store(true)
 		return nil
 	}
@@ -340,7 +340,7 @@ func TestConsumerRegisterWithHandler(t *testing.T) {
 		t.Fatal("Consume() was not called on factory consumer")
 	}
 
-	msg := &mockMsg{data: []byte("test")}
+	msg := &mockMsg{data: []byte("test"), meta: &jetstream.MsgMetadata{NumDelivered: 1}}
 	registeredHandler(msg)
 
 	if !handlerCalled.Load() {
@@ -422,7 +422,7 @@ func TestConsumerRegisterAfterStart(t *testing.T) {
 		Topic:     "new-topic",
 		Group:     "new-group",
 	}
-	handler := func(ctx context.Context, msgBody []byte) error { return nil }
+	handler := func(ctx context.Context, msg Message) error { return nil }
 
 	err = c.Register(cfg, handler)
 	if err == nil {
@@ -465,7 +465,7 @@ func TestShutdown_WithoutStart(t *testing.T) {
 	}
 
 	cfg := Config{Endpoints: []string{"localhost:4222"}, Topic: "test-topic", Group: "test-group"}
-	if err := c.Register(cfg, func(ctx context.Context, msgBody []byte) error { return nil }); err != nil {
+	if err := c.Register(cfg, func(ctx context.Context, msg Message) error { return nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
 
@@ -492,7 +492,7 @@ func TestShutdown_RespectsDeadline(t *testing.T) {
 
 	entered := make(chan struct{}, 1)
 	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders", Group: "billing"}
-	err = c.Register(cfg, func(ctx context.Context, msgBody []byte) error {
+	err = c.Register(cfg, func(ctx context.Context, msg Message) error {
 		entered <- struct{}{}
 		time.Sleep(5 * time.Second) // ignores ctx on purpose
 		return nil
@@ -546,10 +546,10 @@ func TestConsumer_DefaultFilterSkipsSchedules(t *testing.T) {
 		done     = make(chan struct{}, 1)
 	)
 	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders", Group: "billing"}
-	err = c.Register(cfg, func(ctx context.Context, msgBody []byte) error {
+	err = c.Register(cfg, func(ctx context.Context, msg Message) error {
 		mu.Lock()
 		defer mu.Unlock()
-		received = append(received, string(msgBody))
+		received = append(received, string(msg.Body()))
 		if len(received) == 2 {
 			done <- struct{}{}
 		}
@@ -597,7 +597,7 @@ func TestConsumer_DefaultFilterSkipsSchedules(t *testing.T) {
 func registerTwo(t *testing.T, c *Consumer) {
 	t.Helper()
 
-	handler := func(ctx context.Context, msgBody []byte) error { return nil }
+	handler := func(ctx context.Context, msg Message) error { return nil }
 	for _, cfg := range []Config{
 		{Endpoints: []string{"localhost:4222"}, Topic: "topic1", Group: "group1"},
 		{Endpoints: []string{"localhost:4222"}, Topic: "topic2", Group: "group2"},
@@ -622,7 +622,7 @@ func TestStart_BoundedByContext(t *testing.T) {
 		Topic:     "orders",
 		Group:     "billing",
 	}
-	if err := c.Register(cfg, func(context.Context, []byte) error { return nil }); err != nil {
+	if err := c.Register(cfg, func(context.Context, Message) error { return nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
 
