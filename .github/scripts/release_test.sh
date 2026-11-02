@@ -201,5 +201,24 @@ run_release "$work/dirty" v0.1.0
 expect_fail "real run with dirty tree fails" "uncommitted changes"
 check "dirty run creates no tags" test -z "$(local_tags "$work/dirty")"
 
+# 13. --check ignores tags and proxy versions: it passes when both already exist.
+new_repo checkok v0.1.0
+git -C "$work/checkok" tag -a a/v0.1.0 -m existing
+git -C "$work/checkok" push -q origin a/v0.1.0
+mkdir -p "$proxy_dir/${prefix}a/@v"
+touch "$proxy_dir/${prefix}a/@v/v0.1.0.info"
+run_release "$work/checkok" v0.1.0 --check
+expect_pass "--check passes with tags on origin and in proxy"
+rm -rf "$proxy_dir/example.com"
+
+# 14. --check still fails on a mismatched sibling require.
+new_repo checkmis v0.0.0
+run_release "$work/checkmis" v0.1.0 --check
+expect_fail "--check fails on mismatched sibling require" "b/go.mod requires ${prefix}a v0.0.0; want v0.1.0"
+
+# 15. --check and --dry-run are mutually exclusive.
+run_release "$work/happy" v0.1.0 --check --dry-run
+expect_fail "--check with --dry-run is an error" "mutually exclusive"
+
 echo "$pass passed, $failed failed"
 (( failed == 0 ))

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Releases every module in the repo at one version.
 #
-# Usage: .github/scripts/release.sh <version> [--dry-run]
+# Usage: .github/scripts/release.sh <version> [--dry-run | --check]
 #
 # Checks, in order: the version shape; each module's major against its module
 # path; that every sibling require is <version>; that no <module>/<version> tag
 # exists locally or on origin; and that proxy.golang.org does not already serve
 # the version. Without --dry-run it tags HEAD for every module and pushes all
 # tags in one atomic push. Nothing is tagged unless every check passes.
+#
+# --check runs only the offline checks (version shape, module paths, sibling
+# requires). It never reads tags or the proxy, so it can run on every PR, even
+# after the version has been released.
 #
 # Environment overrides, used by release_test.sh:
 #   GOPROXY_URL    module proxy base URL (default https://proxy.golang.org)
@@ -19,7 +23,7 @@ GOPROXY_URL=${GOPROXY_URL:-https://proxy.golang.org}
 MODULE_PREFIX=${MODULE_PREFIX:-github.com/fikrimohammad/go-servicekit/}
 
 usage() {
-  echo "usage: release.sh <version> [--dry-run]" >&2
+  echo "usage: release.sh <version> [--dry-run | --check]" >&2
   exit 2
 }
 
@@ -52,12 +56,20 @@ require_lines() {
   ' "$1"
 }
 
-[[ $# -ge 1 && $# -le 2 ]] || usage
+[[ $# -ge 1 ]] || usage
 version=$1
+shift
 dry_run=false
-if [[ $# -eq 2 ]]; then
-  [[ $2 == --dry-run ]] || usage
-  dry_run=true
+check_only=false
+for arg in "$@"; do
+  case $arg in
+    --dry-run) dry_run=true ;;
+    --check) check_only=true ;;
+    *) usage ;;
+  esac
+done
+if [[ $dry_run == true && $check_only == true ]]; then
+  die "--check and --dry-run are mutually exclusive"
 fi
 
 semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
@@ -110,6 +122,12 @@ for dir in "${modules[@]}"; do
       || fail "$dir/go.mod requires $req_path $req_version; want $version"
   done < <(require_lines "$dir/go.mod")
 done
+
+if [[ $check_only == true ]]; then
+  (( errors == 0 )) || die "$errors consistency check(s) failed for $version"
+  echo "Consistency checks passed for $version (${#modules[@]} modules)."
+  exit 0
+fi
 
 # 3. No tag and no proxy version for the release yet.
 remote_tags=$(git ls-remote --tags origin) || die "cannot list tags on origin"
