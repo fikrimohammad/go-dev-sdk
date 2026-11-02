@@ -52,7 +52,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Wave 1 (parallel)
 - [x] T2: db telemetry: semconv attributes, no count metric, span name, error.type (D1, D2, X2–X4, X6)
-- [ ] T3: redis returns `redis.UniversalClient`; interfaces and aliases deleted (R6, R5)
+- [x] T3: redis returns `redis.UniversalClient`; interfaces and aliases deleted (R6, R5)
 - [ ] T4: s3 telemetry: `rpc.client.call.duration`, `rpc.system.name`/`rpc.method` (S-telemetry, X4, X6)
 
 ### Wave 2 (parallel)

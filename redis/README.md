@@ -11,17 +11,17 @@ executed command.
   per command plus `db.client.operation.{count,duration}` metrics.
 - **Value redaction** — `db.query.text` renders the command name followed by one
   `?` per argument (`SET ? ?`), so literal values never leak into telemetry.
-- **`redis.Nil` is not an error** — a missing-key result records no error
+- **`goredis.Nil` is not an error** — a missing-key result records no error
   telemetry.
 - **Pipelines & Transactions** — batched commands and atomic `MULTI`...`EXEC`
   transaction blocks record a single `PIPELINE` span with `db.operation.batch.size`.
 - **TLS encryption** — built-in support for TLS with server name verification,
   insecure skip verify, and custom CA/client certificates.
-- **Context-aware startup** — `NewWithContext` integrates cleanly with
-  graceful application startup and shutdown lifecycles.
-- **Minimal surface** — `ReadCommands`, `WriteCommands`, `ScriptCommands`,
-  `Client`, and `Pipeline` interfaces expose the essential commands for strings,
-  hashes, sets, sorted sets, counters, TTL management, and Lua scripting.
+- **Context-aware startup** — `New(ctx, ...)` bounds the initial ping by the
+  caller's context, so startup respects graceful application lifecycles.
+- **Full command set** — `New` returns go-redis's `redis.UniversalClient`, so every
+  go-redis command is available and instrumented; no SDK change is needed for a new
+  command.
 - **Injectable telemetry** — `WithMetrics` / `WithTracer` override the
   package-level observability defaults.
 
@@ -35,11 +35,21 @@ go get github.com/fikrimohammad/go-dev-sdk/redis
 
 ### 1. Configure and connect
 
-The package supports **Standalone**, **Sentinel** (High Availability), and **Cluster** (Distributed Sharding) topologies out of the box with the exact same [`Client`](#api-reference) interface.
+The package supports **Standalone**, **Sentinel** (High Availability), and **Cluster** (Distributed Sharding) topologies out of the box. All three return the same go-redis `UniversalClient` (see [API reference](#api-reference)).
+
+Examples use two imports: the SDK package as `redis`, and go-redis as `goredis` for its types (`goredis.Nil`, `goredis.Z`, `goredis.Pipeliner`, `goredis.Tx`):
+
+```go
+import (
+    goredis "github.com/redis/go-redis/v9"
+
+    "github.com/fikrimohammad/go-dev-sdk/redis"
+)
+```
 
 #### Option A: Standalone Mode (Default)
 ```go
-cli, err := redis.New(redis.Config{
+cli, err := redis.New(ctx, redis.Config{
     Host: "localhost",
     Port: 6379,
     DB:   0,
@@ -50,7 +60,7 @@ defer cli.Close()
 
 #### Option B: Redis Sentinel Mode (Consul Service Discovery & High Availability)
 ```go
-cli, err := redis.New(redis.Config{
+cli, err := redis.New(ctx, redis.Config{
     Mode:       redis.ModeSentinel,
     MasterName: "mymaster",
     Addrs: []string{
@@ -69,7 +79,7 @@ defer cli.Close()
 
 #### Option C: Redis Cluster Mode (Sharding & High Throughput)
 ```go
-cli, err := redis.New(redis.Config{
+cli, err := redis.New(ctx, redis.Config{
     Mode: redis.ModeCluster,
     Addrs: []string{
         "redis-cluster.service.consul:6379",
@@ -83,8 +93,9 @@ defer cli.Close()
 ```
 
 `New` applies defaults (`Port=6379`, `ConnectTimeout=5s`), pings the server,
-and returns an instrumented client. Use `NewWithContext(ctx, cfg, opts...)` when
-initialization should respect a parent context deadline.
+and returns an instrumented `redis.UniversalClient`. The ping is bounded by both
+`ctx` and `ConnectTimeout`, so pass a context that carries your startup deadline.
+`Close` releases the connection pool and stops the pool-metrics poller.
 
 ### 2. Read and write
 
@@ -92,9 +103,9 @@ initialization should respect a parent context deadline.
 // Write.
 if err := cli.Set(ctx, "greeting", "hello", 5*time.Minute).Err(); err != nil { /* handle */ }
 
-// Read. Missing keys report redis.Nil (not an error telemetry event).
+// Read. Missing keys report goredis.Nil (not an error telemetry event).
 val, err := cli.Get(ctx, "greeting").Result()
-if errors.Is(err, redis.Nil) {
+if errors.Is(err, goredis.Nil) {
     // key does not exist
 } else if err != nil {
     /* handle */
@@ -127,7 +138,7 @@ user, err := cli.HGetAll(ctx, "user:1").Result()
 
 // Sets & Sorted Sets (deduplication, leaderboards, sliding windows).
 err = cli.SAdd(ctx, "tags:article:1", "tech", "golang").Err()
-err = cli.ZAdd(ctx, "leaderboard", redis.Z{Score: 100.0, Member: "player1"}).Err()
+err = cli.ZAdd(ctx, "leaderboard", goredis.Z{Score: 100.0, Member: "player1"}).Err()
 
 // Lua Scripting.
 res, err := cli.Eval(ctx, "return redis.call('get', KEYS[1])", []string{"greeting"}).Result()
@@ -147,12 +158,12 @@ defer pubsub.Close()
 ch := pubsub.Channel()
 
 // Optimistic Locking (WATCH / CAS).
-err = cli.Watch(ctx, func(tx *redis.Tx) error {
+err = cli.Watch(ctx, func(tx *goredis.Tx) error {
     val, err := tx.Get(ctx, "counter").Int64()
-    if err != nil && !errors.Is(err, redis.Nil) {
+    if err != nil && !errors.Is(err, goredis.Nil) {
         return err
     }
-    _, err = tx.TxPipelined(ctx, func(pipe redis.Pipeline) error {
+    _, err = tx.TxPipelined(ctx, func(pipe goredis.Pipeliner) error {
         pipe.Set(ctx, "counter", val+1, 0)
         return nil
     })
@@ -164,7 +175,7 @@ err = cli.Watch(ctx, func(tx *redis.Tx) error {
 
 ```go
 // Closure-based pipeline (automatically calls Exec).
-err := cli.Pipelined(ctx, func(pipe redis.Pipeline) error {
+_, err := cli.Pipelined(ctx, func(pipe goredis.Pipeliner) error {
     pipe.Set(ctx, "a", "1", 0)
     pipe.HSet(ctx, "h", "f", "v")
     pipe.Incr(ctx, "counter")
@@ -172,7 +183,7 @@ err := cli.Pipelined(ctx, func(pipe redis.Pipeline) error {
 })
 
 // Atomic transaction pipeline (MULTI...EXEC).
-err = cli.TxPipelined(ctx, func(pipe redis.Pipeline) error {
+_, err = cli.TxPipelined(ctx, func(pipe goredis.Pipeliner) error {
     pipe.Incr(ctx, "order_count")
     pipe.HSet(ctx, "order:100", "status", "created")
     return nil
@@ -180,13 +191,14 @@ err = cli.TxPipelined(ctx, func(pipe redis.Pipeline) error {
 ```
 
 > [!NOTE]
-> `Pipeline` instances are not safe for concurrent use across multiple goroutines.
+> `goredis.Pipeliner` instances are not safe for concurrent use across multiple goroutines.
 > Always use local, short-lived pipelines or `cli.Pipelined(...)` / `cli.TxPipelined(...)`.
 
 ### 4. (Optional) Inject telemetry & pool monitoring
 
 ```go
 cli, err := redis.New(
+    ctx,
     cfg,
     redis.WithMetrics(mc),
     redis.WithTracer(tc),
@@ -235,12 +247,5 @@ simple-error prefix like `ERR`/`WRONGTYPE`, empty on success), and
 | --- | --- |
 | `Mode` | Connection mode: `ModeStandalone`, `ModeSentinel`, `ModeCluster` |
 | `Config` | Connection, topology, TLS, and pool settings; `SetDefaults()`, `Validate()` |
-| `New(cfg, opts...)` | Build + ping an instrumented `Client` (standalone, sentinel, or cluster) |
-| `NewWithContext(ctx, cfg, opts...)` | Build + ping an instrumented `Client` with parent context |
+| `New(ctx, cfg, opts...)` | Build, instrument, and ping a client (standalone, sentinel, or cluster). Returns `redis.UniversalClient`, go-redis's full command interface. The ping is bounded by `ctx` and `ConnectTimeout`. |
 | `WithMetrics` / `WithTracer` / `WithPoolMetrics` | Telemetry injection and pool monitoring options |
-| `ReadCommands` | `Ping`, `Exists`, `TTL`, `Type`, `Scan`, `Get`, `MGet`, Hashes (`HGet`, `HGetAll`, `HMGet`, `HKeys`, `HVals`, `HLen`, `HExists`), Lists (`LLen`, `LRange`, `LIndex`), Sets (`SMembers`, `SInter`, `SUnion`, `SDiff`, `SIsMember`, `SMIsMember`, `SCard`, `SRandMember`, `SRandMemberN`), Sorted Sets (`ZScore`, `ZCard`, `ZCount`, `ZRange*`, `ZRevRange*`, `ZRank`, `ZRevRank`) |
-| `WriteCommands` | `Del`, `Unlink`, `Expire`, `ExpireAt`, `Persist`, `Set`, `SetNX`, `SetXX`, `GetDel`, `GetEx`, `MSet`, Counters (`Incr`, `IncrBy`, `IncrByFloat`, `Decr`, `DecrBy`), Hashes (`HSet`, `HSetNX`, `HDel`, `HIncrBy`, `HIncrByFloat`), Lists (`LPush`, `RPush`, `LPop`, `RPop`, `LPopCount`, `RPopCount`, `LTrim`, `LRem`, `LSet`), Sets (`SAdd`, `SRem`, `SPop`, `SPopN`), Sorted Sets (`ZAdd`, `ZRem`, `ZIncrBy`, `ZRemRange*`), Pub/Sub (`Publish`) |
-| `ScriptCommands` | `Eval`, `EvalSha`, `ScriptExists`, `ScriptLoad` |
-| `Client` | `ReadCommands` + `WriteCommands` + `ScriptCommands` + `Pipeline()` + `TxPipeline()` + `Pipelined()` + `TxPipelined()` + `Watch()` + `Subscribe()` + `PoolStats()` + `Close()` |
-| `Pipeline` | `ReadCommands` + `WriteCommands` + `ScriptCommands` + `Exec(ctx)` |
-| `Nil`, `TxFailedErr`, `Z`, `ZRangeBy`, `Script`, `NewScript`, `PoolStats`, `Tx`, `PubSub`, `Message`, `Subscription` | Common type aliases, sentinel errors, and helpers re-exported from `go-redis` |

@@ -75,15 +75,15 @@ the capability-map link, this plan, and the task list. Open a draft PR whose bod
 - Update tests, `example_test.go`, and README to use go-redis types.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestNew_ReturnsUniversalClient`: each mode's `createUnderlyingClient`
+- [x] *(regression)* `TestNew_ReturnsUniversalClient`: each mode's `createUnderlyingClient`
       returns a `redis.UniversalClient`, and the hook records a command sent through it
       (in-process, no miniredis).
-- [ ] `grep -n 'type .* interface\|= redis\.' redis/*.go | grep -v _test` shows only the
+- [x] `grep -n 'type .* interface\|= redis\.' redis/*.go | grep -v _test` shows only the
       unexported seams that remain, if any.
-- [ ] `redis/errors.go` is gone.
+- [x] `redis/errors.go` is gone.
 
 **Verification:**
-- [ ] redis module checks; coverage ≥ 68.2%.
+- [x] redis module checks; coverage ≥ 68.2%.
 
 **Dependencies:** T1 · **Files:** `redis/redis.go`, `redis/errors.go` (delete), `redis/redis_test.go`, `redis/example_test.go`, `redis/README.md` · **Scope:** L (mostly deletions)
 

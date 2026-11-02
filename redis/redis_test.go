@@ -397,111 +397,6 @@ func TestInstrumentHook_FallsBackToOTelGlobal(t *testing.T) {
 	}
 }
 
-func TestPipeline_QueuesCommands(t *testing.T) {
-	raw := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
-	t.Cleanup(func() { _ = raw.Close() })
-	p := &pipeline{Pipeliner: raw.Pipeline()}
-
-	ctx := context.Background()
-
-	// Read commands
-	p.Ping(ctx)
-	p.Exists(ctx, "k")
-	p.TTL(ctx, "k")
-	p.Type(ctx, "k")
-	p.Scan(ctx, 0, "*", 10)
-	p.Get(ctx, "a")
-	p.MGet(ctx, "a", "b")
-	p.HGet(ctx, "h", "f")
-	p.HGetAll(ctx, "h")
-	p.HMGet(ctx, "h", "f1", "f2")
-	p.HKeys(ctx, "h")
-	p.HVals(ctx, "h")
-	p.HLen(ctx, "h")
-	p.HExists(ctx, "h", "f")
-	p.LLen(ctx, "l")
-	p.LRange(ctx, "l", 0, -1)
-	p.LIndex(ctx, "l", 0)
-	p.SMembers(ctx, "s")
-	p.SInter(ctx, "s1", "s2")
-	p.SUnion(ctx, "s1", "s2")
-	p.SDiff(ctx, "s1", "s2")
-	p.SIsMember(ctx, "s", "m")
-	p.SMIsMember(ctx, "s", "m1", "m2")
-	p.SCard(ctx, "s")
-	p.SRandMember(ctx, "s")
-	p.SRandMemberN(ctx, "s", 2)
-	p.ZScore(ctx, "z", "m")
-	p.ZCard(ctx, "z")
-	p.ZCount(ctx, "z", "-inf", "+inf")
-	p.ZRange(ctx, "z", 0, -1)
-	p.ZRangeWithScores(ctx, "z", 0, -1)
-	p.ZRangeByScore(ctx, "z", &ZRangeBy{Min: "0", Max: "10"})
-	p.ZRangeByScoreWithScores(ctx, "z", &ZRangeBy{Min: "0", Max: "10"})
-	p.ZRevRange(ctx, "z", 0, -1)
-	p.ZRevRangeWithScores(ctx, "z", 0, -1)
-	p.ZRevRangeByScore(ctx, "z", &ZRangeBy{Min: "0", Max: "10"})
-	p.ZRevRangeByScoreWithScores(ctx, "z", &ZRangeBy{Min: "0", Max: "10"})
-	p.ZRank(ctx, "z", "m")
-	p.ZRevRank(ctx, "z", "m")
-
-	// Write commands
-	p.Del(ctx, "c")
-	p.Unlink(ctx, "c")
-	p.Expire(ctx, "k", time.Minute)
-	p.ExpireAt(ctx, "k", time.Now().Add(time.Minute))
-	p.Persist(ctx, "k")
-	p.Set(ctx, "b", "1", 0)
-	p.SetNX(ctx, "b", "1", 0)
-	p.SetXX(ctx, "b", "1", 0)
-	p.GetDel(ctx, "b")
-	p.GetEx(ctx, "b", time.Minute)
-	p.MSet(ctx, "k1", "v1", "k2", "v2")
-	p.Incr(ctx, "counter")
-	p.IncrBy(ctx, "counter", 5)
-	p.IncrByFloat(ctx, "counter", 2.5)
-	p.Decr(ctx, "counter")
-	p.DecrBy(ctx, "counter", 3)
-	p.HSet(ctx, "h", "f", "v")
-	p.HSetNX(ctx, "h", "f", "v")
-	p.HDel(ctx, "h", "f")
-	p.HIncrBy(ctx, "h", "f", 1)
-	p.HIncrByFloat(ctx, "h", "f", 1.5)
-	p.LPush(ctx, "l", "v1", "v2")
-	p.RPush(ctx, "l", "v1", "v2")
-	p.LPop(ctx, "l")
-	p.RPop(ctx, "l")
-	p.LPopCount(ctx, "l", 2)
-	p.RPopCount(ctx, "l", 2)
-	p.LTrim(ctx, "l", 0, 10)
-	p.LRem(ctx, "l", 1, "v1")
-	p.LSet(ctx, "l", 0, "v1")
-	p.SAdd(ctx, "s", "m1", "m2")
-	p.SRem(ctx, "s", "m1")
-	p.SPop(ctx, "s")
-	p.SPopN(ctx, "s", 2)
-	p.ZAdd(ctx, "z", Z{Score: 1.0, Member: "m"})
-	p.ZRem(ctx, "z", "m")
-	p.ZIncrBy(ctx, "z", 1.5, "m")
-	p.ZRemRangeByRank(ctx, "z", 0, 1)
-	p.ZRemRangeByScore(ctx, "z", "0", "10")
-	p.Publish(ctx, "channel", "msg")
-
-	// Script commands
-	p.Eval(ctx, "return 1", nil)
-	p.EvalSha(ctx, "abc", nil)
-	p.ScriptExists(ctx, "abc")
-	p.ScriptLoad(ctx, "return 1")
-
-	const expected = 83
-	if n := p.Len(); n != expected {
-		t.Fatalf("queued commands = %d, want %d", n, expected)
-	}
-	if err := p.Exec(context.Background()); err == nil {
-		t.Fatal("Exec: expected error, no server running")
-	}
-}
-
 func TestQueryText(t *testing.T) {
 	cases := []struct {
 		name string
@@ -541,12 +436,6 @@ func TestQueryText(t *testing.T) {
 				t.Fatalf("queryText = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestTxFailedErr_Alias(t *testing.T) {
-	if TxFailedErr != redis.TxFailedErr {
-		t.Fatalf("TxFailedErr does not match redis.TxFailedErr")
 	}
 }
 
@@ -655,65 +544,47 @@ func TestBuildTLSConfig(t *testing.T) {
 	}
 }
 
-func TestClient_TxPipeline_And_Pipelined(t *testing.T) {
-	raw := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
-	t.Cleanup(func() { _ = raw.Close() })
-	cli := &client{underlyingClient: raw}
+func TestOptions(t *testing.T) {
+	fm := &fakeMetrics{}
+	tc := tracer.Wrap(sdktrace.NewTracerProvider())
 
-	// TxPipeline
-	txPipe := cli.TxPipeline()
-	txPipe.Get(context.Background(), "k")
-	if n := txPipe.(*pipeline).Len(); n != 1 {
-		t.Fatalf("txPipe len = %d, want 1", n)
+	var o options
+	for _, opt := range []Option{WithMetrics(fm), WithTracer(tc), WithPoolMetrics(5 * time.Second)} {
+		opt(&o)
 	}
 
-	// Pipelined with error closure
-	errBoom := errors.New("boom")
-	err := cli.Pipelined(context.Background(), func(p Pipeline) error {
-		p.Get(context.Background(), "k")
-		return errBoom
-	})
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("Pipelined err = %v, want %v", err, errBoom)
+	if o.metrics != fm {
+		t.Errorf("WithMetrics: metrics = %v, want %v", o.metrics, fm)
 	}
-
-	// TxPipelined with error closure
-	err = cli.TxPipelined(context.Background(), func(p Pipeline) error {
-		p.Get(context.Background(), "k")
-		return errBoom
-	})
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("TxPipelined err = %v, want %v", err, errBoom)
+	if o.tracer != tc {
+		t.Errorf("WithTracer: tracer = %v, want %v", o.tracer, tc)
 	}
-
-	// PoolStats
-	stats := cli.PoolStats()
-	if stats == nil {
-		t.Fatal("PoolStats is nil")
+	if o.poolMetricsInterval != 5*time.Second {
+		t.Errorf("WithPoolMetrics: interval = %v, want 5s", o.poolMetricsInterval)
 	}
 }
 
-func TestNewWithContext_CancelledContext(t *testing.T) {
+func TestNew_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := NewWithContext(ctx, Config{Host: "127.0.0.1", Port: 6379, ConnectTimeout: time.Second})
+	_, err := New(ctx, Config{Host: "127.0.0.1", Port: 6379, ConnectTimeout: time.Second})
 	if err == nil {
 		t.Fatal("expected error with cancelled context")
 	}
 }
 
 func TestNew_InvalidConfig(t *testing.T) {
-	if _, err := New(Config{Host: "", Port: 6379}); err == nil {
+	if _, err := New(context.Background(), Config{Host: "", Port: 6379}); err == nil {
 		t.Fatal("New: expected error for missing host")
 	}
-	if _, err := New(Config{Host: "h", Port: -1}); err == nil {
+	if _, err := New(context.Background(), Config{Host: "h", Port: -1}); err == nil {
 		t.Fatal("New: expected error for invalid port")
 	}
 }
 
 func TestNew_ConnectionFailure(t *testing.T) {
-	_, err := New(Config{Host: "127.0.0.1", Port: 1, ConnectTimeout: 100})
+	_, err := New(context.Background(), Config{Host: "127.0.0.1", Port: 1, ConnectTimeout: 100})
 	if err == nil {
 		t.Fatal("New: expected connection error")
 	}
@@ -727,8 +598,8 @@ func TestClient_Close_WithPoolMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = raw.Close() })
 	stopCh := make(chan struct{})
 	c := &client{
-		underlyingClient: raw,
-		stopPoolMetrics:  stopCh,
+		UniversalClient: raw,
+		stopPoolMetrics: stopCh,
 	}
 	_ = c.Close()
 	// Calling close a second time should not panic
@@ -739,27 +610,6 @@ func TestClient_Close_WithPoolMetrics(t *testing.T) {
 		// Successfully closed
 	default:
 		t.Fatal("stopPoolMetrics channel was not closed")
-	}
-}
-
-func TestClient_Watch_And_Subscribe(t *testing.T) {
-	raw := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
-	t.Cleanup(func() { _ = raw.Close() })
-	cli := &client{underlyingClient: raw}
-
-	// Subscribe returns *PubSub
-	ps := cli.Subscribe(context.Background(), "test-channel")
-	if ps == nil {
-		t.Fatal("Subscribe returned nil")
-	}
-	_ = ps.Close()
-
-	// Watch attempts to acquire a connection to watch keys
-	err := cli.Watch(context.Background(), func(tx *Tx) error {
-		return nil
-	}, "watch-key")
-	if err == nil {
-		t.Fatal("expected connection error from Watch")
 	}
 }
 
@@ -812,37 +662,43 @@ func TestCreateUnderlyingClient_Topologies(t *testing.T) {
 	_ = clusterCli.Close()
 }
 
-func TestClusterClient_TxPipeline_And_Pipelined(t *testing.T) {
-	raw := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs: []string{"127.0.0.1:7000"},
-	})
-	t.Cleanup(func() { _ = raw.Close() })
-	cli := &client{underlyingClient: raw}
-
-	// TxPipeline
-	txPipe := cli.TxPipeline()
-	txPipe.Get(context.Background(), "k")
-	if n := txPipe.(*pipeline).Len(); n != 1 {
-		t.Fatalf("txPipe len = %d, want 1", n)
+func TestNew_ReturnsUniversalClient(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"standalone", Config{Host: "127.0.0.1", Port: 1}},
+		{"cluster", Config{Mode: ModeCluster, Addrs: []string{"127.0.0.1:1"}}},
+		{"sentinel", Config{Mode: ModeSentinel, MasterName: "mymaster", Addrs: []string{"127.0.0.1:1"}}},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, fm, ex := setupInstrument()
+			cli := createUnderlyingClient(tc.cfg.SetDefaults(), nil)
+			t.Cleanup(func() { _ = cli.Close() })
+			cli.AddHook(h)
 
-	// Pipelined with error closure
-	errBoom := errors.New("boom")
-	err := cli.Pipelined(context.Background(), func(p Pipeline) error {
-		p.Get(context.Background(), "k")
-		return errBoom
-	})
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("Pipelined err = %v, want %v", err, errBoom)
-	}
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			if err := cli.Ping(ctx).Err(); err == nil {
+				t.Fatal("Ping: got nil error, want connection error")
+			}
 
-	// TxPipelined with error closure
-	err = cli.TxPipelined(context.Background(), func(p Pipeline) error {
-		p.Get(context.Background(), "k")
-		return errBoom
-	})
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("TxPipelined err = %v, want %v", err, errBoom)
+			count, ok := fm.lastCount()
+			if !ok {
+				t.Fatal("no count recorded for command sent through UniversalClient")
+			}
+			if got := count.attrs["db.operation.name"]; got != "PING" {
+				t.Fatalf("db.operation.name = %v, want PING", got)
+			}
+			sp, ok := ex.last()
+			if !ok {
+				t.Fatal("no span recorded for command sent through UniversalClient")
+			}
+			if sp.Name() != "PING" {
+				t.Fatalf("span name = %q, want PING", sp.Name())
+			}
+		})
 	}
 }
 
