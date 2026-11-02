@@ -151,8 +151,7 @@ func setupProducer(t *testing.T, mock *mockProducer) (*Producer, *fakeMetrics, *
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	p.setProducer("reporting", mock)
-	p.producerMeta.Store("reporting", producerMeta{serverAddr: "localhost", serverPort: 4222})
+	startStubbed(t, p, map[string]jsProducer{"reporting": mock})
 	return p, fm, ex
 }
 

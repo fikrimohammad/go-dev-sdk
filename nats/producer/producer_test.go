@@ -3,6 +3,7 @@ package producer
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,6 +108,30 @@ func TestProducerRegister(t *testing.T) {
 	}
 }
 
+// TestRegister_NoIO checks that Register stores the config without dialing.
+func TestRegister_NoIO(t *testing.T) {
+	t.Parallel()
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	var factoryCalls atomic.Int32
+	p.producerFactory = func(context.Context, Config) (jsProducer, error) {
+		factoryCalls.Add(1)
+		return nil, errors.New("dialed")
+	}
+
+	cfg := Config{Endpoints: []string{"nats://127.0.0.1:1"}, Topic: "test-topic"}
+	if err := p.Register(cfg); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if got := factoryCalls.Load(); got != 0 {
+		t.Errorf("Register() factory calls = %d, want 0", got)
+	}
+}
+
 func TestProducerRegisterDuplicateTopic(t *testing.T) {
 	t.Parallel()
 
@@ -115,20 +140,71 @@ func TestProducerRegisterDuplicateTopic(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	cfg := Config{
-		Endpoints: []string{"localhost:4222"},
-		Topic:     "test-topic",
+	cfg := testConfig("test-topic")
+	if err := p.Register(cfg); err != nil {
+		t.Fatalf("Register() first call error = %v", err)
 	}
-	cfg = cfg.SetDefaults()
 
-	// Inject a mock producer for the topic
-	mock := &mockProducer{}
-	p.setProducer(cfg.Topic, mock)
-
-	// Try to register the same topic again
 	err = p.Register(cfg)
 	if !errors.Is(err, ErrProducerExists) {
 		t.Errorf("Register() error = %v, wantErr %v", err, ErrProducerExists)
+	}
+}
+
+// TestStart_PreservesOperatorStreamSettings checks that Start keeps the settings
+// an operator set on an existing stream and only adds the SDK subjects.
+func TestStart_PreservesOperatorStreamSettings(t *testing.T) {
+	t.Parallel()
+
+	ns := startJetStreamServer(t)
+	ctx := context.Background()
+
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("nats.Connect() error = %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     "orders",
+		Subjects: []string{"orders"},
+		MaxAge:   time.Hour,
+	}); err != nil {
+		t.Fatalf("CreateStream() error = %v", err)
+	}
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := p.Register(Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders"}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(ctx) })
+
+	s, err := js.Stream(ctx, "orders")
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	got := s.CachedInfo().Config
+
+	if got.MaxAge != time.Hour {
+		t.Errorf("Start() MaxAge = %v, want %v", got.MaxAge, time.Hour)
+	}
+	for _, want := range []string{"orders", "orders.>", "schedules.orders.>"} {
+		if !slices.Contains(got.Subjects, want) {
+			t.Errorf("Start() Subjects = %v, want to include %q", got.Subjects, want)
+		}
+	}
+	if !got.AllowMsgSchedules {
+		t.Error("Start() AllowMsgSchedules = false, want true")
 	}
 }
 
@@ -140,39 +216,34 @@ func TestProducerStartIdempotent(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	// Inject mock producers
-	mock1 := &mockProducer{}
-	mock2 := &mockProducer{}
-	p.setProducer("topic1", mock1)
-	p.setProducer("topic2", mock2)
+	var factoryCalls atomic.Int32
+	p.producerFactory = func(context.Context, Config) (jsProducer, error) {
+		factoryCalls.Add(1)
+		return &mockProducer{}, nil
+	}
+	if err := p.Register(testConfig("topic1")); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := p.Register(testConfig("topic2")); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
 
-	// First call should start
-	if err := p.Start(); err != nil {
+	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-
-	// Track if Start is called again
-	var startCount atomic.Int32
-	mock1.startFunc = func() error {
-		startCount.Add(1)
-		return nil
-	}
-	mock2.startFunc = func() error {
-		startCount.Add(1)
-		return nil
-	}
-
-	// Second call should be no-op
-	if err := p.Start(); err != nil {
+	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start() second call error = %v", err)
 	}
+	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
 
-	if count := startCount.Load(); count != 0 {
-		t.Errorf("Start() called mock Start %d times, want 0", count)
+	if got := factoryCalls.Load(); got != 2 {
+		t.Errorf("Start() factory calls = %d, want 2", got)
 	}
 }
 
-func TestProducerShutdownIdempotent(t *testing.T) {
+// TestStart_FailureClosesOpenedConnections checks that a failed Start closes the
+// connections it already opened and that a later Start can succeed.
+func TestStart_FailureClosesOpenedConnections(t *testing.T) {
 	t.Parallel()
 
 	p, err := New(testAppInfo)
@@ -180,40 +251,144 @@ func TestProducerShutdownIdempotent(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	// Inject mock producers
-	mock1 := &mockProducer{}
-	mock2 := &mockProducer{}
-	p.setProducer("topic1", mock1)
-	p.setProducer("topic2", mock2)
-
-	// Start first
-	if err := p.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
+	good := &mockProducer{}
+	failing := true
+	p.producerFactory = func(_ context.Context, cfg Config) (jsProducer, error) {
+		if cfg.Topic == "bad" && failing {
+			return nil, errors.New("ensure stream failed")
+		}
+		return good, nil
+	}
+	for _, topic := range []string{"good", "bad"} {
+		if err := p.Register(testConfig(topic)); err != nil {
+			t.Fatalf("Register(%s) error = %v", topic, err)
+		}
 	}
 
-	// First shutdown should work
-	if err := p.Shutdown(); err != nil {
+	if err := p.Start(context.Background()); err == nil {
+		t.Fatal("Start() error = nil, want error")
+	}
+	if got := good.closes.Load(); got != 1 {
+		t.Errorf("Start() closed opened connections = %d, want 1", got)
+	}
+
+	failing = false
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start() retry error = %v", err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
+}
+
+func TestProducerShutdownIdempotent(t *testing.T) {
+	t.Parallel()
+
+	var drains atomic.Int32
+	drain := func(context.Context) error {
+		drains.Add(1)
+		return nil
+	}
+	mock1 := &mockProducer{drainFunc: drain}
+	mock2 := &mockProducer{drainFunc: drain}
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	startStubbed(t, p, map[string]jsProducer{"topic1": mock1, "topic2": mock2})
+
+	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
-
-	// Track if Shutdown is called again
-	var shutdownCount atomic.Int32
-	mock1.shutdownFunc = func() error {
-		shutdownCount.Add(1)
-		return nil
-	}
-	mock2.shutdownFunc = func() error {
-		shutdownCount.Add(1)
-		return nil
-	}
-
-	// Second shutdown should be no-op
-	if err := p.Shutdown(); err != nil {
+	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown() second call error = %v", err)
 	}
 
-	if count := shutdownCount.Load(); count != 0 {
-		t.Errorf("Shutdown() called mock Shutdown %d times, want 0", count)
+	if got := drains.Load(); got != 2 {
+		t.Errorf("Shutdown() drained connections = %d, want 2", got)
+	}
+}
+
+// TestShutdown_WithoutStart checks that Shutdown before Start is a no-op.
+func TestShutdown_WithoutStart(t *testing.T) {
+	t.Parallel()
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown() error = %v, want nil", err)
+	}
+}
+
+// TestShutdown_WaitsForAsyncPublish checks that Shutdown returns only after the
+// callback of a pending async publish has run.
+func TestShutdown_WaitsForAsyncPublish(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockProducer{sendAsyncFunc: func(ctx context.Context, _ *nats.Msg, cb func(context.Context, *jetstream.PubAck, error)) error {
+		go func() {
+			<-time.After(200 * time.Millisecond)
+			cb(ctx, &jetstream.PubAck{}, nil)
+		}()
+		return nil
+	}}
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	startStubbed(t, p, map[string]jsProducer{"reporting": mock})
+
+	var called atomic.Bool
+	err = p.PublishAsync(context.Background(), "reporting", "", "", []byte("hello"),
+		func(context.Context, *jetstream.PubAck, error) { called.Store(true) })
+	if err != nil {
+		t.Fatalf("PublishAsync() error = %v", err)
+	}
+
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if !called.Load() {
+		t.Error("Shutdown() returned before the async callback ran")
+	}
+}
+
+// TestShutdown_Deadline checks that a hung async ack does not block Shutdown past
+// its context: Shutdown returns the context error and closes the connections.
+func TestShutdown_Deadline(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockProducer{sendAsyncFunc: func(context.Context, *nats.Msg, func(context.Context, *jetstream.PubAck, error)) error {
+		return nil // the ack never arrives
+	}}
+
+	p, err := New(testAppInfo)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	startStubbed(t, p, map[string]jsProducer{"reporting": mock})
+
+	if err := p.PublishAsync(context.Background(), "reporting", "", "", []byte("hello"), nil); err != nil {
+		t.Fatalf("PublishAsync() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = p.Shutdown(ctx)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if elapsed > time.Second {
+		t.Errorf("Shutdown() took %v, want about 200ms", elapsed)
+	}
+	if got := mock.closes.Load(); got != 1 {
+		t.Errorf("Shutdown() closed connection %d times, want 1", got)
 	}
 }
 
@@ -269,8 +444,7 @@ func TestProducerPublishSync(t *testing.T) {
 			}
 
 			if tt.topic != "nonexistent-topic" {
-				mock := &mockProducer{sendSyncErr: tt.mockErr}
-				p.setProducer(tt.topic, mock)
+				startStubbed(t, p, map[string]jsProducer{tt.topic: &mockProducer{sendSyncErr: tt.mockErr}})
 			}
 
 			err = p.PublishSync(context.Background(), tt.topic, tt.tag, "key", []byte("hello"))
@@ -301,7 +475,7 @@ func TestProducerPublishSyncWithDelay(t *testing.T) {
 			return &jetstream.PubAck{Stream: "test-topic", Sequence: 1}, nil
 		},
 	}
-	p.setProducer("test-topic", mock)
+	startStubbed(t, p, map[string]jsProducer{"test-topic": mock})
 
 	delay := 5 * time.Second
 	err = p.PublishSyncWithDelay(context.Background(), "test-topic", "tag", "key", []byte("hello"), delay)
@@ -339,7 +513,7 @@ func TestProducerPublishSyncWithDelay_Error(t *testing.T) {
 	}
 
 	mock := &mockProducer{sendSyncErr: errors.New("delay send failed")}
-	p.setProducer("test-topic", mock)
+	startStubbed(t, p, map[string]jsProducer{"test-topic": mock})
 
 	err = p.PublishSyncWithDelay(context.Background(), "test-topic", "tag", "key", []byte("hello"), 5*time.Second)
 	if err == nil {
@@ -399,8 +573,7 @@ func TestProducerPublishAsync(t *testing.T) {
 			}
 
 			if tt.topic != "nonexistent-topic" {
-				mock := &mockProducer{sendAsyncErr: tt.mockErr}
-				p.setProducer(tt.topic, mock)
+				startStubbed(t, p, map[string]jsProducer{tt.topic: &mockProducer{sendAsyncErr: tt.mockErr}})
 			}
 
 			callback := func(ctx context.Context, result *jetstream.PubAck, err error) {}
@@ -505,19 +678,9 @@ func TestProducerRegisterAfterStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	startStubbed(t, p, map[string]jsProducer{"topic1": &mockProducer{}})
 
-	mock := &mockProducer{}
-	p.setProducer("topic1", mock)
-
-	if err := p.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	cfg := Config{
-		Endpoints: []string{"localhost:4222"},
-		Topic:     "new-topic",
-	}
-	err = p.Register(cfg)
+	err = p.Register(Config{Endpoints: []string{"localhost:4222"}, Topic: "new-topic"})
 	if err == nil {
 		t.Error("Register() after Start() should fail")
 	}
@@ -530,29 +693,27 @@ func TestProducerGetProducer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	startStubbed(t, p, map[string]jsProducer{"existing-topic": &mockProducer{}})
 
 	t.Run("existing topic", func(t *testing.T) {
 		t.Parallel()
-		mock := &mockProducer{}
-		p.setProducer("existing-topic", mock)
-
-		pd, err := p.getProducer("existing-topic")
+		pd, err := p.producerFor("existing-topic")
 		if err != nil {
-			t.Errorf("getProducer() error = %v", err)
+			t.Errorf("producerFor() error = %v", err)
 		}
 		if pd == nil {
-			t.Error("getProducer() returned nil producer")
+			t.Error("producerFor() returned nil producer")
 		}
 	})
 
 	t.Run("nonexistent topic", func(t *testing.T) {
 		t.Parallel()
-		pd, err := p.getProducer("nonexistent-topic")
+		pd, err := p.producerFor("nonexistent-topic")
 		if !errors.Is(err, ErrProducerNotFound) {
-			t.Errorf("getProducer() error = %v, wantErr %v", err, ErrProducerNotFound)
+			t.Errorf("producerFor() error = %v, wantErr %v", err, ErrProducerNotFound)
 		}
 		if pd != nil {
-			t.Error("getProducer() returned non-nil producer for nonexistent topic")
+			t.Error("producerFor() returned non-nil producer for nonexistent topic")
 		}
 	})
 }
@@ -564,12 +725,14 @@ func TestProducerStartError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	p.producerFactory = func(context.Context, Config) (jsProducer, error) {
+		return nil, errors.New("start failed")
+	}
+	if err := p.Register(testConfig("test-topic")); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
 
-	mock := &mockProducer{startErr: errors.New("start failed")}
-	p.setProducer("test-topic", mock)
-
-	err = p.Start()
-	if err == nil {
+	if err := p.Start(context.Background()); err == nil {
 		t.Error("Start() expected error, got nil")
 	}
 }
@@ -581,15 +744,9 @@ func TestProducerShutdownError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	startStubbed(t, p, map[string]jsProducer{"test-topic": &mockProducer{drainErr: errors.New("shutdown failed")}})
 
-	mock := &mockProducer{shutdownErr: errors.New("shutdown failed")}
-	p.setProducer("test-topic", mock)
-
-	if err := p.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	err = p.Shutdown()
+	err = p.Shutdown(context.Background())
 	if err == nil {
 		t.Error("Shutdown() expected error, got nil")
 	}
