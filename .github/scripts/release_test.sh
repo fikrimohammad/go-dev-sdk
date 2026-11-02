@@ -6,6 +6,9 @@
 
 set -euo pipefail
 
+# Real runs check GITHUB_REF; the tests set it per case.
+unset GITHUB_REF
+
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 release=$script_dir/release.sh
 prefix=example.com/fake/
@@ -89,6 +92,31 @@ expect_fail() {
   fi
 }
 
+
+# local_tags <repo-dir>: sorted tag names in a repo, space separated.
+local_tags() {
+  git -C "$1" tag -l | sort | paste -sd' ' -
+}
+
+# origin_tags <origin-dir>: sorted tag names on a bare origin, space separated.
+origin_tags() {
+  git ls-remote --tags "$1" | awk '$2 ~ /^refs\/tags\/[^^]+$/ { sub(/^refs\/tags\//, "", $2); print $2 }' |
+    sort | paste -sd' ' -
+}
+
+# check <name> <command...>: PASS when the command succeeds.
+check() {
+  local name=$1
+  shift
+  if "$@"; then
+    echo "PASS $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL $name"
+    failed=$((failed + 1))
+  fi
+}
+
 # 1. Happy path.
 new_repo happy v0.1.0
 run_release "$work/happy" v0.1.0 --dry-run
@@ -121,6 +149,57 @@ new_repo localtag v0.1.0
 git -C "$work/localtag" tag -a a/v0.1.0 -m "existing"
 run_release "$work/localtag" v0.1.0 --dry-run
 expect_fail "existing local tag" "tag a/v0.1.0 already exists locally"
+
+
+# 7. Real run tags every module locally and on origin.
+new_repo real v0.1.0
+run_release "$work/real" v0.1.0
+expect_pass "real run exits 0"
+check "real run tags every module locally" test "$(local_tags "$work/real")" = "a/v0.1.0 b/v0.1.0"
+check "real run pushes every tag to origin" test "$(origin_tags "$work/real-origin.git")" = "a/v0.1.0 b/v0.1.0"
+
+# 8. Origin rejects the push: no tags remain anywhere.
+new_repo rejected v0.1.0
+printf '#!/bin/sh\necho "rejected by test hook" >&2\nexit 1\n' >"$work/rejected-origin.git/hooks/pre-receive"
+chmod +x "$work/rejected-origin.git/hooks/pre-receive"
+run_release "$work/rejected" v0.1.0
+expect_fail "rejected push exits non-zero" "push of 2 tags failed"
+check "rejected push leaves no local tags" test -z "$(local_tags "$work/rejected")"
+check "rejected push leaves no origin tags" test -z "$(origin_tags "$work/rejected-origin.git")"
+
+# 9. Real run off main, with and without GITHUB_REF pointing at a feature branch.
+new_repo offmain v0.1.0
+git -C "$work/offmain" checkout -q -b feature
+run_release "$work/offmain" v0.1.0
+expect_fail "real run off main fails" "must run on main"
+check "off-main run creates no tags" test -z "$(local_tags "$work/offmain")"
+GITHUB_REF=refs/heads/feature run_release "$work/offmain" v0.1.0
+expect_fail "real run with feature GITHUB_REF fails" "must run on main"
+check "feature GITHUB_REF run creates no tags" test -z "$(local_tags "$work/offmain")"
+
+# 10. Tag exists on origin but not locally.
+new_repo remotetag v0.1.0
+git -C "$work/remotetag" tag -a a/v0.1.0 -m existing
+git -C "$work/remotetag" push -q origin a/v0.1.0
+git -C "$work/remotetag" tag -d a/v0.1.0 >/dev/null
+run_release "$work/remotetag" v0.1.0 --dry-run
+expect_fail "tag only on origin" "tag a/v0.1.0 already exists on origin"
+
+# 11. Unpushed commit: a real run must refuse to tag it.
+new_repo unpushed v0.1.0
+git -C "$work/unpushed" commit -q --allow-empty -m local
+run_release "$work/unpushed" v0.1.0
+expect_fail "real run with unpushed commit fails" "is not origin/main"
+check "unpushed run creates no tags" test -z "$(local_tags "$work/unpushed")"
+
+# 12. Dirty tree: dry runs pass, real runs refuse.
+new_repo dirty v0.1.0
+echo scratch >"$work/dirty/scratch.txt"
+run_release "$work/dirty" v0.1.0 --dry-run
+expect_pass "dirty tree passes dry run"
+run_release "$work/dirty" v0.1.0
+expect_fail "real run with dirty tree fails" "uncommitted changes"
+check "dirty run creates no tags" test -z "$(local_tags "$work/dirty")"
 
 echo "$pass passed, $failed failed"
 (( failed == 0 ))

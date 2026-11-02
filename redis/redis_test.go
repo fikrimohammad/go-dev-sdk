@@ -88,15 +88,69 @@ func (f *fakeMetrics) reset() {
 	f.counts, f.hists = nil, nil
 }
 
-// netError is a net.Error whose Timeout result is set by the test. kept: the
-// net.Error timeout branch of errorType needs a socket that stalls mid-reply.
-// miniredis answers every command at once, and go-redis retries and wraps socket
-// timeouts, so no live-server case produces one deterministically.
-type netError struct{ timeout bool }
+// stalledAddr returns the address of a TCP listener that accepts connections and
+// never replies, so a client read on it times out.
+func stalledAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return ln.Addr().String()
+}
 
-func (e netError) Error() string { return "i/o failure" }
-func (e netError) Timeout() bool { return e.timeout }
-func (netError) Temporary() bool { return false }
+// closedAddr returns an address with nothing listening on it.
+func closedAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
+}
+
+// pingNetErr returns the net error go-redis reports for a PING to addr. Retries are
+// off, so the error is the first attempt's.
+func pingNetErr(t *testing.T, addr string, readTimeout time.Duration) error {
+	t.Helper()
+	cli := redis.NewClient(&redis.Options{
+		Addr:            addr,
+		ReadTimeout:     readTimeout,
+		DialTimeout:     time.Second,
+		MaxRetries:      -1,
+		Protocol:        2,
+		DisableIdentity: true,
+	})
+	t.Cleanup(func() { _ = cli.Close() })
+	err := cli.Ping(t.Context()).Err()
+	if _, ok := errors.AsType[net.Error](err); !ok {
+		t.Fatalf("PING err = %v, want a net.Error", err)
+	}
+	return err
+}
 
 // --- fake: span capture ------------------------------------------------------------
 
@@ -773,8 +827,8 @@ func TestErrorType(t *testing.T) {
 		{"deadline exceeded", context.DeadlineExceeded, "timeout"},
 		{"wrapped deadline exceeded", fmt.Errorf("op: %w", context.DeadlineExceeded), "timeout"},
 		{"canceled", context.Canceled, "canceled"},
-		{"net timeout", netError{timeout: true}, "timeout"},
-		{"net error, not a timeout", netError{timeout: false}, "_OTHER"},
+		{"net timeout", pingNetErr(t, stalledAddr(t), 100*time.Millisecond), "timeout"},
+		{"net error, connection refused", pingNetErr(t, closedAddr(t), time.Second), "_OTHER"},
 		{"pool timeout", redis.ErrPoolTimeout, "timeout"},
 		{"server error", reply("WRONGTYPE Operation against key"), "WRONGTYPE"},
 		{"io.EOF", io.EOF, "_OTHER"},
@@ -1125,7 +1179,7 @@ func TestClient_Close_WaitsForPoller(t *testing.T) {
 	select {
 	case <-closed:
 		t.Fatal("Close returned while the poller was still running")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(150 * time.Millisecond):
 	}
 
 	close(release)

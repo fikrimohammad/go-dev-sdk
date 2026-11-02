@@ -66,3 +66,13 @@ func kvForms(ctx context.Context, m metricSink, err error, q string) {
 	}
 	m.Add(ctx, failures, 1, set)
 }
+
+// buildAttrs is a plain builder function that returns a per-event key.
+func buildAttrs(q string) map[string]string {
+	return map[string]string{"db.query.text": q}
+}
+
+// plainBuilder reaches Record through the plain builder function.
+func plainBuilder(ctx context.Context, m metricSink, q string) {
+	m.Record(ctx, queryDuration, 1, buildAttrs(q))
+}

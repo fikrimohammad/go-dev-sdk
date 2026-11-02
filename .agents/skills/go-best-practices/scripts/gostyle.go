@@ -444,16 +444,25 @@ type tupleRef struct {
 
 // funcInfo holds what the telemetry rules need from one function.
 type funcInfo struct {
-	body    *ast.BlockStmt
-	params  map[string]int              // parameter name -> position, receiver excluded
-	defs    map[string][]ast.Expr       // identifier -> values assigned to it
-	tuples  map[string][]tupleRef       // identifier -> result of a multi-value call
-	writes  map[string][]*ast.IndexExpr // identifier -> index writes m[k] = v
-	returns [][]ast.Expr                // results of each return statement
+	body     *ast.BlockStmt
+	isMethod bool
+	recvName string                      // receiver identifier, "" when unnamed
+	recvType string                      // receiver base type name
+	params   map[string]int              // parameter name -> position, receiver excluded
+	varTypes map[string]string           // parameter or var name -> declared base type name
+	defs     map[string][]ast.Expr       // identifier -> values assigned to it
+	tuples   map[string][]tupleRef       // identifier -> result of a multi-value call
+	writes   map[string][]*ast.IndexExpr // identifier -> index writes m[k] = v
+	returns  [][]ast.Expr                // results of each return statement
 }
 
 // checkTelemetry runs the package-scoped telemetry rules over the non-test
 // files of one directory.
+//
+// Limits: a call through a function literal (func(){...}()) or through a
+// variable holding a closure is not traced, and neither is a generic
+// instantiation callee such as Gen[int](k). Those calls end the trace, as
+// maps.Clone does, so a key set only through them is not reported.
 func (c *checker) checkTelemetry(files []*ast.File) {
 	idx := &pkgIndex{
 		c:        c,
@@ -477,7 +486,7 @@ func (c *checker) checkTelemetry(files []*ast.File) {
 	for _, fi := range infos {
 		ast.Inspect(fi.body, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
-				for _, callee := range idx.callees(call) {
+				for _, callee := range idx.callees(call, fi) {
 					idx.calls[callee] = append(idx.calls[callee], callSite{call, fi})
 				}
 			}
@@ -521,11 +530,19 @@ func (c *checker) checkTelemetry(files []*ast.File) {
 // of fd. It includes closures, so an assignment inside a closure is still found.
 func newFuncInfo(fd *ast.FuncDecl) *funcInfo {
 	fi := &funcInfo{
-		body:   fd.Body,
-		params: map[string]int{},
-		defs:   map[string][]ast.Expr{},
-		tuples: map[string][]tupleRef{},
-		writes: map[string][]*ast.IndexExpr{},
+		body:     fd.Body,
+		params:   map[string]int{},
+		varTypes: map[string]string{},
+		defs:     map[string][]ast.Expr{},
+		tuples:   map[string][]tupleRef{},
+		writes:   map[string][]*ast.IndexExpr{},
+	}
+	if fd.Recv != nil && len(fd.Recv.List) == 1 {
+		fi.isMethod = true
+		fi.recvType = typeName(fd.Recv.List[0].Type)
+		for _, name := range fd.Recv.List[0].Names {
+			fi.recvName = name.Name
+		}
 	}
 	pos := 0
 	for _, field := range fd.Type.Params.List {
@@ -534,6 +551,7 @@ func newFuncInfo(fd *ast.FuncDecl) *funcInfo {
 		}
 		for _, name := range field.Names {
 			fi.params[name.Name] = pos
+			fi.varTypes[name.Name] = typeName(field.Type)
 			pos++
 		}
 	}
@@ -559,6 +577,11 @@ func newFuncInfo(fd *ast.FuncDecl) *funcInfo {
 				}
 			}
 		case *ast.ValueSpec:
+			if n.Type != nil {
+				for _, name := range n.Names {
+					fi.varTypes[name.Name] = typeName(n.Type)
+				}
+			}
 			if len(n.Names) == len(n.Values) {
 				for i, name := range n.Names {
 					fi.defs[name.Name] = append(fi.defs[name.Name], n.Values[i])
@@ -621,9 +644,9 @@ func (idx *pkgIndex) paramArgs(fi *funcInfo, name string) []argRef {
 
 // tupleValues returns the expressions that the identifier assigned from t can
 // take: result t.index of each same-package callee.
-func (idx *pkgIndex) tupleValues(t tupleRef) []argRef {
+func (idx *pkgIndex) tupleValues(t tupleRef, caller *funcInfo) []argRef {
 	var out []argRef
-	for _, callee := range idx.callees(t.call) {
+	for _, callee := range idx.callees(t.call, caller) {
 		for _, r := range callee.returnsAt(t.index) {
 			out = append(out, argRef{r, callee})
 		}
@@ -649,20 +672,101 @@ func unparen(e ast.Expr) ast.Expr {
 	return e
 }
 
-// callees returns the same-package functions and methods that call invokes by
-// name. It returns nil for maps.Clone, slices.Clone, and any call outside the
-// package, which ends a trace.
-func (idx *pkgIndex) callees(call *ast.CallExpr) []*funcInfo {
+// callees returns the same-package functions and methods that call, written in
+// caller, invokes. It returns nil for maps.Clone, slices.Clone, and any call
+// outside the package, which ends a trace.
+//
+// A plain function matches only an unqualified call f(...), and a method matches
+// only a selector call x.f(...). When several methods share the name, the base
+// type of x must be known from the syntax (see baseType) to pick one. When it
+// is unknown, a single candidate is followed and several are not, so the trace
+// stops rather than guess. Methods promoted from an embedded type are not
+// followed.
+func (idx *pkgIndex) callees(call *ast.CallExpr, caller *funcInfo) []*funcInfo {
 	switch fn := call.Fun.(type) {
 	case *ast.Ident:
-		return idx.funcs[fn.Name]
+		var plain []*funcInfo
+		for _, f := range idx.funcs[fn.Name] {
+			if !f.isMethod {
+				plain = append(plain, f)
+			}
+		}
+		return plain
 	case *ast.SelectorExpr:
 		if isIdent(fn.X, "maps") || isIdent(fn.X, "slices") {
 			return nil
 		}
-		return idx.funcs[fn.Sel.Name]
+		var methods []*funcInfo
+		for _, f := range idx.funcs[fn.Sel.Name] {
+			if f.isMethod {
+				methods = append(methods, f)
+			}
+		}
+		typ, known := caller.baseType(fn.X)
+		if !known {
+			if len(methods) == 1 {
+				return methods
+			}
+			return nil
+		}
+		var out []*funcInfo
+		for _, m := range methods {
+			if m.recvType == typ {
+				out = append(out, m)
+			}
+		}
+		return out
 	}
 	return nil
+}
+
+// baseType returns the named type of x when the syntax shows it: the enclosing
+// receiver, a parameter or variable declared with a type, a composite literal,
+// or &T{...}. Every assignment to an identifier must agree on the type.
+func (fi *funcInfo) baseType(x ast.Expr) (string, bool) {
+	x = unparen(x)
+	if u, ok := x.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		x = unparen(u.X)
+	}
+	switch e := x.(type) {
+	case *ast.CompositeLit:
+		t := typeName(e.Type)
+		return t, t != ""
+	case *ast.Ident:
+		if e.Name == fi.recvName && fi.recvName != "" {
+			return fi.recvType, true
+		}
+		var typ string
+		for _, v := range fi.defs[e.Name] {
+			t, ok := compositeType(v)
+			if !ok || (typ != "" && t != typ) {
+				return "", false
+			}
+			typ = t
+		}
+		if t := fi.varTypes[e.Name]; t != "" {
+			if typ != "" && t != typ {
+				return "", false
+			}
+			typ = t
+		}
+		return typ, typ != ""
+	}
+	return "", false
+}
+
+// compositeType returns the type of a composite literal, or of &T{...}.
+func compositeType(e ast.Expr) (string, bool) {
+	e = unparen(e)
+	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		e = unparen(u.X)
+	}
+	lit, ok := e.(*ast.CompositeLit)
+	if !ok {
+		return "", false
+	}
+	t := typeName(lit.Type)
+	return t, t != ""
 }
 
 // traceAttrs follows an attribute expression that reaches a metric call and
@@ -688,7 +792,7 @@ func (idx *pkgIndex) traceAttrs(e ast.Expr, fi *funcInfo) {
 			idx.traceAttrs(v, fi)
 		}
 		for _, t := range fi.tuples[e.Name] {
-			for _, v := range idx.tupleValues(t) {
+			for _, v := range idx.tupleValues(t, fi) {
 				idx.traceAttrs(v.expr, v.caller)
 			}
 		}
@@ -709,7 +813,7 @@ func (idx *pkgIndex) traceAttrs(e ast.Expr, fi *funcInfo) {
 			}
 			return
 		}
-		for _, callee := range idx.callees(e) {
+		for _, callee := range idx.callees(e, fi) {
 			for _, r := range callee.allReturns() {
 				idx.traceAttrs(r, callee)
 			}
@@ -769,7 +873,7 @@ func (idx *pkgIndex) fromErrorText(e ast.Expr, fi *funcInfo, seen map[ast.Node]b
 			}
 		}
 		for _, t := range fi.tuples[e.Name] {
-			for _, v := range idx.tupleValues(t) {
+			for _, v := range idx.tupleValues(t, fi) {
 				if idx.fromErrorText(v.expr, v.caller, seen) {
 					return true
 				}
@@ -784,7 +888,7 @@ func (idx *pkgIndex) fromErrorText(e ast.Expr, fi *funcInfo, seen map[ast.Node]b
 		if sel, ok := e.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Error" && len(e.Args) == 0 {
 			return true
 		}
-		for _, callee := range idx.callees(e) {
+		for _, callee := range idx.callees(e, fi) {
 			for _, r := range callee.allReturns() {
 				if idx.fromErrorText(r, callee, seen) {
 					return true

@@ -51,7 +51,7 @@ One PR on branch `feat/guardrails`, one commit per task. It covers three parts:
 | Package | Coverage |
 | --- | --- |
 | db | 88.8% |
-| redis | 84.9% |
+| redis | 84.5% (the Checkpoint A reviewer measured main; 84.9% was a local reading) |
 | s3 | 86.3% |
 | nats/consumer | 93.3% |
 | nats/producer | 96.4% |
@@ -73,7 +73,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T5: db tests on sqlmock; delete the fake driver where sqlmock covers its cases
 - [x] T6: redis tests on miniredis; delete the transport stubs and seams
 
-### Checkpoint A: rule recall and precision shown; Haiku review of T1–T6
+### Checkpoint A: rule recall and precision shown; Haiku review of T1–T6 (done)
 ### Wave 2 (parallel)
 - [ ] T7: s3 tests on gofakes3; delete the API stubs and seams
 - [ ] T8: nats tests on the embedded server; delete the jsProducer/jsConsumer seams and mocks, except justified stubs

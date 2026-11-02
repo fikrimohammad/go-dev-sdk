@@ -157,8 +157,8 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 **Dependencies:** T2 · **Files:** `redis/*_test.go`, `redis/redis.go` (seam removal), `redis/go.mod` (orchestrator) · **Scope:** L
 
 ### Checkpoint A
-- [ ] Rule recall is shown at `411bb72` and `216b2aa`, and precision is 0 on the branch.
-- [ ] Haiku review of T1–T6, with its fixes applied; CI is green.
+- [x] Rule recall is shown at `411bb72` and `216b2aa`, and precision is 0 on the branch.
+- [x] Haiku review of T1–T6, with its fixes applied; CI is green.
 
 ## Task 7: s3 tests on gofakes3
 

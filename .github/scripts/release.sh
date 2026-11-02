@@ -35,6 +35,11 @@ die() {
   exit 1
 }
 
+# has_remote_tag <tag> <ls-remote output>: succeeds when the tag is listed.
+has_remote_tag() {
+  awk -v ref="refs/tags/$1" '$2 == ref { found = 1 } END { exit !found }' <<<"$2"
+}
+
 # require_lines prints "path version" for each require in a go.mod. It skips
 # replace, exclude, and other blocks.
 require_lines() {
@@ -116,7 +121,7 @@ for dir in "${modules[@]}"; do
   if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     fail "tag $tag already exists locally"
   fi
-  if awk -v ref="refs/tags/$tag" '$2 == ref { found = 1 } END { exit !found }' <<<"$remote_tags"; then
+  if has_remote_tag "$tag" "$remote_tags"; then
     fail "tag $tag already exists on origin"
   fi
 
@@ -131,6 +136,23 @@ done
 branch=$(git rev-parse --abbrev-ref HEAD)
 if [[ $dry_run == false && $branch != main && ${GITHUB_REF:-} != refs/heads/main ]]; then
   fail "a real release must run on main; HEAD is on $branch"
+fi
+
+# A real release tags HEAD, so HEAD must be the commit on origin/main and the
+# tree must be clean. A dry run only reports, so it skips these checks.
+if [[ $dry_run == false ]]; then
+  if git fetch -q origin main; then
+    head_sha=$(git rev-parse HEAD)
+    main_sha=$(git rev-parse origin/main)
+    if [[ $head_sha != "$main_sha" ]]; then
+      fail "HEAD ${head_sha:0:7} is not origin/main ${main_sha:0:7}; push or pull so they match"
+    fi
+  else
+    fail "cannot fetch origin/main to compare with HEAD"
+  fi
+  if [[ -n $(git status --porcelain) ]]; then
+    fail "working tree has uncommitted changes; commit or stash them before a real release"
+  fi
 fi
 
 if (( errors > 0 )); then
@@ -154,8 +176,24 @@ for dir in "${modules[@]}"; do
   tags+=("$tag")
 done
 
+# A failed push can still have reached origin (for example, a dropped
+# connection after the server accepted it), so ask origin what it has before
+# touching the local tags.
 if ! git push --atomic origin "${tags[@]}"; then
-  git tag -d "${tags[@]}" >/dev/null
-  die "push of ${#tags[@]} tags failed; local tags were removed and nothing was pushed"
+  if ! remote_now=$(git ls-remote --tags origin); then
+    die "push of ${#tags[@]} tags failed and origin could not be checked, so the remote state is unknown. Local tags were kept. Run git ls-remote --tags origin: if the tags exist there, the release happened, so fix forward with a new version; if not, delete the local tags with git tag -d."
+  fi
+  on_origin=()
+  for tag in "${tags[@]}"; do
+    if has_remote_tag "$tag" "$remote_now"; then
+      on_origin+=("$tag")
+    else
+      git tag -d "$tag" >/dev/null
+    fi
+  done
+  if (( ${#on_origin[@]} > 0 )); then
+    die "push reported failure, but ${on_origin[*]} exist on origin, so the release may have happened. Fix forward with a new version; do not reuse $version."
+  fi
+  die "push of ${#tags[@]} tags failed; nothing reached origin and the local tags were removed"
 fi
 echo "Pushed ${#tags[@]} tags for $version at $(git rev-parse --short HEAD)."

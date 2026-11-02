@@ -300,6 +300,78 @@ func (m meta) attrs(op, etype string) map[string]string { return map[string]stri
 func (m meta) run(err error) {
 	m.attrs("op", errorType(err))
 }`, 0},
+
+		// Receiver-type narrowing when several methods share a name.
+		{"same method name, composite base picks the right type", metricRule, `package p
+type span struct{}
+type meta struct{}
+func (span) attrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+func (meta) attrs(op string) map[string]any { return map[string]any{"db.operation.name": op} }
+func f(ctx context.Context, m M) {
+	m.Record(ctx, "d", 1, meta{}.attrs("GET"))
+}`, 0},
+		{"same method name, receiver identifier of the span type", metricRule, `package p
+type span struct{}
+type meta struct{}
+func (span) attrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+func (meta) attrs(op string) map[string]any { return map[string]any{"db.operation.name": op} }
+func (s span) run(ctx context.Context, m M) {
+	m.Record(ctx, "d", 1, s.attrs("GET"))
+}`, 1},
+		{"same method name, pointer composite base", metricRule, `package p
+type span struct{}
+type meta struct{}
+func (span) attrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+func (meta) attrs(op string) map[string]any { return map[string]any{"db.operation.name": op} }
+func f(ctx context.Context, m M) {
+	m.Record(ctx, "d", 1, (&span{}).attrs("GET"))
+}`, 1},
+		{"same method name, var declared with the span type", metricRule, `package p
+type span struct{}
+type meta struct{}
+func (span) attrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+func (meta) attrs(op string) map[string]any { return map[string]any{"db.operation.name": op} }
+func f(ctx context.Context, m M) {
+	var s span
+	m.Record(ctx, "d", 1, s.attrs("GET"))
+}`, 1},
+		{"same method name, ambiguous unknown base is not followed", metricRule, `package p
+type span struct{}
+type meta struct{}
+func (span) attrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+func (meta) attrs(op string) map[string]any { return map[string]any{"db.operation.name": op} }
+func f(ctx context.Context, m M) {
+	m.Record(ctx, "d", 1, lookup().attrs("GET"))
+}`, 0},
+		{"plain function is not reached by a selector call", metricRule, `package p
+func attrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+func f(ctx context.Context, m M, x X) {
+	m.Record(ctx, "d", 1, x.attrs("GET"))
+}`, 0},
+		{"method is not reached by an unqualified call", metricRule, `package p
+type span struct{}
+func (span) attrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+func f(ctx context.Context, m M) {
+	m.Record(ctx, "d", 1, attrs("GET"))
+}`, 0},
+
+		// Parameter back-tracing follows the same narrowing.
+		{"param call sites narrowed by receiver type", metricRule, `package p
+type span struct{}
+type meta struct{}
+func (span) record(ctx context.Context, attrs map[string]any) { m.Record(ctx, "d", 1, attrs) }
+func (meta) record(ctx context.Context, attrs map[string]any) {}
+func (meta) attrs(op string) map[string]any { return map[string]any{"db.query.text": op} }
+func f(ctx context.Context) {
+	meta{}.record(ctx, meta{}.attrs("GET"))
+}`, 0},
+
+		// Plain builder function, called unqualified.
+		{"plain builder function", metricRule, `package p
+func buildAttrs(q string) map[string]string { return map[string]string{"db.query.text": q} }
+func f(ctx context.Context, m M, q string) {
+	m.Record(ctx, "d", 1, buildAttrs(q))
+}`, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -319,6 +391,59 @@ func (m meta) run(err error) {
 			}
 			if got != tt.want {
 				t.Errorf("got %d %s findings, want %d", got, tt.rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestTelemetryRules_Package(t *testing.T) {
+	const metricRule = "metric-high-cardinality"
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  int
+	}{
+		{"builder in one file, metric call in another", map[string]string{
+			"a.go": `package p
+func buildAttrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+`,
+			"b.go": `package p
+func run(ctx context.Context, m M, q string) {
+	m.Record(ctx, "d", 1, buildAttrs(q))
+}
+`,
+		}, 1},
+		{"builder only in a _test.go file is excluded", map[string]string{
+			"helpers_test.go": `package p
+func buildAttrs(q string) map[string]any { return map[string]any{"db.query.text": q} }
+`,
+			"x.go": `package p
+func run(ctx context.Context, m M, q string) {
+	m.Record(ctx, "d", 1, buildAttrs(q))
+}
+`,
+		}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, src := range tt.files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c, err := check([]string{dir})
+			if err != nil {
+				t.Fatalf("check(%s) = %v", dir, err)
+			}
+			got := 0
+			for _, f := range c.findings {
+				if f.rule == metricRule {
+					got++
+				}
+			}
+			if got != tt.want {
+				t.Errorf("got %d %s findings, want %d", got, metricRule, tt.want)
 			}
 		})
 	}

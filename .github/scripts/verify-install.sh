@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs every module at <version> from the module proxy, in a fresh module
 # outside the repo, then builds an import of one package from each module. The
-# proxy can lag behind a tag push, so each go get retries for up to 5 minutes.
+# proxy can lag behind a tag push, so go get retries. The 5-minute deadline is
+# shared across all modules, not reset per module.
 #
 # Usage: .github/scripts/verify-install.sh <version>
 # Environment: GOPROXY_URL (default https://proxy.golang.org).
@@ -44,8 +45,8 @@ first_subpackage() {
       return 0
     fi
   done < <(cd "$1" && find . -name '*.go' ! -name '*_test.go' \
-    -not -path '*/internal/*' -not -path '*/testdata/*' -not -path './vendor/*' \
-    -printf '%h\n' | sort -u)
+    -not -path '*/internal/*' -not -path '*/testdata/*' -not -path './vendor/*' |
+    sed 's|/[^/]*$||' | sort -u)
   return 1
 }
 
