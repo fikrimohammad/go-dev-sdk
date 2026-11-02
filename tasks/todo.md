@@ -544,11 +544,11 @@ Delete the interfaces.go files. Declarations, docs, and behavior don't change.
 Runnable examples have `// Output:`.
 
 **Acceptance criteria:**
-- [ ] Each example runs under `go test ./...` and its output matches.
-- [ ] `go doc -all` shows the examples.
+- [x] Each example runs under `go test ./...` and its output matches.
+- [x] `go doc -all` shows the examples.
 
 **Verification:**
-- [ ] Module checks pass in errs, errgroup, observability, and cron.
+- [x] Module checks pass in errs, errgroup, observability, and cron.
 
 **Dependencies:** T21, T22, T24
 **Files likely touched:** `errs/`, `errgroup/`, `observability/`, `observability/attributes/`, `cron/`, and `cron/engine/` `example_test.go`
