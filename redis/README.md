@@ -64,7 +64,7 @@ if err != nil { /* handle */ }
 defer cli.Close()
 ```
 
-#### Option B: Redis Sentinel Mode (Consul Service Discovery & High Availability)
+#### Option B: Redis Sentinel Mode (High Availability)
 ```go
 cli, err := redis.New(ctx, redis.Config{
     Mode:       redis.ModeSentinel,
@@ -75,7 +75,7 @@ cli, err := redis.New(ctx, redis.Config{
     Password:         "redis-password",
     SentinelPassword: "sentinel-auth-password",
 
-    // Optional: Route reads to 5 slaves and writes to Master
+    // Optional: route reads to replicas and writes to the master
     ReadOnly:      true,
     RouteRandomly: true,
 })
@@ -237,14 +237,17 @@ cardinality bounded.
 
 `WithPoolMetrics(interval)` polls the connection pool and records two semconv
 metrics, both with `db.client.connection.pool.name` set to
-`<server.address>:<server.port>`:
+`<server.address>:<server.port>/<db.namespace>`, so clients on different
+database indexes of one server stay apart:
 
 - `db.client.connection.count` (up-down counter, `{connection}`) with
   `db.client.connection.state` set to `idle` or `used`.
 - `db.client.connection.timeouts` (counter, `{timeout}`).
 
-Each poll records the change since the previous poll. `Close` stops the poller,
-waits for it to exit, and withdraws its connections, so the count returns to zero.
+The first poll runs at once, and each poll records the change since the
+previous one, so install the meter provider before `New`. `Close` stops the
+poller, waits for it to exit, and withdraws its connections, so the count
+returns to zero.
 
 ## Testing your code
 

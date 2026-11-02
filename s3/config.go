@@ -17,30 +17,30 @@ const DefaultPresignExpiry = 15 * time.Minute
 
 // Config holds the AWS S3 connection and transfer settings.
 type Config struct {
-	Region          string `yaml:"region"`
-	Endpoint        string `yaml:"endpoint"`
-	AccessKeyID     string `yaml:"access_key_id"`
-	SecretAccessKey string `yaml:"secret_access_key"`
-	SessionToken    string `yaml:"session_token"`
+	Region          string `yaml:"region" json:"region"`
+	Endpoint        string `yaml:"endpoint" json:"endpoint"`
+	AccessKeyID     string `yaml:"access_key_id" json:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key" json:"secret_access_key"`
+	SessionToken    string `yaml:"session_token" json:"session_token"`
 
 	// UsePathStyle forces path-style addressing (e.g. http://endpoint/bucket/key).
 	// When nil, it defaults to true if Endpoint is set, and false for standard AWS.
-	UsePathStyle *bool `yaml:"use_path_style"`
+	UsePathStyle *bool `yaml:"use_path_style" json:"use_path_style"`
 
 	// UploadPartSizeBytes is the buffer size (in bytes) used when buffering
 	// data into parts for a multipart upload. Zero uses the transfer manager
 	// default (8MB). The minimum allowed part size is 5MB.
-	UploadPartSizeBytes int64 `yaml:"upload_part_size_bytes"`
+	UploadPartSizeBytes int64 `yaml:"upload_part_size_bytes" json:"upload_part_size_bytes"`
 	// UploadMultipartThreshold is the size (in bytes) above which an upload is
 	// performed as a multipart upload. Zero uses the transfer manager default
 	// (16MB).
-	UploadMultipartThreshold int64 `yaml:"upload_multipart_threshold"`
+	UploadMultipartThreshold int64 `yaml:"upload_multipart_threshold" json:"upload_multipart_threshold"`
 	// TransferConcurrency is the number of goroutines used when uploading.
 	// Zero uses the transfer manager default (5).
-	TransferConcurrency int `yaml:"transfer_concurrency"`
+	TransferConcurrency int `yaml:"transfer_concurrency" json:"transfer_concurrency"`
 	// PresignDefaultExpiry is the default validity of presigned URLs when a
 	// per-call expiry is not supplied. Zero defaults to 15 minutes.
-	PresignDefaultExpiry time.Duration `yaml:"presign_default_expiry"`
+	PresignDefaultExpiry time.Duration `yaml:"presign_default_expiry" json:"presign_default_expiry"`
 }
 
 // SetDefaults fills the zero-valued PresignDefaultExpiry with the package

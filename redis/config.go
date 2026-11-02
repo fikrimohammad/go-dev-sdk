@@ -26,51 +26,51 @@ type Config struct {
 	// Mode defines the Redis topology: "standalone" (default), "sentinel", or "cluster".
 	// If omitted, Mode defaults to "sentinel" when MasterName is set, "cluster" when
 	// len(Addrs) > 1 and MasterName is empty, or "standalone" otherwise.
-	Mode Mode `yaml:"mode"`
+	Mode Mode `yaml:"mode" json:"mode"`
 
 	// Standalone endpoint (fallback when Addrs is empty).
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host string `yaml:"host" json:"host"`
+	Port int    `yaml:"port" json:"port"`
 
 	// Addrs provides a list of host:port endpoints:
 	// - Standalone: optional single address or fallback from Host:Port
 	// - Sentinel: list of Sentinel node addresses (e.g. ["sentinel.service.consul:26379"])
 	// - Cluster: list of cluster seed node addresses (e.g. ["redis-cluster.service.consul:6379"])
-	Addrs []string `yaml:"addrs"`
+	Addrs []string `yaml:"addrs" json:"addrs"`
 
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
+	Username string `yaml:"username" json:"username"`
+	Password string `yaml:"password" json:"password"`
+	DB       int    `yaml:"db" json:"db"`
 
 	// Sentinel-specific settings.
-	MasterName       string `yaml:"master_name"`       // Required for Sentinel mode
-	SentinelUsername string `yaml:"sentinel_username"` // Optional username for Sentinel auth
-	SentinelPassword string `yaml:"sentinel_password"` // Optional password for Sentinel auth
+	MasterName       string `yaml:"master_name" json:"master_name"`             // Required for Sentinel mode
+	SentinelUsername string `yaml:"sentinel_username" json:"sentinel_username"` // Optional username for Sentinel auth
+	SentinelPassword string `yaml:"sentinel_password" json:"sentinel_password"` // Optional password for Sentinel auth
 
 	// Cluster & Replica routing options.
-	MaxRedirects   int  `yaml:"max_redirects"`    // Max redirects for cluster (default: 3)
-	ReadOnly       bool `yaml:"read_only"`        // Route read-only commands to replicas
-	RouteByLatency bool `yaml:"route_by_latency"` // Pick replica with lowest latency
-	RouteRandomly  bool `yaml:"route_randomly"`   // Pick replica randomly for read distribution
+	MaxRedirects   int  `yaml:"max_redirects" json:"max_redirects"`       // Max redirects for cluster (default: 3)
+	ReadOnly       bool `yaml:"read_only" json:"read_only"`               // Route read-only commands to replicas
+	RouteByLatency bool `yaml:"route_by_latency" json:"route_by_latency"` // Pick replica with lowest latency
+	RouteRandomly  bool `yaml:"route_randomly" json:"route_randomly"`     // Pick replica randomly for read distribution
 
 	// TLS settings for secure connections.
-	TLSEnabled            bool   `yaml:"tls_enabled"`
-	TLSInsecureSkipVerify bool   `yaml:"tls_insecure_skip_verify"`
-	TLSServerName         string `yaml:"tls_server_name"`
-	TLSCACert             string `yaml:"tls_ca_cert"` // PEM data or file path
-	TLSCert               string `yaml:"tls_cert"`    // Client certificate PEM data or file path
-	TLSKey                string `yaml:"tls_key"`     // Client private key PEM data or file path
+	TLSEnabled            bool   `yaml:"tls_enabled" json:"tls_enabled"`
+	TLSInsecureSkipVerify bool   `yaml:"tls_insecure_skip_verify" json:"tls_insecure_skip_verify"`
+	TLSServerName         string `yaml:"tls_server_name" json:"tls_server_name"`
+	TLSCACert             string `yaml:"tls_ca_cert" json:"tls_ca_cert"` // PEM data or file path
+	TLSCert               string `yaml:"tls_cert" json:"tls_cert"`       // Client certificate PEM data or file path
+	TLSKey                string `yaml:"tls_key" json:"tls_key"`         // Client private key PEM data or file path
 
-	DialTimeout    time.Duration `yaml:"dial_timeout"`
-	ReadTimeout    time.Duration `yaml:"read_timeout"`
-	WriteTimeout   time.Duration `yaml:"write_timeout"`
-	ConnectTimeout time.Duration `yaml:"connect_timeout"`
+	DialTimeout    time.Duration `yaml:"dial_timeout" json:"dial_timeout"`
+	ReadTimeout    time.Duration `yaml:"read_timeout" json:"read_timeout"`
+	WriteTimeout   time.Duration `yaml:"write_timeout" json:"write_timeout"`
+	ConnectTimeout time.Duration `yaml:"connect_timeout" json:"connect_timeout"`
 
-	PoolSize        int           `yaml:"pool_size"`
-	MinIdleConns    int           `yaml:"min_idle_conns"`
-	MaxIdleConns    int           `yaml:"max_idle_conns"`
-	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
-	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
+	PoolSize        int           `yaml:"pool_size" json:"pool_size"`
+	MinIdleConns    int           `yaml:"min_idle_conns" json:"min_idle_conns"`
+	MaxIdleConns    int           `yaml:"max_idle_conns" json:"max_idle_conns"`
+	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time" json:"conn_max_idle_time"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime" json:"conn_max_lifetime"`
 }
 
 const (

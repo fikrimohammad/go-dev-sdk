@@ -109,8 +109,9 @@ var (
 )
 
 // sqlOpRE matches the leading SQL verb used for the db.operation.name
-// attribute.
-var sqlOpRE = regexp.MustCompile(`(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE|CALL|CREATE|ALTER|DROP|TRUNCATE|SET|EXPLAIN|SHOW|DESCRIBE|VACUUM|ANALYZE)\b`)
+// attribute, after any leading whitespace, block or line comments (as
+// sqlcommenter adds), and opening parentheses.
+var sqlOpRE = regexp.MustCompile(`(?is)^(?:\s+|/\*.*?\*/|--[^\n]*\n|\()*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE|CALL|CREATE|ALTER|DROP|TRUNCATE|SET|EXPLAIN|SHOW|DESCRIBE|VACUUM|ANALYZE)\b`)
 
 // Queryer executes read queries (SELECT).
 type Queryer interface {
@@ -445,5 +446,5 @@ func operationName(op, query string) string {
 	if m := sqlOpRE.FindStringSubmatch(query); len(m) > 1 {
 		return strings.ToUpper(m[1])
 	}
-	return op
+	return strings.ToUpper(op)
 }

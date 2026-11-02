@@ -4,8 +4,9 @@
 // New builds a go-redis client from a Config, attaches an instrumentation
 // hook, pings the server to verify the connection, and returns a
 // [redis.UniversalClient] with the full go-redis command set. Its Close also
-// stops the pool-metrics poller and waits for it to exit. Metrics and tracing clients are injectable
-// via WithMetrics / WithTracer and fall back to the OTel global providers.
+// stops the pool-metrics poller and waits for it to exit. Metrics and tracing
+// clients are injectable via WithMetrics / WithTracer and fall back to the OTel
+// global providers.
 //
 // Instrumentation rides go-redis' hook pipeline, so every command, current
 // and future, is covered without per-method wrapping. Per executed command
@@ -140,8 +141,13 @@ func WithTracer(t tracer.Client) Option {
 // WithPoolMetrics enables background collection of connection pool metrics at
 // the given interval. Each poll records db.client.connection.count (up-down
 // counter, state "idle" or "used") and db.client.connection.timeouts (counter).
-// Both carry db.client.connection.pool.name ("<server.address>:<server.port>").
-// Close stops the poller and waits for it to exit.
+// Both carry db.client.connection.pool.name
+// ("<server.address>:<server.port>/<db.namespace>"). The first poll runs at
+// once. Close stops the poller and waits for it to exit.
+//
+// The poller records changes since its previous poll, so install the meter
+// provider (otel.SetMeterProvider) before New: points recorded before the OTel
+// global delegate is bound are dropped, and the count would stay off by them.
 func WithPoolMetrics(interval time.Duration) Option {
 	return func(o *options) { o.poolMetricsInterval = interval }
 }
@@ -192,11 +198,13 @@ func New(ctx context.Context, cfg Config, opts ...Option) (redis.UniversalClient
 		p := &poolPoller{
 			stats:    cli.PoolStats,
 			metrics:  m.metricsClient,
-			pool:     net.JoinHostPort(serverAddr, strconv.Itoa(serverPort)),
+			pool:     net.JoinHostPort(serverAddr, strconv.Itoa(serverPort)) + "/" + m.namespace,
 			interval: o.poolMetricsInterval,
 		}
-		// The poller outlives the startup ctx, so it keeps the ctx values but not its cancellation.
-		pollCtx := context.WithoutCancel(ctx)
+		// The poller outlives the startup ctx: it keeps the ctx values but not
+		// its cancellation, nor its span, which would otherwise be attached to
+		// every pool point as an exemplar.
+		pollCtx := trace.ContextWithSpanContext(context.WithoutCancel(ctx), trace.SpanContext{})
 		stop := c.stopPoolMetrics
 		c.pollers.Go(func() { p.run(pollCtx, stop) })
 	}
@@ -382,7 +390,8 @@ type client struct {
 }
 
 // Close stops the pool-metrics poller, if one runs, waits until it has exited,
-// and releases the underlying connection pool. It is safe to call more than once.
+// and releases the underlying connection pool. A second call does not panic or
+// block; it returns go-redis's "redis: client is closed" error.
 func (c *client) Close() error {
 	c.stopOnce.Do(func() {
 		if c.stopPoolMetrics != nil {
@@ -412,6 +421,7 @@ func (p *poolPoller) run(ctx context.Context, stop <-chan struct{}) {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 	defer p.withdraw(ctx)
+	p.poll(ctx)
 	for {
 		select {
 		case <-stop:

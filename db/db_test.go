@@ -861,8 +861,13 @@ func TestOperationName(t *testing.T) {
 	}{
 		{"select", "SELECT id FROM t", "SELECT"},
 		{"select", "  insert into t (a) values (:a)", "INSERT"},
-		{"exec", ":named", "exec"},
-		{"get", "", "get"},
+		// sqlcommenter-style and line comments, and a parenthesised query.
+		{"get", "/* app=report */ SELECT id FROM t", "SELECT"},
+		{"exec", "-- purge\n  DELETE FROM t", "DELETE"},
+		{"select", "(SELECT 1) UNION (SELECT 2)", "SELECT"},
+		// No recognised verb: the method name, upper-cased like the verbs.
+		{"exec", ":named", "EXEC"},
+		{"get", "", "GET"},
 	}
 	for _, c := range cases {
 		if got := operationName(c.op, c.query); got != c.want {

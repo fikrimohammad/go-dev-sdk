@@ -227,8 +227,8 @@ the integration tests' call sites.
 **Dependencies:** T9 · **Files:** `redis/redis.go`, `redis/redis_test.go`, `redis/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 
 ### Checkpoint B: complete
-- [ ] SPEC-data-clients success criteria 1–7 are verified with evidence.
-- [ ] Final Opus review, with its fixes applied.
+- [x] SPEC-data-clients success criteria 1–7 are verified with evidence.
+- [x] Final Opus review, with its fixes applied.
 - [ ] The PR body (prepared by the orchestrator) lists every renamed or dropped metric and
       attribute and the API breaks. The owner updates it and marks the PR ready, or tells the
       orchestrator to.

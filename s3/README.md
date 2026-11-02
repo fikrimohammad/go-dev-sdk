@@ -151,6 +151,17 @@ if err == nil {
 }
 ```
 
+## Telemetry attributes
+
+Every operation records one client span named after the operation (for example
+`PutObject`) and one `rpc.client.call.duration` histogram sample (seconds).
+Presigning records an internal span and the same metric. Both carry
+`rpc.system.name` (`aws-api`), `rpc.method` (`S3/<Operation>`, for example
+`S3/PutObject`), `aws.s3.bucket`, `cloud.region` (when known), and
+`server.address`/`server.port` (when a self-hosted `Endpoint` is configured).
+On failure they also carry `error.type`: the AWS API error code (for example
+`NoSuchKey`), `network_error`, `timeout`, `canceled`, or `_OTHER`.
+
 ## Testing your code
 
 Test code that uses this package against a fake S3 server, with no AWS account and no changes to your production code. Run [gofakes3](https://github.com/johannesboyne/gofakes3) in-process behind `httptest`, then point `Config.Endpoint` at it:

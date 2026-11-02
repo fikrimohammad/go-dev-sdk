@@ -920,9 +920,11 @@ func TestPoolMetrics_StopWithdrawsCounts(t *testing.T) {
 			}
 			return &redis.PoolStats{TotalConns: 3, IdleConns: 2, Timeouts: 1}
 		},
-		metrics:  func() metrics.Client { return metrics.Wrap(mp) },
-		pool:     poolTestName,
-		interval: time.Millisecond,
+		metrics: func() metrics.Client { return metrics.Wrap(mp) },
+		pool:    poolTestName,
+		// An hour-long interval proves the first poll runs at once, not after
+		// one tick.
+		interval: time.Hour,
 	}
 
 	stop := make(chan struct{})
