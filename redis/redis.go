@@ -17,11 +17,12 @@
 // "timeout", "canceled", or "_OTHER") and db.response.status_code (the
 // simple-error prefix, when the server reports one). The span also carries
 // db.query.text (values redacted as "?"); the metric does not, to keep its
-// cardinality bounded. redis.Nil is treated as a successful lookup and does
+// cardinality bounded. goredis.Nil is treated as a successful lookup and does
 // not set error telemetry.
 //
-// Pipelines are recorded as a single span "PIPELINE", with
-// db.operation.batch.size (the number of queued commands) on the span only.
+// Pipelines are recorded as a single span "PIPELINE". For two or more queued
+// commands the span also carries db.operation.batch.size (MULTI and EXEC of a
+// transaction are not counted). The metric carries neither.
 //
 // Tracing and metrics use the OTel global providers (otel.SetTracerProvider and
 // otel.SetMeterProvider) unless overridden with [WithMetrics] or [WithTracer].
@@ -44,6 +45,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/codes"
 	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/semconv/v1.43.0/dbconv"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
@@ -53,16 +55,17 @@ import (
 const (
 	// tracerScope is the OTel instrumentation scope name.
 	tracerScope = "redis.client"
-
-	// metricDuration is the OTel metric name emitted per executed command.
-	metricDuration = "db.client.operation.duration"
 )
 
 var (
+	// metricDuration is the OTel metric name emitted per executed command. It
+	// comes from dbconv, as db's does, so both modules share one instrument in a
+	// metrics client.
+	metricDuration           = dbconv.ClientOperationDuration{}.Name()
 	metricDurationInstrument = metrics.Instrument{
 		Name:        metricDuration,
-		Unit:        "s",
-		Description: "Redis client operation duration",
+		Unit:        dbconv.ClientOperationDuration{}.Unit(),
+		Description: dbconv.ClientOperationDuration{}.Description(),
 	}
 	poolHitsInstrument = metrics.Instrument{
 		Name:        "db.client.connections.hits",
@@ -527,9 +530,9 @@ func (m meta) instrumentPipeline(ctx context.Context, cmds []redis.Cmder, fn fun
 	start := time.Now()
 	err := fn(ctx)
 
-	// In go-redis, fn(ctx) returns the first error among cmds.
-	// If the first error is redis.Nil, but subsequent commands had real errors,
-	// we inspect cmds to avoid masking real failures.
+	// go-redis returns the first non-nil command error from fn, and that can be
+	// redis.Nil. Each command keeps its own result in Err(), so the loop checks
+	// every command and a later real failure is still reported.
 	var errToReport error
 	if err != nil && !errors.Is(err, redis.Nil) {
 		errToReport = err
@@ -549,10 +552,14 @@ func (m meta) instrumentPipeline(ctx context.Context, cmds []redis.Cmder, fn fun
 		errType = errorType(errToReport)
 	}
 
+	queued := queuedCommands(cmds)
 	attrs := m.attrs(op, code, errType)
 	spanAttrs := maps.Clone(attrs)
-	spanAttrs[string(otelsemconv.DBOperationBatchSizeKey)] = len(cmds)
-	spanAttrs[string(otelsemconv.DBQueryTextKey)] = pipelineText(cmds)
+	// A single command is not a batch, so batch.size is set only for two or more.
+	if len(queued) >= 2 {
+		spanAttrs[string(otelsemconv.DBOperationBatchSizeKey)] = len(queued)
+	}
+	spanAttrs[string(otelsemconv.DBQueryTextKey)] = pipelineText(queued)
 	span.SetAttributes(tracer.Attrs(spanAttrs)...)
 	span.End()
 
@@ -603,6 +610,19 @@ func queryText(cmd redis.Cmder) string {
 
 const maxPipelineCommandsInText = 50
 
+// queuedCommands returns cmds without the MULTI and EXEC that go-redis wraps
+// around a transaction pipeline, so only the caller's commands are counted and
+// rendered.
+func queuedCommands(cmds []redis.Cmder) []redis.Cmder {
+	out := make([]redis.Cmder, 0, len(cmds))
+	for _, cmd := range cmds {
+		if op := commandName(cmd); op != "MULTI" && op != "EXEC" {
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
 // pipelineText renders the sanitized pipeline text as the joined sanitized
 // command texts of the queued commands, capped to avoid excessive attribute sizes.
 func pipelineText(cmds []redis.Cmder) string {
@@ -623,9 +643,15 @@ func pipelineText(cmds []redis.Cmder) string {
 }
 
 // redisErrorCode returns the Redis simple-error prefix of err (e.g. "ERR",
-// "WRONGTYPE", "OOM"), or empty string if err is not a Redis protocol error.
+// "WRONGTYPE", "OOM"), or empty string if err is not a server reply. Only an
+// error that go-redis marks with RedisError is parsed, so a client-side error
+// that happens to start with an upper-case word is not mistaken for one.
 func redisErrorCode(err error) string {
-	msg := err.Error()
+	server, ok := errors.AsType[redis.Error](err)
+	if !ok {
+		return ""
+	}
+	msg := server.Error()
 	token := msg
 	if i := strings.IndexByte(msg, ' '); i > 0 {
 		token = msg[:i]
@@ -648,14 +674,21 @@ func isUpperASCII(s string) bool {
 	return true
 }
 
-// errorType returns the error.type value for a failed command: the Redis
-// simple-error prefix (ERR, WRONGTYPE, ...), "timeout", "canceled", or "_OTHER".
+// errorType returns the error.type value for a failed command: "timeout" for a
+// deadline, a net timeout, or a pool timeout; "canceled"; the Redis simple-error
+// prefix (ERR, WRONGTYPE, ...); or "_OTHER".
 func errorType(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
+	}
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+		return "timeout"
+	}
+	if errors.Is(err, redis.ErrPoolTimeout) {
+		return "timeout"
 	}
 	if code := redisErrorCode(err); code != "" {
 		return code

@@ -3,6 +3,8 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/semconv/v1.43.0/dbconv"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
@@ -73,6 +76,21 @@ func (f *fakeMetrics) lastHist() (metricRec, bool) {
 	return f.hists[len(f.hists)-1], true
 }
 
+// srvError is an error reply from the server, the way go-redis returns one: it
+// has a RedisError method, unlike a plain error that merely looks like one.
+type srvError string
+
+func (e srvError) Error() string { return string(e) }
+
+func (srvError) RedisError() {}
+
+// netError is a net.Error whose Timeout result is set by the test.
+type netError struct{ timeout bool }
+
+func (e netError) Error() string { return "i/o failure" }
+func (e netError) Timeout() bool { return e.timeout }
+func (netError) Temporary() bool { return false }
+
 // --- fake: span capture ------------------------------------------------------------
 
 type recordingExporter struct {
@@ -125,18 +143,24 @@ func normalizeAttrs(attrs map[string]any) map[string]any {
 
 // --- setup -------------------------------------------------------------------------
 
-// setupInstrument builds an instrumentHook with injected capturing clients.
-func setupInstrument() (*instrumentHook, *fakeMetrics, *recordingExporter) {
+// setupTelemetry returns capturing metrics and tracer clients, and the exporter
+// that receives the spans the tracer client produces.
+func setupTelemetry() (*fakeMetrics, tracer.Client, *recordingExporter) {
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	fm := &fakeMetrics{}
+	return &fakeMetrics{}, tracer.Wrap(tp), ex
+}
+
+// setupInstrument builds an instrumentHook with injected capturing clients.
+func setupInstrument() (*instrumentHook, *fakeMetrics, *recordingExporter) {
+	fm, tc, ex := setupTelemetry()
 	return &instrumentHook{
 		meta: meta{
 			serverAddr: "cache.example.com",
 			serverPort: 6380,
 			namespace:  "2",
 			metrics:    fm,
-			tracer:     tracer.Wrap(tp),
+			tracer:     tc,
 		},
 	}, fm, ex
 }
@@ -260,7 +284,7 @@ func TestProcessHook_Set_QueryText(t *testing.T) {
 func TestProcessHook_Error(t *testing.T) {
 	h, fm, ex := setupInstrument()
 	cmd := redis.NewStringCmd(context.Background(), "get", "report:1")
-	boom := errors.New("WRONGTYPE Operation against a key holding the wrong kind of value")
+	boom := srvError("WRONGTYPE Operation against a key holding the wrong kind of value")
 	hook := h.ProcessHook(func(_ context.Context, _ redis.Cmder) error { return boom })
 
 	if err := hook(context.Background(), cmd); !errors.Is(err, boom) {
@@ -356,6 +380,75 @@ func TestProcessPipelineHook(t *testing.T) {
 	}
 }
 
+func TestProcessPipelineHook_BatchSize(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		cmds      []redis.Cmder
+		wantBatch string // empty when db.operation.batch.size must be absent
+		wantText  string
+	}{
+		{
+			name:     "single command is not a batch",
+			cmds:     []redis.Cmder{redis.NewStringCmd(ctx, "get", "a")},
+			wantText: "GET ?",
+		},
+		{
+			name: "two commands",
+			cmds: []redis.Cmder{
+				redis.NewStringCmd(ctx, "get", "a"),
+				redis.NewStatusCmd(ctx, "set", "b", "1"),
+			},
+			wantBatch: "2",
+			wantText:  "GET ?; SET ? ?",
+		},
+		{
+			name: "transaction: MULTI and EXEC are not counted",
+			cmds: []redis.Cmder{
+				redis.NewStatusCmd(ctx, "multi"),
+				redis.NewStringCmd(ctx, "get", "a"),
+				redis.NewStatusCmd(ctx, "set", "b", "1"),
+				redis.NewStatusCmd(ctx, "exec"),
+			},
+			wantBatch: "2",
+			wantText:  "GET ?; SET ? ?",
+		},
+		{
+			name: "transaction with one command is not a batch",
+			cmds: []redis.Cmder{
+				redis.NewStatusCmd(ctx, "multi"),
+				redis.NewStringCmd(ctx, "get", "a"),
+				redis.NewStatusCmd(ctx, "exec"),
+			},
+			wantText: "GET ?",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, ex := setupInstrument()
+			hook := h.ProcessPipelineHook(func(_ context.Context, _ []redis.Cmder) error { return nil })
+			if err := hook(ctx, tc.cmds); err != nil {
+				t.Fatalf("ProcessPipelineHook: %v", err)
+			}
+			sp, ok := ex.last()
+			if !ok {
+				t.Fatal("no span recorded")
+			}
+			attrs := spanAttrs(sp)
+			got, present := attrs["db.operation.batch.size"]
+			switch {
+			case tc.wantBatch == "" && present:
+				t.Errorf("db.operation.batch.size = %v, want absent", got)
+			case tc.wantBatch != "" && got != tc.wantBatch:
+				t.Errorf("db.operation.batch.size = %v, want %v", got, tc.wantBatch)
+			}
+			if got := attrs["db.query.text"]; got != tc.wantText {
+				t.Errorf("db.query.text = %v, want %v", got, tc.wantText)
+			}
+		})
+	}
+}
+
 func TestInstrumentHook_FallsBackToOTelGlobal(t *testing.T) {
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
@@ -381,8 +474,62 @@ func TestInstrumentHook_FallsBackToOTelGlobal(t *testing.T) {
 		t.Fatalf("span name = %q, want GET", sp.Name())
 	}
 	names := collectedMetrics(t, reader)
-	if !slices.Contains(names, metricDuration) {
-		t.Errorf("OTel global meter provider collected %v, want %q among them", names, metricDuration)
+	if want := []string{metricDuration}; !slices.Equal(names, want) {
+		t.Errorf("OTel global meter provider collected %v, want %v", names, want)
+	}
+}
+
+func TestInstrumentHook_MetricInstrument(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	h := &instrumentHook{meta: meta{
+		metrics: metrics.Wrap(mp),
+		tracer:  tracer.Wrap(sdktrace.NewTracerProvider()),
+	}}
+	hook := h.ProcessHook(func(_ context.Context, _ redis.Cmder) error { return nil })
+	if err := hook(context.Background(), redis.NewStringCmd(context.Background(), "get", "k")); err != nil {
+		t.Fatalf("ProcessHook: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	var found []metricdata.Metrics
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == metricDuration {
+				found = append(found, m)
+			}
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("metrics named %q = %d, want 1", metricDuration, len(found))
+	}
+	m := found[0]
+	if m.Unit != "s" {
+		t.Errorf("unit = %q, want %q", m.Unit, "s")
+	}
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("data type = %T, want metricdata.Histogram[float64]", m.Data)
+	}
+	if len(hist.DataPoints) != 1 || hist.DataPoints[0].Count != 1 {
+		t.Errorf("data points = %+v, want one point with count 1", hist.DataPoints)
+	}
+}
+
+func TestMetricDurationInstrument_MatchesDBConv(t *testing.T) {
+	want := dbconv.ClientOperationDuration{}
+	if got := metricDurationInstrument.Name; got != want.Name() {
+		t.Errorf("Name = %q, want %q", got, want.Name())
+	}
+	if got := metricDurationInstrument.Unit; got != want.Unit() {
+		t.Errorf("Unit = %q, want %q", got, want.Unit())
+	}
+	if got := metricDurationInstrument.Description; got != want.Description() {
+		t.Errorf("Description = %q, want %q", got, want.Description())
 	}
 }
 
@@ -433,8 +580,7 @@ func TestProcessPipelineHook_RedisNilFirst_WithErrorLater(t *testing.T) {
 	cmd1 := redis.NewStringCmd(context.Background(), "get", "missing")
 	cmd1.SetErr(redis.Nil)
 	cmd2 := redis.NewStatusCmd(context.Background(), "set", "k", "v")
-	boom := errors.New("ERR database is read-only")
-	cmd2.SetErr(boom)
+	cmd2.SetErr(srvError("ERR database is read-only"))
 
 	cmds := []redis.Cmder{cmd1, cmd2}
 	hook := h.ProcessPipelineHook(func(_ context.Context, _ []redis.Cmder) error {
@@ -468,24 +614,54 @@ func TestProcessPipelineHook_RedisNilFirst_WithErrorLater(t *testing.T) {
 
 func TestRedisErrorCode(t *testing.T) {
 	cases := []struct {
+		name string
 		err  error
 		want string
 	}{
-		{errors.New("WRONGTYPE Operation against key"), "WRONGTYPE"},
-		{errors.New("ERR unknown command"), "ERR"},
-		{errors.New("OOM command not allowed"), "OOM"},
-		{errors.New("BUSYKEY Target key name already exists"), "BUSYKEY"},
-		{errors.New("NOSCRIPT No matching script"), "NOSCRIPT"},
-		{errors.New("dial tcp 127.0.0.1:6379: connect: connection refused"), ""},
-		{errors.New("context deadline exceeded"), ""},
-		{errors.New("read tcp 127.0.0.1:6379: i/o timeout"), ""},
-		{errors.New("redis: client is closed"), ""},
-		{errors.New("plain error"), ""},
+		{"wrongtype", srvError("WRONGTYPE Operation against key"), "WRONGTYPE"},
+		{"err", srvError("ERR unknown command"), "ERR"},
+		{"oom", srvError("OOM command not allowed"), "OOM"},
+		{"busykey", srvError("BUSYKEY Target key name already exists"), "BUSYKEY"},
+		{"noscript", srvError("NOSCRIPT No matching script"), "NOSCRIPT"},
+		{"io.EOF", io.EOF, ""},
+		{"dial failure", errors.New("dial tcp 127.0.0.1:6379: connect: connection refused"), ""},
+		{"context deadline", errors.New("context deadline exceeded"), ""},
+		{"io timeout", errors.New("read tcp 127.0.0.1:6379: i/o timeout"), ""},
+		{"client closed", errors.New("redis: client is closed"), ""},
+		{"plain error", errors.New("plain error"), ""},
+		{"uppercase text, not a server reply", errors.New("WRONGTYPE Operation against key"), ""},
 	}
 	for _, tc := range cases {
-		if got := redisErrorCode(tc.err); got != tc.want {
-			t.Errorf("redisErrorCode(%q) = %q, want %q", tc.err.Error(), got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redisErrorCode(tc.err); got != tc.want {
+				t.Errorf("redisErrorCode(%q) = %q, want %q", tc.err.Error(), got, tc.want)
+			}
+		})
+	}
+}
+
+func TestErrorType(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"deadline exceeded", context.DeadlineExceeded, "timeout"},
+		{"wrapped deadline exceeded", fmt.Errorf("op: %w", context.DeadlineExceeded), "timeout"},
+		{"canceled", context.Canceled, "canceled"},
+		{"net timeout", netError{timeout: true}, "timeout"},
+		{"net error, not a timeout", netError{timeout: false}, "_OTHER"},
+		{"pool timeout", redis.ErrPoolTimeout, "timeout"},
+		{"server error", srvError("WRONGTYPE Operation against key"), "WRONGTYPE"},
+		{"io.EOF", io.EOF, "_OTHER"},
+		{"plain error", errors.New("boom"), "_OTHER"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := errorType(tc.err); got != tc.want {
+				t.Errorf("errorType(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -557,9 +733,9 @@ func TestNew_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := New(ctx, Config{Host: "127.0.0.1", Port: 6379, ConnectTimeout: time.Second})
-	if err == nil {
-		t.Fatal("expected error with cancelled context")
+	_, err := New(ctx, Config{Host: "127.0.0.1", Port: 1, ConnectTimeout: time.Second})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("New err = %v, want context.Canceled", err)
 	}
 }
 
@@ -573,7 +749,7 @@ func TestNew_InvalidConfig(t *testing.T) {
 }
 
 func TestNew_ConnectionFailure(t *testing.T) {
-	_, err := New(context.Background(), Config{Host: "127.0.0.1", Port: 1, ConnectTimeout: 100})
+	_, err := New(context.Background(), Config{Host: "127.0.0.1", Port: 1, ConnectTimeout: 100 * time.Millisecond})
 	if err == nil {
 		t.Fatal("New: expected connection error")
 	}
@@ -662,27 +838,31 @@ func TestNew_ReturnsUniversalClient(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h, fm, ex := setupInstrument()
-			cli := createUnderlyingClient(tc.cfg.SetDefaults(), nil)
-			t.Cleanup(func() { _ = cli.Close() })
-			cli.AddHook(h)
+			fm, tc2, ex := setupTelemetry()
+			cfg := tc.cfg
+			cfg.ConnectTimeout = 200 * time.Millisecond
 
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer cancel()
-			if err := cli.Ping(ctx).Err(); err == nil {
-				t.Fatal("Ping: got nil error, want connection error")
+			// New pings the server, which refuses the connection; the ping still
+			// passes through the instrumentation hook that New attaches.
+			cli, err := New(context.Background(), cfg, WithMetrics(fm), WithTracer(tc2))
+			if err == nil {
+				_ = cli.Close()
+				t.Fatal("New: got nil error, want connection error")
 			}
 
 			hist, ok := fm.lastHist()
 			if !ok {
-				t.Fatal("no duration recorded for command sent through UniversalClient")
+				t.Fatal("no duration recorded for the startup ping")
 			}
 			if got := hist.attrs["db.operation.name"]; got != "PING" {
 				t.Fatalf("db.operation.name = %v, want PING", got)
 			}
+			if _, ok := hist.attrs["error.type"]; !ok {
+				t.Fatalf("error.type missing from %v, want set on failed ping", hist.attrs)
+			}
 			sp, ok := ex.last()
 			if !ok {
-				t.Fatal("no span recorded for command sent through UniversalClient")
+				t.Fatal("no span recorded for the startup ping")
 			}
 			if sp.Name() != "PING" {
 				t.Fatalf("span name = %q, want PING", sp.Name())
@@ -729,7 +909,7 @@ func TestInstrumentHook_MetricAttributes(t *testing.T) {
 		},
 		{
 			name:   "command error with redis prefix",
-			err:    errors.New("WRONGTYPE Operation against a key holding the wrong kind of value"),
+			err:    srvError("WRONGTYPE Operation against a key holding the wrong kind of value"),
 			wantOp: "GET",
 			wantAttrs: withBase(map[string]any{
 				"db.operation.name":       "GET",
@@ -781,7 +961,7 @@ func TestInstrumentHook_MetricAttributes(t *testing.T) {
 		{
 			name:     "pipeline error",
 			pipeline: true,
-			err:      errors.New("ERR database is read-only"),
+			err:      srvError("ERR database is read-only"),
 			wantOp:   "PIPELINE",
 			wantAttrs: withBase(map[string]any{
 				"db.operation.name":       "PIPELINE",

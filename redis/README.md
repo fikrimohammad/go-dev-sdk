@@ -15,8 +15,9 @@ executed command.
 - **`goredis.Nil` is not an error** — a missing-key result records no error
   telemetry.
 - **Pipelines & Transactions** — batched commands and atomic `MULTI`...`EXEC`
-  transaction blocks record a single `PIPELINE` span with `db.operation.batch.size`
-  (span only).
+  transaction blocks record a single `PIPELINE` span. Two or more queued commands
+  also set `db.operation.batch.size` on the span (span only); MULTI and EXEC are not
+  counted.
 - **TLS encryption** — built-in support for TLS with server name verification,
   insecure skip verify, and custom CA/client certificates.
 - **Context-aware startup** — `New(ctx, ...)` bounds the initial ping by the
@@ -38,6 +39,9 @@ go get github.com/fikrimohammad/go-dev-sdk/redis
 ### 1. Configure and connect
 
 The package supports **Standalone**, **Sentinel** (High Availability), and **Cluster** (Distributed Sharding) topologies out of the box. All three return the same go-redis `UniversalClient` (see [API reference](#api-reference)).
+The returned value wraps the go-redis client, so a type assertion to `*goredis.ClusterClient`
+or `*goredis.Client` does not work; use the `UniversalClient` methods. `ForEachShard` exists only
+on `*goredis.ClusterClient`, so code that needs it must create the go-redis cluster client itself.
 
 Examples use two imports: the SDK package as `redis`, and go-redis as `goredis` for its types (`goredis.Nil`, `goredis.Z`, `goredis.Pipeliner`, `goredis.Tx`):
 
@@ -218,15 +222,15 @@ index), `db.operation.name` (e.g. `GET`, or `PIPELINE`), `server.address`, and
 On failure the metric also carries:
 
 - `error.type`: the Redis simple-error prefix (`ERR`, `WRONGTYPE`, ...),
-  `timeout` (deadline exceeded), `canceled`, or `_OTHER`. Error messages never
+  `timeout` (a deadline, a net timeout, or a connection-pool timeout), `canceled`, or `_OTHER`. Error messages never
   appear on metrics.
 - `db.response.status_code`: the simple-error prefix, when the server sends one.
 
-`redis.Nil` is a normal lookup result and records no error telemetry.
+`goredis.Nil` is a normal lookup result and records no error telemetry.
 
 The span (named after the command, or `PIPELINE`) carries the same attributes
-plus `db.query.text`, with values redacted as `?`. Pipeline spans also carry
-`db.operation.batch.size`. Neither is set on the metric, to keep its
+plus `db.query.text`, with values redacted as `?`. Pipeline spans of two or more
+commands also carry `db.operation.batch.size`. Neither is set on the metric, to keep its
 cardinality bounded.
 
 ## Config reference
