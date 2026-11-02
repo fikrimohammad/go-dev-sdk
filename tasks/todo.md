@@ -148,8 +148,8 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 - The orchestrator adds miniredis/v2 v2.40.0.
 
 **Acceptance criteria:**
-- [ ] Coverage ≥ 84.9%.
-- [ ] The regression tests still exist and still fail when their fix is reverted
+- [x] Coverage ≥ 84.9%.
+- [x] The regression tests still exist and still fail when their fix is reverted
       (spot-check).
 
 **Verification:** redis module checks.

@@ -406,6 +406,8 @@ func (c *client) Close() error {
 // metrics. Each poll records only the change since the previous poll, so the
 // up-down counter holds the current number of connections per state.
 type poolPoller struct {
+	// kept: tests inject a stats func for deterministic deltas; a live miniredis
+	// pool cannot be made to report chosen counts or timeouts.
 	stats    func() *redis.PoolStats // snapshot source; a nil snapshot is skipped
 	metrics  func() metrics.Client   // resolved per record, as meta.metricsClient does
 	pool     string                  // db.client.connection.pool.name

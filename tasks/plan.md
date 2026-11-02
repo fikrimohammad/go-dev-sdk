@@ -71,7 +71,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [ ] T3: gostyle `error-type-message` and `metric-high-cardinality` rules, with testdata and tests
 - [x] T4: Release: `VERSION`, `.github/scripts/release.sh` (atomic, dry run, installability), `release.yml`
 - [x] T5: db tests on sqlmock; delete the fake driver where sqlmock covers its cases
-- [ ] T6: redis tests on miniredis; delete the transport stubs and seams
+- [x] T6: redis tests on miniredis; delete the transport stubs and seams
 
 ### Checkpoint A: rule recall and precision shown; Haiku review of T1–T6
 ### Wave 2 (parallel)
