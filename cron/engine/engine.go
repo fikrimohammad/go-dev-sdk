@@ -1,3 +1,8 @@
+// Package engine schedules and runs cron jobs from the cron package. It wraps
+// robfig/cron for the schedules, and runs each job through a middleware chain
+// that applies the toggler, the distributed locker, the timeout, panic
+// recovery, logging, metrics, and tracing. Create an Engine with [New], register
+// jobs, call [Engine.Start], and call [Engine.Stop] with a context on shutdown.
 package engine
 
 import (
@@ -12,38 +17,41 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
-// Option configures an Engine instance.
+// Option configures an [Engine] in [New].
 type Option func(*Engine)
 
-// WithToggler injects a custom Toggler.
+// WithToggler injects the [cron.Toggler] that can disable a job before it runs.
 func WithToggler(t cron.Toggler) Option {
 	return func(e *Engine) {
 		e.toggler = t
 	}
 }
 
-// WithLocker injects a custom Locker.
+// WithLocker injects the [cron.Locker] that keeps a job on one worker at a
+// time and supplies its fencing token.
 func WithLocker(l cron.Locker) Option {
 	return func(e *Engine) {
 		e.locker = l
 	}
 }
 
-// WithMetrics injects a custom metrics client.
+// WithMetrics injects the metrics client. Without it, the engine uses
+// [metrics.Default].
 func WithMetrics(m metrics.Client) Option {
 	return func(e *Engine) {
 		e.metrics = m
 	}
 }
 
-// WithTracer injects a custom tracer client.
+// WithTracer injects the tracer client. Without it, the engine uses
+// [tracer.Default].
 func WithTracer(t tracer.Client) Option {
 	return func(e *Engine) {
 		e.tracer = t
 	}
 }
 
-// Engine wraps robfig/cron and orchestrates job scheduling, execution, and instrumentation.
+// Engine schedules and runs cron jobs, and instruments each run.
 type Engine struct {
 	cfg    Config
 	cron   *robfigcron.Cron
@@ -56,9 +64,10 @@ type Engine struct {
 	running  bool
 	stopping bool
 
-	// stopCtx is canceled by Stop when its deadline expires; every run derives
-	// from it through an AfterFunc watcher.
-	stopCtx    context.Context
+	// stopCtx is canceled by Stop when its deadline expires. robfig/cron runs a
+	// scheduled job with no context, so stopCtx is the root of those runs; every
+	// run also watches it and is canceled with it.
+	stopCtx    context.Context //nolint:containedctx // robfig/cron passes no context to scheduled jobs, so the engine lifetime needs one
 	stopCancel context.CancelFunc
 
 	// inFlight is the set of job names currently executing, to prevent local overlap.
@@ -88,7 +97,7 @@ func New(cfg Config, opts ...Option) (*Engine, error) {
 			robfigcron.Descriptor,
 	)
 
-	stopCtx, stopCancel := context.WithCancel(context.Background())
+	stopCtx, stopCancel := context.WithCancel(context.Background()) //nolint:forbidigo // the engine lifetime is a root that no caller owns; Start and New take no context
 
 	e := &Engine{
 		cfg:        cfg,
@@ -173,9 +182,16 @@ func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string)
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
-	// Watch for engine shutdown to signal cancellation promptly.
-	stopWatcher := context.AfterFunc(e.stopCtx, cancel)
-	defer stopWatcher()
+	// Watch for engine shutdown to signal cancellation promptly. The watcher
+	// exits with the run, because cancel runs when the run returns.
+	stopped := e.stopCtx.Done()
+	go func() {
+		select {
+		case <-stopped:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	// Skip-on-overlap protection: only 1 in-flight execution per job name locally.
 	if _, loaded := e.inFlight.LoadOrStore(job.Name, struct{}{}); loaded {
@@ -219,7 +235,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 	}
 	e.stopping = true
 	e.running = false
-	cronStopCtx := e.cron.Stop()
+	cronDone := e.cron.Stop().Done()
 	e.mu.Unlock()
 
 	// Ensure context has a timeout to prevent hanging.
@@ -231,7 +247,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 
 	done := make(chan struct{})
 	go func() {
-		<-cronStopCtx.Done()
+		<-cronDone
 		e.activeWg.Wait()
 		close(done)
 	}()
@@ -240,7 +256,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		// Canceling stopCtx cancels every active run through its AfterFunc watcher.
+		// Canceling stopCtx cancels every active run through its stop watcher.
 		e.stopCancel()
 		return ctx.Err()
 	}

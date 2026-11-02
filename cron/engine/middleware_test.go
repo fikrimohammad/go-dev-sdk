@@ -3,13 +3,17 @@ package engine
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -18,7 +22,7 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 )
 
-// fakeToggler implements cron.Toggler
+// fakeToggler implements cron.Toggler.
 type fakeToggler struct {
 	enabled bool
 	err     error
@@ -28,7 +32,7 @@ func (f *fakeToggler) IsEnabled(context.Context, string) (bool, error) {
 	return f.enabled, f.err
 }
 
-// fakeLockToken implements cron.LockToken
+// fakeLockToken implements cron.LockToken.
 type fakeLockToken struct {
 	token    string
 	unlocked bool
@@ -46,7 +50,7 @@ func (f *fakeLockToken) Unlock(context.Context) error {
 	return nil
 }
 
-// fakeLocker implements cron.Locker
+// fakeLocker implements cron.Locker.
 type fakeLocker struct {
 	token cron.LockToken
 	err   error
@@ -78,7 +82,7 @@ func TestMiddleware_PanicRecovery(t *testing.T) {
 	chain := m.buildChain(panickingHandler)
 	err := chain(context.Background())
 	if err == nil {
-		t.Fatal("expected error after panic recovery")
+		t.Fatal("chain() got nil error, want the recovered panic")
 	}
 }
 
@@ -167,7 +171,7 @@ func TestMiddleware_LockerFailClosed(t *testing.T) {
 
 	err := chain(context.Background())
 	if err == nil {
-		t.Fatal("expected error when lock infra fails")
+		t.Fatal("chain() got nil error, want the lock failure")
 	}
 	if handlerCalled {
 		t.Fatal("handler should not be called when lock infra fails")
@@ -197,10 +201,10 @@ func TestMiddleware_FencingTokenInjected(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !foundToken || capturedToken != "snowflake-999" {
-		t.Fatalf("expected fencing token %q, got %q, found %v", "snowflake-999", capturedToken, foundToken)
+		t.Fatalf("fencing token got %q (found %t), want %q", capturedToken, foundToken, "snowflake-999")
 	}
 	if !token.unlocked {
-		t.Fatal("expected lock to be unlocked after execution")
+		t.Fatal("lock unlocked = false, want true")
 	}
 }
 
@@ -360,8 +364,8 @@ func TestJob_PanicIsMeasured(t *testing.T) {
 	if len(durations) != 1 {
 		t.Fatalf("cron.job.duration records got %d, want 1", len(durations))
 	}
-	if _, ok := durations[0].attrs["error.type"]; !ok {
-		t.Errorf("cron.job.duration attrs got %v, want error.type", durations[0].attrs)
+	if got := durations[0].attrs["error.type"]; got != "panic" {
+		t.Errorf("cron.job.duration error.type got %v, want %q", got, "panic")
 	}
 
 	spans := exporter.GetSpans()
@@ -371,6 +375,133 @@ func TestJob_PanicIsMeasured(t *testing.T) {
 	if code := spans[0].Status.Code; code != codes.Error {
 		t.Errorf("span status got %v, want %v", code, codes.Error)
 	}
+}
+
+// codedError carries a code the way *errs.Error does, without importing errs.
+type codedError struct{ code int }
+
+func (e codedError) Error() string { return "coded failure" }
+
+func (e codedError) Code() int { return e.code }
+
+// TestMetrics_Attributes checks the exact duration instrument and attribute
+// sets on success and on each failure class, and that the span carries the
+// fencing token while the metric does not.
+func TestMetrics_Attributes(t *testing.T) {
+	const fence = "fence-7"
+	base := map[string]string{
+		"cron.job.name":    "attr-job",
+		"cron.job.trigger": "scheduled",
+	}
+	withType := func(v string) map[string]string {
+		return maps.Clone(map[string]string{
+			"cron.job.name":    "attr-job",
+			"cron.job.trigger": "scheduled",
+			"error.type":       v,
+		})
+	}
+	tests := []struct {
+		name    string
+		handler cron.HandlerFunc
+		wantErr bool
+		want    map[string]string
+	}{
+		{
+			name:    "success",
+			handler: func(context.Context) error { return nil },
+			want:    base,
+		},
+		{
+			name:    "coded failure",
+			handler: func(context.Context) error { return codedError{code: 4001} },
+			wantErr: true,
+			want:    withType("4001"),
+		},
+		{
+			name:    "plain failure",
+			handler: func(context.Context) error { return errors.New("boom with details") },
+			wantErr: true,
+			want:    withType("_OTHER"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := sdkmetric.NewManualReader()
+			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			m := meta{
+				job:     cron.Job{Name: "attr-job"},
+				trigger: "scheduled",
+				timeout: time.Minute,
+				locker:  &fakeLocker{token: &fakeLockToken{token: fence}},
+				metrics: metrics.Wrap(mp),
+				tracer:  providerTracer{tp: tp},
+			}
+
+			err := m.buildChain(tc.handler)(context.Background())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("chain() error got %v, want error %t", err, tc.wantErr)
+			}
+
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &rm); err != nil {
+				t.Fatalf("Collect() got err %v, want nil", err)
+			}
+			var names []string
+			var points []metricdata.HistogramDataPoint[float64]
+			for _, sm := range rm.ScopeMetrics {
+				for _, mt := range sm.Metrics {
+					names = append(names, mt.Name)
+					h, ok := mt.Data.(metricdata.Histogram[float64])
+					if !ok {
+						t.Fatalf("metric %q data got %T, want Histogram[float64]", mt.Name, mt.Data)
+					}
+					if mt.Unit != "s" {
+						t.Errorf("metric %q unit got %q, want %q", mt.Name, mt.Unit, "s")
+					}
+					points = append(points, h.DataPoints...)
+				}
+			}
+			if want := []string{"cron.job.duration"}; !slices.Equal(names, want) {
+				t.Fatalf("metric names got %v, want %v", names, want)
+			}
+			if len(points) != 1 {
+				t.Fatalf("data points got %d, want 1", len(points))
+			}
+			if got := attrMap(points[0].Attributes.ToSlice()); !maps.Equal(got, tc.want) {
+				t.Errorf("metric attributes got %v, want %v", got, tc.want)
+			}
+
+			spans := exporter.GetSpans()
+			if len(spans) != 1 {
+				t.Fatalf("spans got %d, want 1", len(spans))
+			}
+			if spans[0].Name != "cron.attr-job" {
+				t.Errorf("span name got %q, want %q", spans[0].Name, "cron.attr-job")
+			}
+			if got := attrMap(spans[0].Attributes); !maps.Equal(got, withFence(tc.want, fence)) {
+				t.Errorf("span attributes got %v, want %v", got, withFence(tc.want, fence))
+			}
+		})
+	}
+}
+
+// attrMap converts attributes to string values for comparison.
+func attrMap(kvs []attribute.KeyValue) map[string]string {
+	m := make(map[string]string, len(kvs))
+	for _, kv := range kvs {
+		m[string(kv.Key)] = kv.Value.String()
+	}
+	return m
+}
+
+// withFence returns a copy of want with the fencing token added.
+func withFence(want map[string]string, token string) map[string]string {
+	m := maps.Clone(want)
+	m["cron.job.fencing_token"] = token
+	return m
 }
 
 // failingUnlockToken is a LockToken whose Unlock always fails.

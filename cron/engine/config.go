@@ -18,7 +18,13 @@ const (
 
 // Config holds engine-level configurations.
 type Config struct {
-	GlobalTimeout   time.Duration `yaml:"global_timeout" json:"global_timeout"`
+	// GlobalTimeout bounds a job run that has no Job.Timeout of its own, and
+	// sets the run's lock TTL together with FixedLockTTLBuffer. Zero means
+	// DefaultGlobalTimeout.
+	GlobalTimeout time.Duration `yaml:"global_timeout" json:"global_timeout"`
+
+	// ShutdownTimeout is how long Engine.Stop waits for active runs when its
+	// context has no deadline. Zero means DefaultShutdownTimeout.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" json:"shutdown_timeout"`
 }
 

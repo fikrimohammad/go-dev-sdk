@@ -193,12 +193,12 @@ and the connection setup:
 - Add `cron` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestMetrics_Attributes`: the exact name, unit, and attribute sets on
+- [x] *(regression)* `TestMetrics_Attributes`: the exact name, unit, and attribute sets on
       success and failure. No fencing token, status, or message; no `cron.job.runs`.
-- [ ] Full-tree lint 0 and gostyle 0 in cron; `cron` is in the strict list.
+- [x] Full-tree lint 0 and gostyle 0 in cron; `cron` is in the strict list.
 
 **Verification:**
-- [ ] cron module checks (strict).
+- [x] cron module checks (strict).
 
 **Dependencies:** T7 · **Files:** `cron/engine/middleware.go`, `cron/engine/middleware_test.go`, `cron/engine/config.go`, `cron/*.go` docs, `cron/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 

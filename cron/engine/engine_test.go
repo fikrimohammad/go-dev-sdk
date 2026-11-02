@@ -90,17 +90,17 @@ func TestEngine_RegisterValidations(t *testing.T) {
 
 	// Empty name
 	if err := eng.Register(cron.Job{Schedule: "* * * * *", Handler: func(ctx context.Context) error { return nil }}); !errors.Is(err, cron.ErrEmptyJobName) {
-		t.Fatalf("expected ErrEmptyJobName, got %v", err)
+		t.Fatalf("Register(empty name) = %v, want ErrEmptyJobName", err)
 	}
 
 	// Nil handler
 	if err := eng.Register(cron.Job{Name: "test", Schedule: "* * * * *"}); !errors.Is(err, cron.ErrNilHandler) {
-		t.Fatalf("expected ErrNilHandler, got %v", err)
+		t.Fatalf("Register(nil handler) = %v, want ErrNilHandler", err)
 	}
 
 	// Invalid schedule
 	if err := eng.Register(cron.Job{Name: "test", Schedule: "invalid schedule", Handler: func(ctx context.Context) error { return nil }}); !errors.Is(err, cron.ErrInvalidSchedule) {
-		t.Fatalf("expected ErrInvalidSchedule, got %v", err)
+		t.Fatalf("Register(bad schedule) = %v, want ErrInvalidSchedule", err)
 	}
 
 	// Valid 5-field
@@ -120,7 +120,7 @@ func TestEngine_RegisterValidations(t *testing.T) {
 
 	// Duplicate name
 	if err := eng.Register(cron.Job{Name: "job-5field", Schedule: "0 * * * *", Handler: func(ctx context.Context) error { return nil }}); !errors.Is(err, cron.ErrJobAlreadyExists) {
-		t.Fatalf("expected ErrJobAlreadyExists, got %v", err)
+		t.Fatalf("Register(duplicate) = %v, want ErrJobAlreadyExists", err)
 	}
 }
 
@@ -135,7 +135,7 @@ func TestEngine_RegisterAfterStart(t *testing.T) {
 
 	err = eng.Register(cron.Job{Name: "after-start", Schedule: "* * * * *", Handler: func(ctx context.Context) error { return nil }})
 	if !errors.Is(err, cron.ErrEngineAlreadyStarted) {
-		t.Fatalf("expected ErrEngineAlreadyStarted, got %v", err)
+		t.Fatalf("Register(after Start) = %v, want ErrEngineAlreadyStarted", err)
 	}
 }
 
@@ -160,7 +160,7 @@ func TestEngine_Trigger(t *testing.T) {
 
 	// Unknown job
 	if err := eng.Trigger(context.Background(), "unknown"); !errors.Is(err, cron.ErrJobNotFound) {
-		t.Fatalf("expected ErrJobNotFound, got %v", err)
+		t.Fatalf("Trigger(unknown) = %v, want ErrJobNotFound", err)
 	}
 
 	// Successful manual trigger
@@ -169,7 +169,7 @@ func TestEngine_Trigger(t *testing.T) {
 	}
 
 	if !called.Load() {
-		t.Fatal("expected handler to have been called")
+		t.Fatal("handler calls = 0, want at least 1")
 	}
 }
 
@@ -199,7 +199,7 @@ func TestEngine_TimeoutEnforcement(t *testing.T) {
 
 	err = eng.Trigger(context.Background(), "timeout-job")
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+		t.Fatalf("Trigger() = %v, want context.DeadlineExceeded", err)
 	}
 	if !errors.Is(handlerErr, context.DeadlineExceeded) {
 		t.Fatalf("handler context should report DeadlineExceeded, got %v", handlerErr)
@@ -238,7 +238,7 @@ func TestEngine_SkipOnOverlap(t *testing.T) {
 	// Second trigger while slow-job is running should fail with ErrJobRunning
 	err2 := eng.Trigger(context.Background(), "slow-job")
 	if !errors.Is(err2, cron.ErrJobRunning) {
-		t.Fatalf("expected ErrJobRunning, got %v", err2)
+		t.Fatalf("overlapping Trigger() = %v, want ErrJobRunning", err2)
 	}
 
 	close(block)
@@ -278,13 +278,13 @@ func TestEngine_TwoPhaseShutdown(t *testing.T) {
 	// Stop without a deadline: the configured 50ms ShutdownTimeout applies and cancels the in-flight job
 	err = eng.Stop(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded on stop timeout, got %v", err)
+		t.Fatalf("Stop() on timeout = %v, want context.DeadlineExceeded", err)
 	}
 
 	// Trigger after stop returns ErrEngineStopped
 	errAfterStop := eng.Trigger(context.Background(), "blocking-job")
 	if !errors.Is(errAfterStop, cron.ErrEngineStopped) {
-		t.Fatalf("expected ErrEngineStopped, got %v", errAfterStop)
+		t.Fatalf("Trigger() after Stop = %v, want ErrEngineStopped", errAfterStop)
 	}
 }
 
@@ -316,7 +316,7 @@ func TestEngine_StopWithoutDeadlineUsesConfig(t *testing.T) {
 	// Pass context.Background() without explicit deadline: should apply 50ms timeout automatically
 	err = eng.Stop(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected deadline exceeded, got %v", err)
+		t.Fatalf("Stop() = %v, want context.DeadlineExceeded", err)
 	}
 }
 
@@ -368,6 +368,6 @@ func TestEngine_Options(t *testing.T) {
 		t.Fatalf("unexpected error with options: %v", err)
 	}
 	if eng.toggler == nil || eng.locker == nil {
-		t.Fatal("expected toggler and locker to be set")
+		t.Fatal("toggler or locker = nil, want both set")
 	}
 }

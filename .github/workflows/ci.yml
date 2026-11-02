@@ -15,7 +15,7 @@ permissions:
 env:
   GO_VERSION: "1.26.5"
   GOLANGCI_VERSION: v2.15.0
-  STRICT_LINT_MODULES: '["db","errgroup","errs","identity","observability","redis","rest","s3"]'
+  STRICT_LINT_MODULES: '["cron","db","errgroup","errs","identity","observability","redis","rest","s3"]'
 
 jobs:
   modules:

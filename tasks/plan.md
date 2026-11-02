@@ -68,7 +68,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 ### Wave 2 (parallel)
 - [x] T3: producer lifecycle: `Register` without I/O, `Start(ctx)` owns the stream, `Shutdown(ctx)` waits (N2, N6, N7, N14, N20 ownership)
 - [x] T4: consumer lifecycle: `Register` without I/O, `Start(ctx)`, bounded `Shutdown(ctx)`, data-subject filter, `DeliverNew` (N2, N3, N4, N14, N18 filter)
-- [ ] T8: cron telemetry, docs, recipe, strict (C1, C6, X2–X6, N19)
+- [x] T8: cron telemetry, docs, recipe, strict (C1, C6, X2–X6, N19)
 
 ### Checkpoint A: Opus review of T1–T4, T7, T8
 ### Wave 3 (parallel)

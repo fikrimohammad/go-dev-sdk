@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"runtime/debug"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/cron"
@@ -18,23 +21,43 @@ import (
 )
 
 const (
-	tracerScope       = "cron.job"
-	metricJobRuns     = "cron.job.runs"
+	// tracerScope is the OTel instrumentation scope name.
+	tracerScope = "cron.job"
+
+	// metricJobDuration is the OTel metric name, one histogram sample per run.
 	metricJobDuration = "cron.job.duration"
+
+	// attrJobName is the job name attribute on the span and the metric.
+	attrJobName = "cron.job.name"
+
+	// attrJobTrigger is the trigger attribute: "scheduled" or "manual".
+	attrJobTrigger = "cron.job.trigger"
+
+	// attrJobFencingToken is the fencing token attribute, on the span only.
+	attrJobFencingToken = "cron.job.fencing_token"
+
+	// errorTypeTimeout is the error.type for a deadline or a timeout.
+	errorTypeTimeout = "timeout"
+
+	// errorTypeCanceled is the error.type for a canceled run.
+	errorTypeCanceled = "canceled"
+
+	// errorTypePanic is the error.type for a recovered panic.
+	errorTypePanic = "panic"
+
+	// errorTypeOther is the error.type for any other failure.
+	errorTypeOther = "_OTHER"
 )
 
-var (
-	metricJobRunsInstrument = metrics.Instrument{
-		Name:        metricJobRuns,
-		Unit:        "{run}",
-		Description: "Cron job runs",
-	}
-	metricJobDurationInstrument = metrics.Instrument{
-		Name:        metricJobDuration,
-		Unit:        "s",
-		Description: "Cron job duration",
-	}
-)
+// errPanic marks an error made from a recovered panic.
+var errPanic = errors.New("cron panic recovered")
+
+// metricJobDurationInstrument is the cron.job.duration histogram.
+var metricJobDurationInstrument = metrics.Instrument{
+	Name:        metricJobDuration,
+	Unit:        "s",
+	Description: "Duration of cron job runs.",
+}
 
 // meta holds metadata and injected dependencies for a single job execution.
 type meta struct {
@@ -48,32 +71,62 @@ type meta struct {
 	tracer  tracer.Client
 }
 
-func (m meta) tracerOr() trace.Tracer {
+// metricsClient returns the injected metrics client, or metrics.Default() when
+// none was injected. It is resolved per call so a later otel.SetMeterProvider
+// still applies.
+func (m meta) metricsClient() metrics.Client {
+	if m.metrics != nil {
+		return m.metrics
+	}
+	return metrics.Default()
+}
+
+// tracerClient returns the injected tracer client, or tracer.Default() when
+// none was injected. It is resolved per call so a later otel.SetTracerProvider
+// still applies.
+func (m meta) tracerClient() tracer.Client {
 	if m.tracer != nil {
-		return m.tracer.Tracer(tracerScope)
+		return m.tracer
 	}
-	return tracer.Tracer(tracerScope)
+	return tracer.Default()
 }
 
-func (m meta) baseAttrs() map[string]any {
-	return map[string]any{
-		"job.name": m.job.Name,
-		"trigger":  m.trigger,
-	}
-}
-
-func (m meta) eventAttrs(ctx context.Context, err error) map[string]any {
-	attrs := m.baseAttrs()
-	if token, ok := cron.FencingTokenFromContext(ctx); ok {
-		attrs["fencing_token"] = token
+// baseAttrs returns the attributes shared by the span and the metric: the job
+// name and trigger, plus error.type when err is non-nil.
+func (m meta) baseAttrs(err error) map[string]any {
+	attrs := map[string]any{
+		attrJobName:    m.job.Name,
+		attrJobTrigger: m.trigger,
 	}
 	if err != nil {
-		attrs["status"] = "failed"
-		attrs["error.type"] = err.Error()
-	} else {
-		attrs["status"] = "success"
+		attrs[string(otelsemconv.ErrorTypeKey)] = errorType(err)
 	}
 	return attrs
+}
+
+// errorType classifies err for error.type. It never returns err.Error(),
+// whose text is unbounded. An error with a code (such as *errs.Error) gives
+// its code, and the other values are fixed names.
+func errorType(err error) string {
+	if errors.Is(err, errPanic) {
+		return errorTypePanic
+	}
+	if coded, ok := errors.AsType[interface {
+		error
+		Code() int
+	}](err); ok {
+		return strconv.Itoa(coded.Code())
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errorTypeTimeout
+	}
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+		return errorTypeTimeout
+	}
+	if errors.Is(err, context.Canceled) {
+		return errorTypeCanceled
+	}
+	return errorTypeOther
 }
 
 func (m meta) panicRecovery(next cron.HandlerFunc) cron.HandlerFunc {
@@ -90,7 +143,7 @@ func (m meta) panicRecovery(next cron.HandlerFunc) cron.HandlerFunc {
 					attrs = append(attrs, "trace_id", id)
 				}
 				logs.Error(ctx, "cron panic recovered", attrs...)
-				err = fmt.Errorf("cron panic recovered: %v", r)
+				err = fmt.Errorf("%w: %v", errPanic, r)
 			}
 		}()
 		return next(ctx)
@@ -99,9 +152,9 @@ func (m meta) panicRecovery(next cron.HandlerFunc) cron.HandlerFunc {
 
 func (m meta) tracerMW(next cron.HandlerFunc) cron.HandlerFunc {
 	return func(ctx context.Context) error {
-		ctx, span := m.tracerOr().Start(ctx, "cron."+m.job.Name,
+		ctx, span := m.tracerClient().Tracer(tracerScope).Start(ctx, "cron."+m.job.Name,
 			trace.WithSpanKind(trace.SpanKindInternal),
-			trace.WithAttributes(tracer.Attrs(m.baseAttrs())...),
+			trace.WithAttributes(tracer.Attrs(m.baseAttrs(nil))...),
 		)
 		defer span.End()
 
@@ -110,7 +163,7 @@ func (m meta) tracerMW(next cron.HandlerFunc) cron.HandlerFunc {
 		if err != nil {
 			span.SetStatus(codes.Error, err.Error())
 		}
-		span.SetAttributes(tracer.Attrs(m.eventAttrs(ctx, err))...)
+		span.SetAttributes(tracer.Attrs(m.baseAttrs(err))...)
 		return err
 	}
 }
@@ -155,6 +208,9 @@ func (m meta) lockerMW(next cron.HandlerFunc) cron.HandlerFunc {
 				}
 			}()
 
+			// The span is started outside this middleware, so the token is set on it
+			// here rather than read back when the span ends.
+			trace.SpanFromContext(ctx).SetAttributes(attribute.String(attrJobFencingToken, token.FencingToken()))
 			ctx = cron.WithFencingToken(ctx, token.FencingToken())
 		}
 		return next(ctx)
@@ -166,16 +222,8 @@ func (m meta) metricsMW(next cron.HandlerFunc) cron.HandlerFunc {
 		start := time.Now()
 		err := next(ctx)
 
-		attrs := m.eventAttrs(ctx, err)
 		duration := time.Since(start).Seconds()
-
-		if m.metrics != nil {
-			_ = m.metrics.Add(ctx, metricJobRunsInstrument, 1, attrs)
-			_ = m.metrics.Record(ctx, metricJobDurationInstrument, duration, attrs)
-		} else {
-			_ = metrics.Add(ctx, metricJobRunsInstrument, 1, attrs)
-			_ = metrics.Record(ctx, metricJobDurationInstrument, duration, attrs)
-		}
+		_ = m.metricsClient().Record(ctx, metricJobDurationInstrument, duration, m.baseAttrs(err))
 		return err
 	}
 }
