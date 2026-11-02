@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,5 +47,11 @@ func TestConfig_Validate_ReportsEveryProblem(t *testing.T) {
 	}
 	if n := len(joined.Unwrap()); n != 2 {
 		t.Errorf("Validate(%+v) reported %d problems, want 2: %v", cfg, n, err)
+	}
+	if !strings.Contains(err.Error(), "cron: global_timeout must not be negative") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "cron: global_timeout must not be negative")
+	}
+	if !strings.Contains(err.Error(), "cron: shutdown_timeout must not be negative") {
+		t.Errorf("Validate(%+v) error = %q, want it to contain %q", cfg, err, "cron: shutdown_timeout must not be negative")
 	}
 }

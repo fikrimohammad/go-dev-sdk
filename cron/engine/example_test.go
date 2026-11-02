@@ -1,3 +1,6 @@
+// This file holds runnable documentation examples for package engine; go
+// test checks their output.
+
 package engine_test
 
 import (

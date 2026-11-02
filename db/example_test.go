@@ -1,4 +1,4 @@
-// This file holds runnable documentation examples for package db. They are
+// This file holds documentation examples for package db. They are
 // compile-only because they need a live PostgreSQL server.
 
 package db_test

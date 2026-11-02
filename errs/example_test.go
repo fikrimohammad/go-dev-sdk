@@ -1,3 +1,6 @@
+// This file holds runnable documentation examples for package errs; go
+// test checks their output.
+
 package errs_test
 
 import (

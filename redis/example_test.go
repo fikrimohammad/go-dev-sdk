@@ -1,4 +1,4 @@
-// This file holds runnable documentation examples for package redis. They are
+// This file holds documentation examples for package redis. They are
 // compile-only because they need a live Redis server.
 
 package redis_test

@@ -1,3 +1,6 @@
+// This file holds runnable documentation examples for package errgroup; go
+// test checks their output.
+
 package errgroup_test
 
 import (

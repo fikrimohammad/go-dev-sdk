@@ -282,14 +282,14 @@ on every exported identifier; sentinel errors prefixed with the package name; `e
 3. All modules in `go.work`, confloader included, pass `go build`, `go vet`,
    `go test -count=1 -shuffle=on`, and `go mod tidy -diff`.
 4. Every test in the Testing Strategy table exists and fails against `main`.
-5. `grep -rn 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
+5. `grep -rnw 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
    finds nothing. No `*.go`, go.mod or go.sum file mentions goconvey (the `.golangci.yml`
    depguard rule that bans it is intentional).
 6. `.golangci.yml`'s ireturn allow-list includes `github.com/fikrimohammad/go-dev-sdk/`.
    AGENTS.md documents that client packages may export and return a caller-facing
    interface so users can generate mocks.
 7. `go doc -all` for each changed package shows no unresolved links or stale references
-   (`SetDefault`, `Init`, `SetStreams`).
+   (`SetDefault`, `Init`, `SetStreams` as whole words; `SetDefaults` is the R1 API).
 
 ## Amendment: repository conventions (owner feedback 2026-11-01)
 

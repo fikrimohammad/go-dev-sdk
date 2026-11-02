@@ -573,7 +573,7 @@ Start, PublishSync (producer). There is no `// Output:`, because these need real
 **Estimated scope:** M
 
 ### Checkpoint E: conventions complete
-- [ ] Spec criteria 8–12 are checked, with evidence.
-- [ ] Opus review of T20–T26, with its fixes applied.
+- [x] Spec criteria 8–12 are checked, with evidence.
+- [x] Opus review of T20–T26, with its fixes applied.
 - [ ] The PR body is updated (scope, and the R1 breaking change: exported config methods,
       and Validate joining errors in rest and cron/engine). The owner then reviews.

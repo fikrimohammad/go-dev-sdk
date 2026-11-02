@@ -1,3 +1,6 @@
+// This file holds runnable documentation examples for package attributes; go
+// test checks their output.
+
 package attributes_test
 
 import (

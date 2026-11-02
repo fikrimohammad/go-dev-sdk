@@ -1,8 +1,12 @@
+// This file holds a compile-only documentation example for package
+// observability. It needs an OTLP collector, so it has no Output comment and is
+// compiled but not run.
+
 package observability_test
 
 import (
 	"context"
-	"fmt"
+	"log"
 
 	"go.opentelemetry.io/otel"
 
@@ -18,16 +22,16 @@ func Example() {
 	ctx := context.Background()
 	info := identity.Default()
 
-	log, err := logs.New(info, logs.Config{Format: "json"})
+	logger, err := logs.New(info, logs.Config{Format: "json"})
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
-	logs.SetDefault(log)
+	logs.SetDefault(logger)
 
 	mc, err := metrics.New(ctx, info, metrics.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
 	otel.SetMeterProvider(mc.Provider())
@@ -35,7 +39,7 @@ func Example() {
 
 	tc, err := tracer.New(ctx, info, tracer.Config{Endpoint: "collector:4317", Insecure: true})
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
 	tracer.SetGlobal(tc)
@@ -43,6 +47,6 @@ func Example() {
 
 	logs.Info(ctx, "service started", "user_id", 42)
 	if err := metrics.Add(ctx, metrics.Instrument{Name: "orders.created", Unit: "{order}"}, 1, map[string]any{"region": "eu"}); err != nil {
-		fmt.Println(err)
+		log.Println(err)
 	}
 }

@@ -1,3 +1,6 @@
+// This file holds runnable documentation examples for package cron; go
+// test checks their output.
+
 package cron_test
 
 import (

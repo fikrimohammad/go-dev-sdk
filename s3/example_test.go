@@ -1,4 +1,4 @@
-// This file holds runnable documentation examples for package s3. They are
+// This file holds documentation examples for package s3. They are
 // compile-only because they need a live S3-compatible server.
 
 package s3_test
