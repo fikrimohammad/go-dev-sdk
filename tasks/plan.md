@@ -63,7 +63,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Wave 1 (parallel)
 - [x] T2: `nats/internal/wire`: stream layout, headers, connect options, server address (N7, N15, N18)
-- [ ] T7: cron lifecycle: lock, contexts, middleware order, errors (C2, C3, C4, C5, X1, X7)
+- [x] T7: cron lifecycle: lock, contexts, middleware order, errors (C2, C3, C4, C5, X1, X7)
 
 ### Wave 2 (parallel)
 - [ ] T3: producer lifecycle: `Register` without I/O, `Start(ctx)` owns the stream, `Shutdown(ctx)` waits (N2, N6, N7, N14, N20 ownership)

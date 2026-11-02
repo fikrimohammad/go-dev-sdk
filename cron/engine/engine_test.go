@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +12,75 @@ import (
 
 	"github.com/fikrimohammad/go-dev-sdk/cron"
 )
+
+func TestRegister_InvalidSchedule(t *testing.T) {
+	eng, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	job := cron.Job{Name: "bad-schedule", Schedule: "invalid schedule", Handler: func(ctx context.Context) error { return nil }}
+	_, parseErr := eng.parser.Parse(job.Schedule)
+	if parseErr == nil {
+		t.Fatal("parser accepted an invalid schedule, want an error")
+	}
+
+	err = eng.Register(job)
+	if !errors.Is(err, cron.ErrInvalidSchedule) {
+		t.Fatalf("got err %v, want ErrInvalidSchedule", err)
+	}
+	if want := cron.ErrInvalidSchedule.Error() + ": "; !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("got err %q, want prefix %q", err, want)
+	}
+	if !strings.Contains(err.Error(), parseErr.Error()) {
+		t.Fatalf("got err %q, want it to contain parser error %q", err, parseErr)
+	}
+}
+
+// TestRegister_RacesStart registers jobs while Start runs. Each Register must
+// either succeed, leaving the job in the map and in the scheduler, or return
+// ErrEngineAlreadyStarted.
+func TestRegister_RacesStart(t *testing.T) {
+	const jobs = 50
+	eng, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	handler := func(ctx context.Context) error { return nil }
+	errs := make([]error, jobs)
+	var wg sync.WaitGroup
+	for i := range jobs {
+		wg.Go(func() {
+			errs[i] = eng.Register(cron.Job{
+				Name:     fmt.Sprintf("race-%d", i),
+				Schedule: "@hourly",
+				Handler:  handler,
+			})
+		})
+	}
+	wg.Go(func() { eng.Start() })
+	wg.Wait()
+	defer func() { _ = eng.Stop(context.Background()) }()
+
+	registered := 0
+	for i, err := range errs {
+		name := fmt.Sprintf("race-%d", i)
+		switch {
+		case err == nil:
+			registered++
+			if _, ok := eng.jobs[name]; !ok {
+				t.Errorf("Register(%q) returned nil but the job is not in the map", name)
+			}
+		case errors.Is(err, cron.ErrEngineAlreadyStarted):
+		default:
+			t.Errorf("Register(%q) got err %v, want nil or ErrEngineAlreadyStarted", name, err)
+		}
+	}
+	if got := len(eng.cron.Entries()); got != registered {
+		t.Errorf("scheduled entries got %d, want %d (the successful registrations)", got, registered)
+	}
+}
 
 func TestEngine_RegisterValidations(t *testing.T) {
 	eng, err := New(Config{})
@@ -204,9 +275,8 @@ func TestEngine_TwoPhaseShutdown(t *testing.T) {
 
 	<-started
 
-	// Stop with nil context: automatically uses configured 50ms ShutdownTimeout and cancels in-flight job
-	var nilCtx context.Context
-	err = eng.Stop(nilCtx)
+	// Stop without a deadline: the configured 50ms ShutdownTimeout applies and cancels the in-flight job
+	err = eng.Stop(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context.DeadlineExceeded on stop timeout, got %v", err)
 	}
@@ -281,8 +351,7 @@ func TestEngine_ConcurrentRunJobAndStop(t *testing.T) {
 	// Concurrently stop
 	go func() {
 		time.Sleep(1 * time.Millisecond)
-		var nilCtx context.Context
-		_ = eng.Stop(nilCtx)
+		_ = eng.Stop(context.Background())
 	}()
 
 	wg.Wait()

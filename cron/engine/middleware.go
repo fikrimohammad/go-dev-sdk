@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
@@ -119,9 +120,10 @@ func (m meta) togglerMW(next cron.HandlerFunc) cron.HandlerFunc {
 		if m.toggler != nil {
 			enabled, err := m.toggler.IsEnabled(ctx, m.job.Name)
 			if err != nil {
-				logs.Warn(ctx, "failed to check job toggle; failing open", "job", m.job.Name, "error", err)
+				// Fail open: run the job and note the toggler error on the span.
+				trace.SpanFromContext(ctx).AddEvent("cron.toggler.error",
+					trace.WithAttributes(attribute.String("error.message", err.Error())))
 			} else if !enabled {
-				logs.Info(ctx, "cron job skipped: disabled by toggler", "job", m.job.Name)
 				return cron.ErrJobDisabled
 			}
 		}
@@ -134,20 +136,22 @@ func (m meta) lockerMW(next cron.HandlerFunc) cron.HandlerFunc {
 		if m.locker != nil {
 			lockKey := "cron:lock:" + m.job.Name
 			lockTTL := m.timeout + FixedLockTTLBuffer
-			token, err := m.locker.Lock(ctx, lockKey, lockTTL)
-			if err != nil {
-				if errors.Is(err, cron.ErrLockHeld) {
-					logs.Debug(ctx, "cron job skipped: lock already held", "job", m.job.Name)
+			token, lockErr := m.locker.Lock(ctx, lockKey, lockTTL)
+			if lockErr != nil {
+				if errors.Is(lockErr, cron.ErrLockHeld) {
 					return cron.ErrLockHeld
 				}
-				logs.Error(ctx, "cron job lock infrastructure error", "job", m.job.Name, "error", err)
-				return fmt.Errorf("cron: lock failed for job %q: %w", m.job.Name, err)
+				return fmt.Errorf("cron: lock job %q: %w", m.job.Name, lockErr)
 			}
+			// Release even when ctx is canceled, and keep its trace values. A
+			// failed unlock doesn't change the job's outcome: the lock expires
+			// with its TTL, so the failure is only noted on the span.
 			defer func() {
-				unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				defer cancel()
 				if uerr := token.Unlock(unlockCtx); uerr != nil {
-					logs.Warn(ctx, "failed to release lock for job", "job", m.job.Name, "error", uerr)
+					trace.SpanFromContext(ctx).AddEvent("cron.unlock.error",
+						trace.WithAttributes(attribute.String("error.message", uerr.Error())))
 				}
 			}()
 
@@ -195,25 +199,30 @@ func (m meta) loggerMW(next cron.HandlerFunc) cron.HandlerFunc {
 		if id := tracer.TraceIDFrom(ctx); id != "" {
 			attrs = append(attrs, "trace_id", id)
 		}
-		if err != nil {
-			attrs = append(attrs, "error", err)
-			logs.Error(ctx, "cron job failed", attrs...)
-		} else {
+		switch {
+		case err == nil:
 			logs.Info(ctx, "cron job completed", attrs...)
+		case errors.Is(err, cron.ErrJobDisabled), errors.Is(err, cron.ErrLockHeld), errors.Is(err, cron.ErrJobRunning):
+			logs.Info(ctx, "cron job skipped", append(attrs, "reason", err.Error())...)
+		default:
+			logs.Error(ctx, "cron job failed", append(attrs, "error", err)...)
 		}
 		return err
 	}
 }
 
-// buildChain wraps the raw handler in the strict 6-stage middleware sequence:
-// panic recovery -> tracer -> toggler -> distributed locker -> metrics -> logger -> handler.
+// buildChain wraps the raw handler in the middleware sequence:
+// tracer -> logger -> toggler -> distributed locker -> metrics -> panic recovery -> handler.
+// Panic recovery is innermost, so a panic is traced, logged, and measured as a
+// failed run. Only the logger logs the outcome: the toggler and locker return
+// their errors, and a skip is logged at Info and a failure at Error.
 func (m meta) buildChain(handler cron.HandlerFunc) cron.HandlerFunc {
-	return m.panicRecovery(
-		m.tracerMW(
+	return m.tracerMW(
+		m.loggerMW(
 			m.togglerMW(
 				m.lockerMW(
 					m.metricsMW(
-						m.loggerMW(handler),
+						m.panicRecovery(handler),
 					),
 				),
 			),

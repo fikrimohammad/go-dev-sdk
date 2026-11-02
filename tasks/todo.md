@@ -159,18 +159,18 @@ and the connection setup:
 - Telemetry names don't change here; that is T8.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestRegister_RacesStart`: a concurrent `Register` and `Start` under
+- [x] *(regression)* `TestRegister_RacesStart`: a concurrent `Register` and `Start` under
       `-race`. Either Register returns `ErrEngineAlreadyStarted` or the job is scheduled, never
       a race report.
-- [ ] *(regression)* `TestUnlock_AfterCancel`: a job canceled by `Stop` still calls Unlock with
+- [x] *(regression)* `TestUnlock_AfterCancel`: a job canceled by `Stop` still calls Unlock with
       a live ctx that keeps the span context.
-- [ ] *(regression)* `TestJob_PanicIsMeasured`: a panicking job produces a duration point with
+- [x] *(regression)* `TestJob_PanicIsMeasured`: a panicking job produces a duration point with
       an error, and the span has error status.
-- [ ] `TestRegister_InvalidSchedule`: `errors.Is` matches both `ErrInvalidSchedule` and the
+- [x] `TestRegister_InvalidSchedule`: `errors.Is` matches both `ErrInvalidSchedule` and the
       parser error.
 
 **Verification:**
-- [ ] cron module checks (lint new-from-merge-base); coverage: cron 100%, engine ≥ 93.7%.
+- [x] cron module checks (lint new-from-merge-base); coverage: cron 100%, engine ≥ 93.7%.
 
 **Dependencies:** T1 · **Files:** `cron/engine/engine.go`, `cron/engine/middleware.go`, `cron/engine/engine_test.go`, `cron/engine/middleware_test.go` · **Scope:** M
 
