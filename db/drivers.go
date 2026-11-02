@@ -246,7 +246,8 @@ func (d driverSpec) connInfo(cfg Config) connInfo {
 //
 //   - MySQL: the driver error number, as both code and error.type ("1062").
 //   - PostgreSQL: the five-character SQLSTATE, as both code and error.type.
-//   - context.DeadlineExceeded: an empty code and error.type "timeout".
+//   - context.DeadlineExceeded, or a net.Error whose Timeout is true: an empty
+//     code and error.type "timeout".
 //   - context.Canceled: an empty code and error.type "canceled".
 //   - any other error: an empty code and error.type "_OTHER".
 func errorInfo(err error) (code, errType string) {
@@ -262,6 +263,9 @@ func errorInfo(err error) (code, errType string) {
 		return "", "timeout"
 	case errors.Is(err, context.Canceled):
 		return "", "canceled"
+	}
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+		return "", "timeout"
 	}
 	return "", "_OTHER"
 }

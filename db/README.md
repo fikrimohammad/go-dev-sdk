@@ -227,9 +227,11 @@ Per executed statement, the span (named after `db.operation.name`) and the
 (`mysql` or `postgresql`), `db.namespace` (the database name), `server.address`
 and `server.port` (from `Config` or parsed from `DSN`, when known), and
 `db.operation.name` (leading SQL verb, e.g. `SELECT`). On failure they also
-carry `error.type` (the MySQL error number, the PostgreSQL SQLSTATE, `timeout`,
-`canceled`, or `_OTHER`) and, when the driver reports a code,
-`db.response.status_code`. Only the span carries `db.query.text`; it stays off
+carry `error.type` (the MySQL error number, the PostgreSQL SQLSTATE, `timeout`
+for a context deadline or network timeout, `canceled`, or `_OTHER`) and, when
+the driver reports a code, `db.response.status_code`. `sql.ErrNoRows` is a
+normal "not found" result, not a failure: it is still returned to the caller,
+but the span and metric record it as a success. Only the span carries `db.query.text`; it stays off
 the metric to keep cardinality bounded. Transaction begin/commit/rollback are
 lifecycle operations and are not instrumented.
 

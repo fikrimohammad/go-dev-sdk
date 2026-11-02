@@ -46,7 +46,7 @@ func TestMySQLIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool, err := Connect(t.Context(), Config{Driver: "mysql", DSN: dsn, MaxOpenConns: 2})
+	pool, err := Connect(ctx, Config{Driver: "mysql", DSN: dsn, MaxOpenConns: 2})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestPostgresIntegration(t *testing.T) {
 
 	// Using the DSN path with the "postgres" alias: driver resolution, DSN
 	// parsing, ping, and telemetry identity all run against a real server.
-	pool, err := Connect(t.Context(), Config{Driver: "postgres", DSN: dsn, MaxOpenConns: 2})
+	pool, err := Connect(ctx, Config{Driver: "postgres", DSN: dsn, MaxOpenConns: 2})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}

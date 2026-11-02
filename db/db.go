@@ -74,6 +74,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -83,25 +84,27 @@ import (
 	"github.com/jmoiron/sqlx"
 	"go.opentelemetry.io/otel/codes"
 	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/semconv/v1.43.0/dbconv"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
-const (
-	// tracerScope is the OTel instrumentation scope name.
-	tracerScope = "db.query"
-
-	// metricDuration is the OTel metric name emitted per executed statement.
-	metricDuration = "db.client.operation.duration"
-)
+// tracerScope is the OTel instrumentation scope name.
+const tracerScope = "db.query"
 
 var (
+	// metricDuration is the OTel metric name emitted per executed statement.
+	metricDuration = dbconv.ClientOperationDuration{}.Name()
+
+	// metricDurationInstrument takes its name, unit, and description from
+	// semconv, so it is identical to redis's and both register in one metrics
+	// client without conflict.
 	metricDurationInstrument = metrics.Instrument{
 		Name:        metricDuration,
-		Unit:        "s",
-		Description: "Database client operation duration",
+		Unit:        dbconv.ClientOperationDuration{}.Unit(),
+		Description: dbconv.ClientOperationDuration{}.Description(),
 	}
 )
 
@@ -387,8 +390,10 @@ func (m meta) instrument(ctx context.Context, op, query string, fn func(context.
 	start := time.Now()
 	err := fn(ctx)
 
+	// sql.ErrNoRows is a normal "not found" result, not a failure; the caller
+	// still receives it.
 	var code, errType string
-	if err != nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		span.SetStatus(codes.Error, err.Error())
 		code, errType = errorInfo(err)
 	}

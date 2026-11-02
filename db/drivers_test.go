@@ -3,6 +3,9 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"os"
 	"strings"
 	"testing"
 
@@ -174,6 +177,11 @@ func TestErrorInfo(t *testing.T) {
 			name:     "canceled",
 			err:      context.Canceled,
 			wantType: "canceled",
+		},
+		{
+			name:     "network timeout",
+			err:      fmt.Errorf("read: %w", &net.OpError{Op: "read", Err: os.ErrDeadlineExceeded}),
+			wantType: "timeout",
 		},
 		{
 			// The message must never leak into error.type.

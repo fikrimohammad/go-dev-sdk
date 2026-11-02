@@ -369,13 +369,11 @@ func TestConnect_ContextDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
+	// 10.255.255.1 is non-routable, so only ctx can end the dial quickly; the
+	// DSN's 2s timeout keeps a regression from hanging until the OS gives up.
 	db, err := Connect(ctx, Config{
-		Driver:   "mysql",
-		Host:     "10.255.255.1", // non-routable: a dial would hang until its timeout
-		Port:     3306,
-		Database: "report_db",
-		Username: "user",
-		Password: "pass",
+		Driver: "mysql",
+		DSN:    "user:pass@tcp(10.255.255.1:3306)/report_db?timeout=2s",
 	})
 	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Fatalf("Connect took %v with an expired ctx, want < 1s", elapsed)
@@ -577,6 +575,8 @@ func TestInstrument_MetricAttributes(t *testing.T) {
 		want map[string]string
 	}{
 		{name: "success", want: base},
+		// sql.ErrNoRows is a normal "not found" result, like redis.Nil.
+		{name: "no rows", err: sql.ErrNoRows, want: base},
 		{name: "mysql error", err: &mysql.MySQLError{Number: 1062, Message: "duplicate entry"}, want: withErr("1062")},
 		{name: "unknown error", err: errors.New("boom"), want: func() map[string]string {
 			m := maps.Clone(base)
@@ -635,6 +635,10 @@ func TestInstrument_MetricAttributes(t *testing.T) {
 			}
 			if sp.Name() != "INSERT" || sp.SpanKind() != trace.SpanKindClient {
 				t.Fatalf("span name = %q, kind = %v, want INSERT, client", sp.Name(), sp.SpanKind())
+			}
+			_, failed := tc.want["error.type"]
+			if gotErr := sp.Status().Code == codes.Error; gotErr != failed {
+				t.Fatalf("span status = %v, want error status %t", sp.Status().Code, failed)
 			}
 			if got := spanAttrs(sp)["db.query.text"]; got != "INSERT INTO t (id, name) VALUES (?, ?)" {
 				t.Fatalf("span db.query.text = %v, want bound query", got)

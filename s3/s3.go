@@ -36,6 +36,7 @@ import (
 	"github.com/aws/smithy-go"
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/semconv/v1.43.0/rpcconv"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
@@ -49,11 +50,13 @@ const tracerScope = "s3.client"
 // enum has no member for it, so the value is set as a string.
 const rpcSystemName = "aws-api"
 
-// rpcCallDuration describes the rpc.client.call.duration histogram, recorded once per S3 operation.
+// rpcCallDuration describes the rpc.client.call.duration histogram, recorded
+// once per S3 operation. Its name, unit, and description come from semconv, so
+// it matches any other RPC client instrument in the same metrics client.
 var rpcCallDuration = metrics.Instrument{
-	Name:        "rpc.client.call.duration",
-	Unit:        "s",
-	Description: "Duration of S3 client calls.",
+	Name:        rpcconv.ClientCallDuration{}.Name(),
+	Unit:        rpcconv.ClientCallDuration{}.Unit(),
+	Description: rpcconv.ClientCallDuration{}.Description(),
 }
 
 // IsNotFound returns true if err represents an S3 404/NotFound or NoSuchKey/NoSuchBucket error.
@@ -474,7 +477,8 @@ func (m meta) attrs(op, bucket string) map[string]any {
 // finish completes one operation. When err is non-nil it sets error.type and
 // the error status on the span. It then ends the span and records the
 // rpc.client.call.duration point, which carries the same attributes as the
-// span. Telemetry errors never fail the call.
+// span. It adds error.type to attrs, so attrs must be owned by this one call.
+// Telemetry errors never fail the call.
 func (m meta) finish(ctx context.Context, span trace.Span, attrs map[string]any, start time.Time, err error) {
 	if err != nil {
 		etype := errorType(err)

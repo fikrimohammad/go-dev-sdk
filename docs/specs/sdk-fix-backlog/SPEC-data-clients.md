@@ -55,6 +55,12 @@ metrics cost and cardinality incident waiting to happen. They also emit
    - Otherwise `timeout` for `context.DeadlineExceeded`, `canceled` for `context.Canceled`, and
      `_OTHER` for anything else. These match rest/client.
    - `db.response.status_code` is set only when there is a driver code.
+   - *Amended 2026-11-02 (owner, Checkpoint A):* a `net.Error` whose `Timeout()` is true, and
+     `redis.ErrPoolTimeout`, are also `timeout`, as s3 already does. db treats `sql.ErrNoRows` as
+     success in telemetry, as redis treats `redis.Nil`; the caller still gets the error.
+   - Metric name, unit, and description come from semconv's `dbconv`/`rpcconv` types, so db and
+     redis register an identical `db.client.operation.duration` and never conflict in one
+     metrics client.
 6. **redis pool metrics follow the convention:**
    - `db.client.connection.count` is an up-down counter in `{connection}`, with
      `db.client.connection.state = idle|used`.
