@@ -126,9 +126,9 @@ then runs recall at `411bb72` and `216b2aa`, and precision on the branch (spec a
 - The orchestrator adds go-sqlmock v1.5.2 to db/go.mod.
 
 **Acceptance criteria:**
-- [ ] No test depends on the deleted fake driver.
-- [ ] Coverage ≥ 88.8%.
-- [ ] PR 2's regression tests still exist and still fail when their fix is reverted
+- [x] No test depends on the deleted fake driver.
+- [x] Coverage ≥ 88.8%.
+- [x] PR 2's regression tests still exist and still fail when their fix is reverted
       (orchestrator spot-check).
 
 **Verification:** db module checks, plus the integration tests run locally against Docker

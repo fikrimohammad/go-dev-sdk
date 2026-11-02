@@ -315,7 +315,7 @@ gomock, if a test needs to control return values rather than SQL text.
 
 ## Testing against real databases
 
-Unit tests use a stub driver and need no server. Env-gated integration tests
+Unit tests run on go-sqlmock and need no server. Env-gated integration tests
 exercise the real drivers against MySQL and PostgreSQL:
 
 ```bash
