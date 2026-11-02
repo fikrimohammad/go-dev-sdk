@@ -59,14 +59,14 @@ func (p *defaultJSProducer) PublishAsync(ctx context.Context, msg *nats.Msg, cb 
 		return err
 	}
 
+	// Wait only for the ack. The message is already with the transport, so the
+	// caller's ctx ending must not fail it. WithPublishAsyncTimeout bounds the wait.
 	go func() {
 		select {
 		case ack := <-ackF.Ok():
 			cb(ctx, ack, nil)
 		case err := <-ackF.Err():
 			cb(ctx, nil, err)
-		case <-ctx.Done():
-			cb(ctx, nil, ctx.Err())
 		}
 	}()
 
@@ -274,8 +274,11 @@ func (p *Producer) PublishSync(ctx context.Context, msg Message) error {
 // PublishSyncWithDelay sends msg so that it is delivered once, at delay after the
 // call, using a NATS message schedule. The message goes to a schedule subject
 // with the data subject in Nats-Schedule-Target. The server copies the body, the
-// SDK headers, and the trace context to the delivered message. Its stream
-// sequence is the message id. A delay of zero or less sends the message at once,
+// SDK headers, and the trace context to the delivered message. The server stores
+// the delivered message under a new stream sequence, so the consumer's message id
+// differs from the one on this publish span, which is the schedule message's
+// sequence; correlate the two with Key or the trace. A delay of zero or less sends
+// the message at once,
 // as PublishSync does. The call returns once the server accepts the schedule.
 func (p *Producer) PublishSyncWithDelay(ctx context.Context, msg Message, delay time.Duration) error {
 	if strings.Contains(msg.Tag, ".") {

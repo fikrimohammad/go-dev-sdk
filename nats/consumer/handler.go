@@ -131,7 +131,18 @@ func newHandlerAdapter(m meta, cfg Config, handlerFunc HandlerFunc) (*handlerAda
 func (h *handlerAdapter) HandleMsg(ctx context.Context, raw jetstream.Msg) error {
 	msg, err := newMessage(raw, h.meta.topic)
 	if err != nil {
+		logs.Warn(ctx, "message without JetStream metadata",
+			"topic", h.meta.topic,
+			"group", h.meta.group,
+			"subject", raw.Subject(),
+		)
 		h.meta.settle(ctx, 0, "nak", raw.Nak)
+		return err
+	}
+	// Once the run context is canceled (Shutdown has begun), the message goes back to
+	// the server at once, without the retry backoff, and the handler does not run.
+	if err := ctx.Err(); err != nil {
+		h.meta.settle(ctx, msg.sequence, "nak", raw.Nak)
 		return err
 	}
 	return h.chain(ctx, msg)
@@ -153,18 +164,25 @@ func (h *handlerAdapter) call(ctx context.Context, msg *message) error {
 func (h *handlerAdapter) startHeartbeat(ctx context.Context, msg *message) (stop func()) {
 	done := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Go(func() {
-		ticker := time.NewTicker(h.heartbeatEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				h.meta.settle(ctx, msg.sequence, "in_progress", msg.raw.InProgress)
+	// time.NewTicker panics on a non-positive interval, so no heartbeat runs then.
+	if h.heartbeatEvery > 0 {
+		wg.Go(func() {
+			ticker := time.NewTicker(h.heartbeatEvery)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ctx.Done():
+					// The handler deadline has passed, so stop renewing the ack and let
+					// AckWait redeliver the message.
+					return
+				case <-ticker.C:
+					h.meta.settle(ctx, msg.sequence, "in_progress", msg.raw.InProgress)
+				}
 			}
-		}
-	})
+		})
+	}
 	return func() {
 		close(done)
 		wg.Wait()

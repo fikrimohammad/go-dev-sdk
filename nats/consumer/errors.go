@@ -26,6 +26,7 @@ var (
 	ErrInvalidConsumeTimestamp = errors.New("consumer: consume_timestamp must be an RFC3339 timestamp when consume_from_where is \"timestamp\"")
 	ErrNegativeRetryBackoff    = errors.New("consumer: retry_backoff must not be negative")
 	ErrInvalidHandlerTimeout   = errors.New("consumer: handler_timeout must be positive")
+	ErrInvalidTimeout          = errors.New("consumer: timeout must be at least MinTimeout (100ms)")
 
 	ErrInvalidTopic = errors.New("consumer: topic must not contain dots")
 	ErrInvalidGroup = errors.New("consumer: group must not contain dots")

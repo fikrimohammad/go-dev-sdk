@@ -332,8 +332,8 @@ and the connection setup:
 **Dependencies:** T9 · **Files:** `nats/**/*.go` (docs and renames), `nats/README.md` or the package READMEs, `.github/workflows/ci.yml` · **Scope:** M
 
 ### Checkpoint B: complete
-- [ ] SPEC-messaging success criteria 1–8 are verified with evidence.
-- [ ] Final Opus review, with its fixes applied.
+- [x] SPEC-messaging success criteria 1–8 are verified with evidence.
+- [x] Final Opus review, with its fixes applied.
 - [ ] The PR body (prepared by the orchestrator) lists every API break and every renamed or
       dropped metric and attribute. The owner updates it and marks the PR ready, or tells the
       orchestrator to.

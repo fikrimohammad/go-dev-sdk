@@ -49,8 +49,10 @@ These are the motivating bugs:
    | Producer | `messaging.client.operation.duration` | `messaging.client.sent.messages` |
    | Consumer | `messaging.process.duration` | `messaging.client.consumed.messages` |
 
-   These counters are kept, unlike db's: semconv defines them. Only a successful operation
-   increments a counter, while the histogram records every outcome.
+   These counters are kept, unlike db's: semconv defines them. `sent.messages` counts
+   successful sends only. `consumed.messages` counts every delivery handed to a handler,
+   whatever its outcome. The histograms record every outcome, with `error.type` on failure.
+   (Clarified at Checkpoint B: the earlier wording contradicted the Telemetry Contract.)
 2. **Messaging attributes** (N10, X2, X4).
    - Metrics carry only these:
      - `messaging.system` (`nats`; open enum)

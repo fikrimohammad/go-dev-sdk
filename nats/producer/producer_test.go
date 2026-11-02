@@ -1067,3 +1067,41 @@ func TestPublishSync_SameKeyNotDeduplicated(t *testing.T) {
 		}
 	}
 }
+
+// regression: a caller ctx that ends after the message is handed to the transport
+// does not fail the publish; the callback still receives the ack.
+func TestDefaultJSProducer_PublishAsyncIgnoresCallerCancel(t *testing.T) {
+	t.Parallel()
+
+	ns := startJetStreamServer(t)
+	nc := dialNATS(t, ns)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+	if _, err := js.CreateStream(context.Background(), jetstream.StreamConfig{
+		Name:     "orders",
+		Subjects: []string{"orders"},
+	}); err != nil {
+		t.Fatalf("CreateStream() error = %v", err)
+	}
+
+	pd := &defaultJSProducer{nc: nc, js: js}
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan error, 1)
+	if err := pd.PublishAsync(ctx, nats.NewMsg("orders"), func(_ context.Context, _ *jetstream.PubAck, err error) {
+		got <- err
+	}); err != nil {
+		t.Fatalf("PublishAsync() error = %v", err)
+	}
+	cancel()
+
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("callback error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback was not called")
+	}
+}

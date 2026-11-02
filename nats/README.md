@@ -197,9 +197,14 @@ The handler does not ack, nak, or term by itself, and it does not see those call
 
 - The handler context is derived from the consumer's run context. `Shutdown` cancels it.
 - `Config.HandlerTimeout` bounds each call. It defaults to `Config.Timeout`, the AckWait.
+- `Config.Timeout` must be at least `consumer.MinTimeout` (100ms), the smallest AckWait the
+  heartbeat can serve. `Register` rejects a smaller value with `consumer.ErrInvalidTimeout`.
 - While a handler runs, the consumer sends an InProgress heartbeat every `Timeout/2`. A
-  handler that runs longer than the AckWait is not redelivered mid-run. `HandlerTimeout`
-  still stops a runaway handler.
+  handler that runs longer than the AckWait is not redelivered mid-run. The heartbeat stops
+  at the `HandlerTimeout` deadline, so a handler that ignores its ctx and outlives it is
+  redelivered after AckWait. `HandlerTimeout` still stops a runaway handler.
+- `MaxConcurrent` also caps the unacked messages the server hands out (MaxAckPending), so a
+  message waiting for a free handler slot is not redelivered.
 
 ### Retries and exhaustion
 
@@ -213,9 +218,10 @@ message is only left in the stream. A dead-letter queue is a separate project. U
 `Start(ctx)` connects, ensures the stream, creates or updates the durable consumer, and
 starts delivery. The ctx bounds only the setup. Handlers run until `Shutdown`.
 
-`Shutdown(ctx)` stops intake, cancels the handler contexts, and waits for the running handlers
-to return. It returns `ctx.Err()` if ctx ends first. `Shutdown` before a successful `Start` is
-a no-op.
+`Shutdown(ctx)` cancels the handler contexts first, then stops intake, waits for the running
+handlers to return, and drains the connections. It returns `ctx.Err()` if ctx ends first. A
+message that arrives after the cancel is nak'd without running the handler. `Shutdown` before a
+successful `Start` is a no-op.
 
 ### ConsumeFromWhere
 
@@ -283,6 +289,7 @@ func (m fakeMessage) Timestamp() time.Time  { return time.Time{} }
 func handleOrder(ctx context.Context, msg consumer.Message) error {
 	if msg.DeliveryCount() > 1 {
 		// A redelivery: the earlier attempt may have run its side effect.
+		_ = msg.Key() // check your store for this key before repeating side effects
 	}
 	return nil
 }
@@ -404,12 +411,12 @@ stays free of test doubles.
 | `New(info, opts...)` | Returns an empty `*Consumer`. Rejects a service name with dots (`ErrInvalidAppName`). |
 | `(*Consumer).Register(cfg, handler)` | Validates and stores the config and handler. Does no I/O. Fails after `Start` with `ErrAlreadyStarted`. |
 | `(*Consumer).Start(ctx)` | Connects, ensures the stream and durable consumer, and starts delivery. The ctx bounds setup only. |
-| `(*Consumer).Shutdown(ctx)` | Cancels running handlers, stops intake, waits, and drains. Returns `ctx.Err()` if ctx ends first. |
+| `(*Consumer).Shutdown(ctx)` | Cancels handler contexts, stops intake, waits, and drains. Returns `ctx.Err()` if ctx ends first. |
 | `HandlerFunc` | `func(ctx context.Context, msg consumer.Message) error`. |
 | `Message` | The seven accessors: `Key`, `Tag`, `Subject`, `Body`, `Sequence`, `DeliveryCount`, `Timestamp`. |
-| `Config` | `Endpoints`, `Topic`, `Group`, `Tags` (default `["*"]`), `Timeout` (AckWait, default 60s), `HandlerTimeout` (default `Timeout`), `MaxRetryAttempts` (MaxDeliver, default 5), `MaxConcurrent` (default 10), `ConsumeFromWhere`, `ConsumeTimestamp`, `RetryBackoff`, optional authentication. |
+| `Config` | `Endpoints`, `Topic`, `Group`, `Tags` (default `["*"]`), `Timeout` (AckWait, at least `MinTimeout` = 100ms, default 60s), `HandlerTimeout` (default `Timeout`), `MaxRetryAttempts` (MaxDeliver, default 5), `MaxConcurrent` (default 10), `ConsumeFromWhere`, `ConsumeTimestamp`, `RetryBackoff`, optional authentication. |
 | `ErrNoRetry` | Wrap it in a handler error to terminate the message. |
-| `ErrConsumerExists`, `ErrAlreadyStarted`, `ErrInvalidAppName`, and the config sentinels (`ErrInvalidTopic`, `ErrInvalidGroup`, `ErrInvalidTag`, and others) | Sentinels for `errors.Is`. |
+| `ErrConsumerExists`, `ErrAlreadyStarted`, `ErrInvalidAppName`, and the config sentinels (`ErrInvalidTimeout`, `ErrInvalidTopic`, `ErrInvalidGroup`, `ErrInvalidTag`, and others) | Sentinels for `errors.Is`. |
 
 ## Naming conventions and dot restrictions
 

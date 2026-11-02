@@ -123,6 +123,8 @@ func TestConfig_Validate_Errors(t *testing.T) {
 		{"group with dots", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "has.dots"}, ErrInvalidGroup},
 		{"tag with dots", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Tags: []string{"has.dots"}}, ErrInvalidTag},
 		{"empty tag in tags", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Tags: []string{""}}, ErrEmptyTag},
+		{"timeout below minimum", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Timeout: time.Nanosecond}, ErrInvalidTimeout},
+		{"timeout just below minimum", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Timeout: 99 * time.Millisecond}, ErrInvalidTimeout},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -320,11 +322,55 @@ func TestBuildConsumerConfig(t *testing.T) {
 			if got.DeliverPolicy != tt.wantPolicy {
 				t.Errorf("DeliverPolicy = %v, want %v", got.DeliverPolicy, tt.wantPolicy)
 			}
+			if want := tt.cfg.SetDefaults().MaxConcurrent; got.MaxAckPending != want {
+				t.Errorf("MaxAckPending = %d, want MaxConcurrent %d", got.MaxAckPending, want)
+			}
 			if tt.wantSingleSub != "" && got.FilterSubject != tt.wantSingleSub {
 				t.Errorf("FilterSubject = %q, want %q", got.FilterSubject, tt.wantSingleSub)
 			}
 			if tt.wantFilters != nil && !slices.Equal(got.FilterSubjects, tt.wantFilters) {
 				t.Errorf("FilterSubjects = %v, want %v", got.FilterSubjects, tt.wantFilters)
+			}
+		})
+	}
+}
+
+// regression: a Timeout below MinTimeout is rejected, so the heartbeat never gets a
+// non-positive interval.
+func TestConfig_Validate_MinTimeout(t *testing.T) {
+	t.Parallel()
+
+	if MinTimeout != 100*time.Millisecond {
+		t.Fatalf("MinTimeout = %v, want 100ms", MinTimeout)
+	}
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		wantErr bool
+	}{
+		{name: "1ns rejected", timeout: time.Nanosecond, wantErr: true},
+		{name: "99ms rejected", timeout: 99 * time.Millisecond, wantErr: true},
+		{name: "100ms accepted", timeout: 100 * time.Millisecond},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := Config{
+				Endpoints: []string{"localhost:4222"},
+				Topic:     "t",
+				Group:     "g",
+				Timeout:   tc.timeout,
+			}.SetDefaults().Validate()
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidTimeout) {
+				t.Fatalf("Validate() = %v, want it to wrap %v", err, ErrInvalidTimeout)
 			}
 		})
 	}

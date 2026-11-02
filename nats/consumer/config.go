@@ -24,6 +24,10 @@ const (
 	DefaultTags = "*"
 )
 
+// MinTimeout is the smallest Config.Timeout the consumer accepts. It is the
+// smallest AckWait the heartbeat can serve: the heartbeat runs every Timeout/2.
+const MinTimeout = 100 * time.Millisecond
+
 // ConsumeFromWhere values for Config.ConsumeFromWhere.
 const (
 	// ConsumeFromLast delivers only messages published after the durable consumer
@@ -49,7 +53,7 @@ type Config struct {
 	Tags []string `yaml:"consumption_tags" json:"consumption_tags"`
 	// Timeout is the JetStream AckWait: how long the server waits for an ack
 	// before it redelivers. While a handler runs, the consumer sends an InProgress
-	// heartbeat every Timeout/2.
+	// heartbeat every Timeout/2. It must be at least MinTimeout.
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
 	// HandlerTimeout bounds each handler call. Its context is canceled when the
 	// deadline passes or when Shutdown starts. Zero uses Timeout.
@@ -161,6 +165,10 @@ func (c Config) Validate() error {
 		errs = append(errs, ErrInvalidHandlerTimeout)
 	}
 
+	if c.Timeout < MinTimeout {
+		errs = append(errs, ErrInvalidTimeout)
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -193,6 +201,9 @@ func (c Config) buildConsumerConfig(durableName string) jetstream.ConsumerConfig
 		Name:       durableName,
 		AckWait:    c.Timeout,
 		MaxDeliver: c.MaxRetryAttempts,
+		// Cap the unacked messages at the handler slots, so a message waiting for a
+		// free slot is not redelivered after AckWait.
+		MaxAckPending: c.MaxConcurrent,
 	}
 
 	filters := c.buildFilterSubjects()
