@@ -115,11 +115,11 @@ the capability-map link, this plan, and the task list. Open a draft PR whose bod
 the integration tests' call sites.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestConnect_ContextDeadline`: an already-expired ctx makes `Connect` return
+- [x] *(regression)* `TestConnect_ContextDeadline`: an already-expired ctx makes `Connect` return
       an error matching `context.DeadlineExceeded` without waiting for a dial timeout.
 
 **Verification:**
-- [ ] db module checks; `go vet` compiles the examples and integration tests.
+- [x] db module checks; `go vet` compiles the examples and integration tests.
 
 **Dependencies:** T2 · **Files:** `db/db.go`, `db/db_test.go`, `db/example_test.go`, `db/integration_test.go`, `db/README.md` · **Scope:** S
 

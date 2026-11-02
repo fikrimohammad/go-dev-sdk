@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -330,7 +331,7 @@ func normalizeAttrs(attrs map[string]any) map[string]any {
 // --- tests ----------------------------------------------------------------------------
 
 func TestConnect(t *testing.T) {
-	db, err := Connect(Config{
+	db, err := Connect(context.Background(), Config{
 		Driver:       "dbstub",
 		DSN:          "test",
 		Host:         "localhost",
@@ -361,6 +362,32 @@ func TestConnect(t *testing.T) {
 	}
 }
 
+// TestConnect_ContextDeadline checks that an expired ctx bounds the initial ping:
+// Connect fails with the context error instead of waiting on an unreachable host.
+func TestConnect_ContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	start := time.Now()
+	db, err := Connect(ctx, Config{
+		Driver:   "mysql",
+		Host:     "10.255.255.1", // non-routable: a dial would hang until its timeout
+		Port:     3306,
+		Database: "report_db",
+		Username: "user",
+		Password: "pass",
+	})
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("Connect took %v with an expired ctx, want < 1s", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Connect error = %v, want errors.Is(err, context.DeadlineExceeded)", err)
+	}
+	if db != nil {
+		t.Fatalf("Connect returned DB %v with an error, want nil", db)
+	}
+}
+
 func TestConnect_InjectedClients(t *testing.T) {
 	testBackend.mu.Lock()
 	testBackend.queries = nil
@@ -384,7 +411,7 @@ func TestConnect_InjectedClients(t *testing.T) {
 	t.Cleanup(func() { _ = injTp.Shutdown(context.Background()) })
 	injFm := &fakeMetrics{}
 
-	db, err := Connect(Config{Driver: "dbstub", DSN: "test", Host: "localhost", Port: 3306, Database: "report_db", Username: "user"},
+	db, err := Connect(context.Background(), Config{Driver: "dbstub", DSN: "test", Host: "localhost", Port: 3306, Database: "report_db", Username: "user"},
 		WithMetrics(injFm), WithTracer(tracer.Wrap(injTp)))
 	if err != nil {
 		t.Fatalf("Connect: %v", err)

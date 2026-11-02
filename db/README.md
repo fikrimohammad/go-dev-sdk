@@ -93,7 +93,7 @@ mysqlCfg := db.Config{
 ### 2. Connect
 
 ```go
-pool, err := db.Connect(cfg) // applies SetDefaults, opens, pings
+pool, err := db.Connect(ctx, cfg) // applies SetDefaults, opens, pings; ctx bounds the ping
 if err != nil { /* handle */ }
 defer pool.Close()
 ```
@@ -163,7 +163,7 @@ if err := tx.Commit(); err != nil { /* handle */ }
 ### 5. (Optional) Inject telemetry clients
 
 ```go
-pool, err := db.Connect(cfg, db.WithMetrics(mc), db.WithTracer(tc))
+pool, err := db.Connect(ctx, cfg, db.WithMetrics(mc), db.WithTracer(tc))
 ```
 
 When not injected, statements are instrumented through the package-level
@@ -254,7 +254,7 @@ lifecycle operations and are not instrumented.
 | Symbol | Description |
 | --- | --- |
 | `Config` | Connection + pool settings; `SetDefaults()`, `Validate()` |
-| `Connect(cfg, opts...)` | Open + ping an instrumented `DB` |
+| `Connect(ctx, cfg, opts...)` | Open + ping an instrumented `DB` |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
 | `Queryer` | `NamedSelectContext`, `NamedGetContext` |
 | `Execer` | `NamedExecContext` |

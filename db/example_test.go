@@ -13,7 +13,7 @@ import (
 // ExampleConnect opens a PostgreSQL pool and loads one row into a struct
 // through a named placeholder.
 func ExampleConnect() {
-	conn, err := db.Connect(db.Config{
+	conn, err := db.Connect(context.Background(), db.Config{
 		Driver:   "pgx",
 		Host:     "localhost",
 		Port:     5432,
@@ -49,7 +49,7 @@ func ExampleConnect() {
 // deferred Rollback undoes the work on any early return; after a successful
 // Commit it is a harmless no-op.
 func ExampleDB_Begin() {
-	conn, err := db.Connect(db.Config{
+	conn, err := db.Connect(context.Background(), db.Config{
 		Driver:   "pgx",
 		Host:     "localhost",
 		Port:     5432,

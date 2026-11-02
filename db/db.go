@@ -185,10 +185,12 @@ func WithTracer(t tracer.Client) Option {
 // Connect applies [Config.SetDefaults] and [Config.Validate], opens a database
 // from the resulting config (using Config.DSN when set, otherwise building a
 // driver-specific data source name), applies the pool settings, pings it, and
-// returns an instrumented [DB]. It returns an error if validation fails or the
-// database cannot be opened or pinged. Metrics and tracing use the OTel global
-// providers unless overridden with [WithMetrics] or [WithTracer].
-func Connect(cfg Config, opts ...Option) (DB, error) {
+// returns an instrumented [DB]. The ctx bounds the initial ping; if it is done
+// first, Connect returns an error wrapping its cause. It returns an error if
+// validation fails or the database cannot be opened or pinged. Metrics and
+// tracing use the OTel global providers unless overridden with [WithMetrics] or
+// [WithTracer].
+func Connect(ctx context.Context, cfg Config, opts ...Option) (DB, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -209,7 +211,7 @@ func Connect(cfg Config, opts ...Option) (DB, error) {
 		return nil, fmt.Errorf("db: driver %q requires Config.DSN", cfg.Driver)
 	}
 
-	raw, err := sqlx.Connect(spec.name, dsn)
+	raw, err := sqlx.ConnectContext(ctx, spec.name, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: connect %s: %w", spec.systemName, err)
 	}

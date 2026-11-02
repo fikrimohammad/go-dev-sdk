@@ -56,7 +56,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T4: s3 telemetry: `rpc.client.call.duration`, `rpc.system.name`/`rpc.method` (S-telemetry, X4, X6)
 
 ### Wave 2 (parallel)
-- [ ] T5: db `Connect(ctx)`; examples and README updated (X5)
+- [x] T5: db `Connect(ctx)`; examples and README updated (X5)
 - [ ] T6: redis telemetry: semconv attributes, no count metric, error.type (R1, X2–X4, X6)
 - [ ] T7: s3 `New(ctx)`, lint cleanup, testing recipe, strict (X5, X8, X9, S2, N19)
 
