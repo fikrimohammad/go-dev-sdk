@@ -10,7 +10,52 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
+
+// useTraceContextPropagator makes W3C trace context the global propagator for the
+// test and restores the previous one when the test ends.
+func useTraceContextPropagator(t *testing.T) {
+	t.Helper()
+
+	prev := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(prev) })
+}
+
+// dialNATS returns a connection to ns for reads in the test. The connection
+// closes when the test ends.
+func dialNATS(t *testing.T, ns *natsserver.Server) *nats.Conn {
+	t.Helper()
+
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("nats.Connect() error = %v", err)
+	}
+	t.Cleanup(nc.Close)
+	return nc
+}
+
+// startJetStreamProducer returns a Producer for topic on ns, configured with opts.
+// It is started, and shut down when the test ends.
+func startJetStreamProducer(t *testing.T, ns *natsserver.Server, topic string, opts ...Option) *Producer {
+	t.Helper()
+
+	p, err := New(testAppInfo, opts...)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := p.Register(Config{Endpoints: []string{ns.ClientURL()}, Topic: topic}); err != nil {
+		t.Fatalf("Register(%s) error = %v", topic, err)
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
+	return p
+}
 
 // startJetStreamServer runs an in-process NATS server with JetStream enabled and
 // stops it when the test ends.

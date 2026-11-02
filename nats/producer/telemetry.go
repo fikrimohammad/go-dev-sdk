@@ -100,11 +100,14 @@ func (m meta) eventAttrs(topic, tag, key, subject string, bodyLen int, msgID, et
 }
 
 // instrumentPublish records one PRODUCER span and one count + duration pair
-// around a synchronous send. The sequence / msgID, when available, is attached.
+// around a synchronous send. The trace context of the span is injected into msg
+// before fn sends it, so the consumer's span is a child of this one. The
+// sequence / msgID, when available, is attached.
 func (m meta) instrumentPublish(
 	ctx context.Context,
 	topic, tag, key, subject string,
 	bodyLen int,
+	msg *nats.Msg,
 	fn func(context.Context) (*jetstream.PubAck, error),
 ) (*jetstream.PubAck, error) {
 	start := time.Now()
@@ -112,6 +115,7 @@ func (m meta) instrumentPublish(
 		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(tracer.Attrs(m.publishAttrs(topic, tag, key, subject, bodyLen))...),
 	)
+	injectTraceContext(ctx, msg)
 	result, err := fn(ctx)
 
 	msgID := key
@@ -130,10 +134,12 @@ func (m meta) instrumentPublish(
 
 // instrumentPublishAsync records one PRODUCER span spanning the whole async
 // send: it is opened before PublishAsync and closed when the send callback fires.
+// Like instrumentPublish, it injects the span's trace context into msg.
 func (m meta) instrumentPublishAsync(
 	ctx context.Context,
 	topic, tag, key, subject string,
 	bodyLen int,
+	msg *nats.Msg,
 	send func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error,
 	callback func(context.Context, *jetstream.PubAck, error),
 ) error {
@@ -142,6 +148,7 @@ func (m meta) instrumentPublishAsync(
 		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(tracer.Attrs(m.publishAttrs(topic, tag, key, subject, bodyLen))...),
 	)
+	injectTraceContext(ctx, msg)
 
 	wrapped := func(cctx context.Context, result *jetstream.PubAck, sendErr error) {
 		defer span.End()

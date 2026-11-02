@@ -219,19 +219,19 @@ and the connection setup:
 - N5: the trace context is injected inside the producer span, after it starts.
 
 **Acceptance criteria:**
-- [ ] *(regression)* `TestPublishSyncWithDelay_DeliversOnceAtDelay` (embedded JetStream, read
+- [x] *(regression)* `TestPublishSyncWithDelay_DeliversOnceAtDelay` (embedded JetStream, read
       through a raw jetstream consumer filtered on `DataSubjects`):
   - two concurrent publishes with delays of 1 s and 1.5 s each arrive exactly once, no
     earlier than their delay minus 100 ms;
   - no schedule-subject message is seen;
   - `Sdk-Msg-Tag` and `traceparent` survive.
-- [ ] *(regression)* `TestPublishSync_SameKeyNotDeduplicated`: two messages with one key give
+- [x] *(regression)* `TestPublishSync_SameKeyNotDeduplicated`: two messages with one key give
       two stored messages.
-- [ ] *(regression)* `TestPublish_TraceParenting`: the injected `traceparent` span id equals
+- [x] *(regression)* `TestPublish_TraceParenting`: the injected `traceparent` span id equals
       the producer span's.
 
 **Verification:**
-- [ ] `./producer/...` checks (`-count=3` for the timing test); coverage ≥ 70.1%.
+- [x] `./producer/...` checks (`-count=3` for the timing test); coverage ≥ 70.1%.
 
 **Dependencies:** T3, Checkpoint A · **Files:** `nats/producer/producer.go`, `nats/producer/telemetry.go` (inject only), `nats/producer/producer_test.go`, `nats/producer/example_test.go`, `nats/producer/mock_test.go` · **Scope:** M
 

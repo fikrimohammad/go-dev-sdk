@@ -5,14 +5,18 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
+	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
 func TestNew(t *testing.T) {
@@ -342,8 +346,7 @@ func TestShutdown_WaitsForAsyncPublish(t *testing.T) {
 	startStubbed(t, p, map[string]jsProducer{"reporting": mock})
 
 	var called atomic.Bool
-	err = p.PublishAsync(context.Background(), "reporting", "", "", []byte("hello"),
-		func(context.Context, *jetstream.PubAck, error) { called.Store(true) })
+	err = p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "", Key: "", Body: []byte("hello")}, func(context.Context, *jetstream.PubAck, error) { called.Store(true) })
 	if err != nil {
 		t.Fatalf("PublishAsync() error = %v", err)
 	}
@@ -371,7 +374,7 @@ func TestShutdown_Deadline(t *testing.T) {
 	}
 	startStubbed(t, p, map[string]jsProducer{"reporting": mock})
 
-	if err := p.PublishAsync(context.Background(), "reporting", "", "", []byte("hello"), nil); err != nil {
+	if err := p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "", Key: "", Body: []byte("hello")}, nil); err != nil {
 		t.Fatalf("PublishAsync() error = %v", err)
 	}
 
@@ -448,7 +451,7 @@ func TestProducerPublishSync(t *testing.T) {
 				startStubbed(t, p, map[string]jsProducer{tt.topic: &mockProducer{sendSyncErr: tt.mockErr}})
 			}
 
-			err = p.PublishSync(context.Background(), tt.topic, tt.tag, "key", []byte("hello"))
+			err = p.PublishSync(context.Background(), Message{Topic: tt.topic, Tag: tt.tag, Key: "key", Body: []byte("hello")})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("PublishSync() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -479,7 +482,7 @@ func TestProducerPublishSyncWithDelay(t *testing.T) {
 	startStubbed(t, p, map[string]jsProducer{"test-topic": mock})
 
 	delay := 5 * time.Second
-	err = p.PublishSyncWithDelay(context.Background(), "test-topic", "tag", "key", []byte("hello"), delay)
+	err = p.PublishSyncWithDelay(context.Background(), Message{Topic: "test-topic", Tag: "tag", Key: "key", Body: []byte("hello")}, delay)
 	if err != nil {
 		t.Fatalf("PublishSyncWithDelay() error = %v", err)
 	}
@@ -488,10 +491,13 @@ func TestProducerPublishSyncWithDelay(t *testing.T) {
 		t.Fatal("PublishSyncWithDelay() did not capture message")
 	}
 
+	if !strings.HasPrefix(capturedMsg.Subject, "schedules.test-topic.") {
+		t.Errorf("PublishSyncWithDelay() subject = %q, want schedules.test-topic.<id>", capturedMsg.Subject)
+	}
 	// Verify Nats-Schedule and Nats-Schedule-Target header
 	sched := capturedMsg.Header.Get("Nats-Schedule")
-	if sched == "" {
-		t.Error("PublishSyncWithDelay() Nats-Schedule header not set")
+	if !strings.HasPrefix(sched, "@at ") {
+		t.Errorf("PublishSyncWithDelay() Nats-Schedule = %q, want @at <RFC3339Nano time>", sched)
 	}
 	target := capturedMsg.Header.Get("Nats-Schedule-Target")
 	if target != "test-topic.tag" {
@@ -499,7 +505,7 @@ func TestProducerPublishSyncWithDelay(t *testing.T) {
 	}
 
 	// Verify tag with dots is rejected
-	err = p.PublishSyncWithDelay(context.Background(), "test-topic", "has.dot", "key", []byte("hello"), delay)
+	err = p.PublishSyncWithDelay(context.Background(), Message{Topic: "test-topic", Tag: "has.dot", Key: "key", Body: []byte("hello")}, delay)
 	if !errors.Is(err, ErrInvalidTag) {
 		t.Errorf("PublishSyncWithDelay(tag with dots) = %v, want %v", err, ErrInvalidTag)
 	}
@@ -516,7 +522,7 @@ func TestProducerPublishSyncWithDelay_Error(t *testing.T) {
 	mock := &mockProducer{sendSyncErr: errors.New("delay send failed")}
 	startStubbed(t, p, map[string]jsProducer{"test-topic": mock})
 
-	err = p.PublishSyncWithDelay(context.Background(), "test-topic", "tag", "key", []byte("hello"), 5*time.Second)
+	err = p.PublishSyncWithDelay(context.Background(), Message{Topic: "test-topic", Tag: "tag", Key: "key", Body: []byte("hello")}, 5*time.Second)
 	if err == nil {
 		t.Error("PublishSyncWithDelay() expected error, got nil")
 	}
@@ -578,7 +584,7 @@ func TestProducerPublishAsync(t *testing.T) {
 			}
 
 			callback := func(ctx context.Context, result *jetstream.PubAck, err error) {}
-			err = p.PublishAsync(context.Background(), tt.topic, tt.tag, "key", []byte("hello"), callback)
+			err = p.PublishAsync(context.Background(), Message{Topic: tt.topic, Tag: tt.tag, Key: "key", Body: []byte("hello")}, callback)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("PublishAsync() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -593,11 +599,6 @@ func TestProducerPublishAsync(t *testing.T) {
 
 func TestProducerBuildMsg(t *testing.T) {
 	t.Parallel()
-
-	p, err := New(testAppInfo)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
 
 	tests := []struct {
 		name        string
@@ -654,7 +655,7 @@ func TestProducerBuildMsg(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			msg := p.buildMsg(context.Background(), tt.topic, tt.tag, tt.key, tt.body)
+			msg := buildMsg(Message{Topic: tt.topic, Tag: tt.tag, Key: tt.key, Body: tt.body})
 
 			if msg.Subject != tt.wantSubject {
 				t.Errorf("buildMsg() Subject = %q, want %q", msg.Subject, tt.wantSubject)
@@ -662,11 +663,14 @@ func TestProducerBuildMsg(t *testing.T) {
 			if string(msg.Data) != string(tt.body) {
 				t.Errorf("buildMsg() Body = %q, want %q", msg.Data, tt.body)
 			}
-			if msg.Header.Get("Nats-Msg-Tag") != tt.wantTag {
-				t.Errorf("buildMsg() Tags = %q, want %q", msg.Header.Get("Nats-Msg-Tag"), tt.wantTag)
+			if msg.Header.Get(wire.HeaderTag) != tt.wantTag {
+				t.Errorf("buildMsg() Tags = %q, want %q", msg.Header.Get(wire.HeaderTag), tt.wantTag)
 			}
-			if msg.Header.Get("Nats-Msg-Id") != tt.wantKey {
-				t.Errorf("buildMsg() Keys = %q, want %q", msg.Header.Get("Nats-Msg-Id"), tt.wantKey)
+			if msg.Header.Get(wire.HeaderKey) != tt.wantKey {
+				t.Errorf("buildMsg() Keys = %q, want %q", msg.Header.Get(wire.HeaderKey), tt.wantKey)
+			}
+			if got := msg.Header.Get("Nats-Msg-Id"); got != "" {
+				t.Errorf("buildMsg() Nats-Msg-Id = %q, want none", got)
 			}
 		})
 	}
@@ -816,7 +820,7 @@ func TestPublishAsync_AcrossRuns(t *testing.T) {
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start() run one error = %v", err)
 	}
-	if err := p.PublishAsync(context.Background(), "orders", "", "", []byte("one"), nil); err != nil {
+	if err := p.PublishAsync(context.Background(), Message{Topic: "orders", Tag: "", Key: "", Body: []byte("one")}, nil); err != nil {
 		t.Fatalf("PublishAsync() run one error = %v", err)
 	}
 	firstCb := <-cbs
@@ -831,7 +835,7 @@ func TestPublishAsync_AcrossRuns(t *testing.T) {
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start() run two error = %v", err)
 	}
-	if err := p.PublishAsync(context.Background(), "orders", "", "", []byte("two"), nil); err != nil {
+	if err := p.PublishAsync(context.Background(), Message{Topic: "orders", Tag: "", Key: "", Body: []byte("two")}, nil); err != nil {
 		t.Fatalf("PublishAsync() run two error = %v", err)
 	}
 	(<-cbs)(context.Background(), &jetstream.PubAck{}, nil)
@@ -926,5 +930,143 @@ func TestStart_RejectsIncompatibleStream(t *testing.T) {
 	const want = "orders: wire: stream orders: DenyPurge is incompatible with message schedules"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("Start() error = %v, want it to contain %q", err, want)
+	}
+}
+
+// TestPublishSyncWithDelay_DeliversOnceAtDelay publishes two delayed messages
+// concurrently and reads the data subjects through a raw consumer. Each message
+// arrives once, no earlier than its delay, with its tag, key, and traceparent, and
+// no schedule message reaches the consumer.
+func TestPublishSyncWithDelay_DeliversOnceAtDelay(t *testing.T) {
+	useTraceContextPropagator(t)
+	ns := startJetStreamServer(t)
+
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(&recordingExporter{})))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	p := startJetStreamProducer(t, ns, "orders", WithTracer(tracer.Wrap(tp)))
+
+	ctx := context.Background()
+	js, err := jetstream.New(dialNATS(t, ns))
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+	stream, err := js.Stream(ctx, "orders")
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	cons, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		FilterSubjects: wire.DataSubjects("orders"),
+		AckPolicy:      jetstream.AckNonePolicy,
+		DeliverPolicy:  jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		t.Fatalf("CreateConsumer() error = %v", err)
+	}
+
+	cases := []struct {
+		tag, key string
+		delay    time.Duration
+		sent     time.Time
+	}{
+		{tag: "first", key: "order-1", delay: time.Second},
+		{tag: "second", key: "order-2", delay: 1500 * time.Millisecond},
+	}
+	var wg sync.WaitGroup
+	for i := range cases {
+		wg.Go(func() {
+			c := &cases[i]
+			c.sent = time.Now()
+			if err := p.PublishSyncWithDelay(ctx, Message{Topic: "orders", Tag: c.tag, Key: c.key, Body: []byte(c.tag)}, c.delay); err != nil {
+				t.Errorf("PublishSyncWithDelay(%s) error = %v", c.tag, err)
+			}
+		})
+	}
+	wg.Wait()
+
+	type delivery struct {
+		subject, tag, key, traceparent string
+		at                             time.Time
+	}
+	var got []delivery
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		batch, err := cons.Fetch(10, jetstream.FetchMaxWait(200*time.Millisecond))
+		if err != nil {
+			t.Fatalf("Fetch() error = %v", err)
+		}
+		for m := range batch.Messages() {
+			h := m.Headers()
+			got = append(got, delivery{m.Subject(), h.Get(wire.HeaderTag), h.Get(wire.HeaderKey), h.Get("traceparent"), time.Now()})
+		}
+		if err := batch.Error(); err != nil {
+			t.Fatalf("batch error = %v", err)
+		}
+	}
+
+	if len(got) != len(cases) {
+		t.Fatalf("delivered %d messages, want %d: %+v", len(got), len(cases), got)
+	}
+	for _, d := range got {
+		if strings.HasPrefix(d.subject, "schedules.") {
+			t.Errorf("schedule message delivered on subject %q", d.subject)
+		}
+	}
+	for _, c := range cases {
+		i := slices.IndexFunc(got, func(d delivery) bool { return d.tag == c.tag })
+		if i < 0 {
+			t.Errorf("no delivery with tag %q", c.tag)
+			continue
+		}
+		d := got[i]
+		if want := "orders." + c.tag; d.subject != want {
+			t.Errorf("subject = %q, want %q", d.subject, want)
+		}
+		if d.key != c.key {
+			t.Errorf("key = %q, want %q", d.key, c.key)
+		}
+		if d.traceparent == "" {
+			t.Errorf("traceparent of %q = empty, want set", c.tag)
+		}
+		if earliest := c.sent.Add(c.delay - 100*time.Millisecond); d.at.Before(earliest) {
+			t.Errorf("%q delivered at %v, want no earlier than %v", c.tag, d.at, earliest)
+		}
+	}
+}
+
+// TestPublishSync_SameKeyNotDeduplicated sends two messages with one key and
+// different bodies. Both must be stored, and neither may carry Nats-Msg-Id.
+func TestPublishSync_SameKeyNotDeduplicated(t *testing.T) {
+	ns := startJetStreamServer(t)
+	p := startJetStreamProducer(t, ns, "orders")
+
+	ctx := context.Background()
+	for _, body := range []string{"created", "updated"} {
+		if err := p.PublishSync(ctx, Message{Topic: "orders", Tag: "", Key: "order-42", Body: []byte(body)}); err != nil {
+			t.Fatalf("PublishSync(%s) error = %v", body, err)
+		}
+	}
+
+	js, err := jetstream.New(dialNATS(t, ns))
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+	stream, err := js.Stream(ctx, "orders")
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info() error = %v", err)
+	}
+	if got := info.State.Msgs; got != 2 {
+		t.Fatalf("stream Msgs = %d, want 2", got)
+	}
+	for seq := uint64(1); seq <= 2; seq++ {
+		raw, err := stream.GetMsg(ctx, seq)
+		if err != nil {
+			t.Fatalf("GetMsg(%d) error = %v", seq, err)
+		}
+		if got := raw.Header.Get("Nats-Msg-Id"); got != "" {
+			t.Errorf("message %d Nats-Msg-Id = %q, want none", seq, got)
+		}
 	}
 }

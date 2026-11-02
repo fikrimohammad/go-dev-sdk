@@ -146,16 +146,30 @@ func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
 
+// Message is one message to publish.
+type Message struct {
+	// Topic is the stream the message is published to.
+	Topic string
+	// Tag is an optional sub-subject. It is published as Topic.Tag and carried in
+	// the Sdk-Msg-Tag header. It must not contain dots.
+	Tag string
+	// Key is an optional business key carried in the Sdk-Msg-Key header. It is
+	// never used for deduplication.
+	Key string
+	// Body is the message payload.
+	Body []byte
+}
+
 // Client is the send surface of a NATS JetStream producer, implemented by *Producer.
 // It lets callers (e.g. the repository layer) depend on the contract without
 // the manager lifecycle.
 type Client interface {
-	// PublishSync sends a message synchronously to the producer registered for topic.
-	PublishSync(ctx context.Context, topic, tag, key string, message []byte) error
+	// PublishSync sends a message synchronously to the producer registered for msg.Topic.
+	PublishSync(ctx context.Context, msg Message) error
 	// PublishSyncWithDelay sends a message that becomes consumable only after delay.
-	PublishSyncWithDelay(ctx context.Context, topic, tag, key string, message []byte, delay time.Duration) error
+	PublishSyncWithDelay(ctx context.Context, msg Message, delay time.Duration) error
 	// PublishAsync sends a message asynchronously; callback receives the result or error.
-	PublishAsync(ctx context.Context, topic, tag, key string, message []byte,
+	PublishAsync(ctx context.Context, msg Message,
 		callback func(ctx context.Context, result *jetstream.PubAck, err error)) error
 }
 
@@ -245,44 +259,55 @@ func (p *Producer) Register(cfg Config) error {
 	return nil
 }
 
-// PublishSync sends a message synchronously to the producer registered for topic.
-func (p *Producer) PublishSync(ctx context.Context, topic, tag, key string, message []byte) error {
-	if strings.Contains(tag, ".") {
+// PublishSync sends msg synchronously to the producer registered for msg.Topic. It
+// returns once the server acknowledges the message.
+func (p *Producer) PublishSync(ctx context.Context, msg Message) error {
+	if strings.Contains(msg.Tag, ".") {
 		return ErrInvalidTag
 	}
-	msg := p.buildMsg(ctx, topic, tag, key, message)
-	_, err := p.metaFor(topic).instrumentPublish(ctx, topic, tag, key, msg.Subject, len(message), func(ctx context.Context) (*jetstream.PubAck, error) {
-		return p.sendSync(ctx, topic, msg)
-	})
-	return err
+	nm := buildMsg(msg)
+	target := nm.Subject
+	return p.publishSync(ctx, msg, nm, target)
 }
 
-// PublishSyncWithDelay sends a message that becomes consumable only after delay using NATS 2.12+ message schedule.
-func (p *Producer) PublishSyncWithDelay(ctx context.Context, topic, tag, key string, message []byte, delay time.Duration) error {
-	if strings.Contains(tag, ".") {
+// PublishSyncWithDelay sends msg so that it is delivered once, at delay after the
+// call, using a NATS message schedule. The message goes to a schedule subject
+// with the data subject in Nats-Schedule-Target. The server copies the body, the
+// SDK headers, and the trace context to the delivered message. Its stream
+// sequence is the message id. A delay of zero or less sends the message at once,
+// as PublishSync does. The call returns once the server accepts the schedule.
+func (p *Producer) PublishSyncWithDelay(ctx context.Context, msg Message, delay time.Duration) error {
+	if strings.Contains(msg.Tag, ".") {
 		return ErrInvalidTag
 	}
 	if delay <= 0 {
-		return p.PublishSync(ctx, topic, tag, key, message)
+		return p.PublishSync(ctx, msg)
 	}
-	msg := p.buildMsg(ctx, topic, tag, key, message)
-	targetSubject := msg.Subject
-	scheduleAt := time.Now().Add(delay).UTC().Format(time.RFC3339)
-	msg.Header.Set("Nats-Schedule", "@at "+scheduleAt)
-	msg.Header.Set("Nats-Schedule-Target", targetSubject)
+	target := buildSubject(msg.Topic, msg.Tag)
+	nm := buildMsg(msg)
+	nm.Subject = wire.ScheduleSubject(msg.Topic)
+	nm.Header.Set("Nats-Schedule", "@at "+time.Now().Add(delay).UTC().Format(time.RFC3339Nano))
+	nm.Header.Set("Nats-Schedule-Target", target)
+	return p.publishSync(ctx, msg, nm, target)
+}
 
-	_, err := p.metaFor(topic).instrumentPublish(ctx, topic, tag, key, targetSubject, len(message), func(ctx context.Context) (*jetstream.PubAck, error) {
-		return p.sendSync(ctx, topic, msg)
-	})
+// publishSync sends nm, the wire form of msg, inside a producer span. target is
+// the data subject the message is delivered to, which is nm.Subject for a plain
+// publish and the schedule target for a delayed one.
+func (p *Producer) publishSync(ctx context.Context, msg Message, nm *nats.Msg, target string) error {
+	_, err := p.metaFor(msg.Topic).instrumentPublish(ctx, msg.Topic, msg.Tag, msg.Key, target, len(msg.Body), nm,
+		func(ctx context.Context) (*jetstream.PubAck, error) {
+			return p.sendSync(ctx, msg.Topic, nm)
+		})
 	return err
 }
 
-// PublishAsync sends a message asynchronously; callback receives the result or error.
+// PublishAsync sends msg asynchronously; callback receives the result or error.
 // Start must have succeeded for the topic. Shutdown waits for callback to return.
-func (p *Producer) PublishAsync(ctx context.Context, topic, tag, key string, message []byte,
+func (p *Producer) PublishAsync(ctx context.Context, msg Message,
 	callback func(ctx context.Context, result *jetstream.PubAck, err error)) error {
 
-	if strings.Contains(tag, ".") {
+	if strings.Contains(msg.Tag, ".") {
 		return ErrInvalidTag
 	}
 
@@ -290,10 +315,9 @@ func (p *Producer) PublishAsync(ctx context.Context, topic, tag, key string, mes
 		callback = func(context.Context, *jetstream.PubAck, error) {}
 	}
 
-	msg := p.buildMsg(ctx, topic, tag, key, message)
-	targetSubject := msg.Subject
-	return p.metaFor(topic).instrumentPublishAsync(ctx, topic, tag, key, targetSubject, len(message), func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error {
-		pd, pending, err := p.acquire(topic)
+	nm := buildMsg(msg)
+	return p.metaFor(msg.Topic).instrumentPublishAsync(ctx, msg.Topic, msg.Tag, msg.Key, nm.Subject, len(msg.Body), nm, func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error {
+		pd, pending, err := p.acquire(msg.Topic)
 		if err != nil {
 			return err
 		}
@@ -302,9 +326,9 @@ func (p *Producer) PublishAsync(ctx context.Context, topic, tag, key string, mes
 			defer pending.Done()
 			cb(cctx, ack, sendErr)
 		}
-		if err := pd.PublishAsync(ctx, msg, done); err != nil {
+		if err := pd.PublishAsync(ctx, nm, done); err != nil {
 			pending.Done()
-			return fmt.Errorf("producer: async publish to topic %s: %w", topic, err)
+			return fmt.Errorf("producer: async publish to topic %s: %w", msg.Topic, err)
 		}
 
 		return nil
@@ -467,24 +491,19 @@ func buildSubject(topic, tag string) string {
 	return topic + "." + tag
 }
 
-// buildMsg constructs a NATS message with subject, data, headers, and injected trace context.
-func (p *Producer) buildMsg(ctx context.Context, topic, tag, key string, body []byte) *nats.Msg {
-	subject := buildSubject(topic, tag)
-	msg := nats.NewMsg(subject)
-	msg.Data = body
+// buildMsg constructs the NATS message for msg with its body and SDK headers. It
+// never sets Nats-Msg-Id, so the key cannot deduplicate messages. The trace context
+// is injected later, inside the producer span.
+func buildMsg(msg Message) *nats.Msg {
+	nm := nats.NewMsg(buildSubject(msg.Topic, msg.Tag))
+	nm.Data = msg.Body
 
-	if msg.Header == nil {
-		msg.Header = make(nats.Header)
+	if msg.Key != "" {
+		nm.Header.Set(wire.HeaderKey, msg.Key)
+	}
+	if msg.Tag != "" {
+		nm.Header.Set(wire.HeaderTag, msg.Tag)
 	}
 
-	if key != "" {
-		msg.Header.Set("Nats-Msg-Id", key)
-	}
-	if tag != "" {
-		msg.Header.Set("Nats-Msg-Tag", tag)
-	}
-
-	injectTraceContext(ctx, msg)
-
-	return msg
+	return nm
 }

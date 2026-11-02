@@ -56,7 +56,7 @@ func ExampleNew() {
 		return
 	}
 
-	if err := p.PublishSync(ctx, "orders", "created", "order-42", body); err != nil {
+	if err := p.PublishSync(ctx, producer.Message{Topic: "orders", Tag: "created", Key: "order-42", Body: body}); err != nil {
 		log.Println("publish order-42:", err)
 	}
 }
@@ -93,15 +93,14 @@ func ExampleProducer_PublishAsync() {
 	}()
 
 	done := make(chan struct{})
-	err = p.PublishAsync(ctx, "orders", "paid", "order-42", []byte(`{"id":"order-42"}`),
-		func(_ context.Context, ack *jetstream.PubAck, err error) {
-			defer close(done)
-			if err != nil {
-				log.Println("async publish order-42 failed:", err)
-				return
-			}
-			fmt.Println("async publish order-42 acked in stream", ack.Stream, "seq", ack.Sequence)
-		})
+	err = p.PublishAsync(ctx, producer.Message{Topic: "orders", Tag: "paid", Key: "order-42", Body: []byte(`{"id":"order-42"}`)}, func(_ context.Context, ack *jetstream.PubAck, err error) {
+		defer close(done)
+		if err != nil {
+			log.Println("async publish order-42 failed:", err)
+			return
+		}
+		fmt.Println("async publish order-42 acked in stream", ack.Stream, "seq", ack.Sequence)
+	})
 	if err != nil {
 		log.Println("enqueue order-42:", err)
 		return

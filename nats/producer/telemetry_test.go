@@ -3,16 +3,15 @@ package producer
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
@@ -163,7 +162,7 @@ func TestPublishSync_Success(t *testing.T) {
 	}}
 	p, fm, ex := setupProducer(t, mock)
 
-	if err := p.PublishSync(context.Background(), "reporting", "export_report_process", "key-1", []byte("hello")); err != nil {
+	if err := p.PublishSync(context.Background(), Message{Topic: "reporting", Tag: "export_report_process", Key: "key-1", Body: []byte("hello")}); err != nil {
 		t.Fatalf("PublishSync: %v", err)
 	}
 
@@ -222,7 +221,7 @@ func TestPublishSync_Error(t *testing.T) {
 	mock := &mockProducer{sendSyncErr: errSend}
 	p, _, ex := setupProducer(t, mock)
 
-	err := p.PublishSync(context.Background(), "reporting", "tag", "", []byte("hello"))
+	err := p.PublishSync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -241,7 +240,7 @@ func TestPublishSyncWithDelay_Success(t *testing.T) {
 	mock := &mockProducer{}
 	p, fm, ex := setupProducer(t, mock)
 
-	if err := p.PublishSyncWithDelay(context.Background(), "reporting", "tag", "", []byte("hello"), time.Minute); err != nil {
+	if err := p.PublishSyncWithDelay(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")}, time.Minute); err != nil {
 		t.Fatalf("PublishSyncWithDelay: %v", err)
 	}
 
@@ -261,13 +260,12 @@ func TestPublishAsync_FullLifecycle(t *testing.T) {
 	}}
 	p, fm, ex := setupProducer(t, mock)
 
-	err := p.PublishAsync(context.Background(), "reporting", "tag", "k", []byte("hello"),
-		func(ctx context.Context, result *jetstream.PubAck, err error) {
-			called = true
-			if result == nil || result.Sequence != 1 {
-				t.Errorf("callback result = %+v", result)
-			}
-		})
+	err := p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "k", Body: []byte("hello")}, func(ctx context.Context, result *jetstream.PubAck, err error) {
+		called = true
+		if result == nil || result.Sequence != 1 {
+			t.Errorf("callback result = %+v", result)
+		}
+	})
 	if err != nil {
 		t.Fatalf("PublishAsync: %v", err)
 	}
@@ -289,7 +287,7 @@ func TestPublishAsync_SendError(t *testing.T) {
 	mock := &mockProducer{sendAsyncErr: errSend}
 	p, _, ex := setupProducer(t, mock)
 
-	err := p.PublishAsync(context.Background(), "reporting", "tag", "", []byte("hello"), nil)
+	err := p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")}, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -303,26 +301,34 @@ func TestPublishAsync_SendError(t *testing.T) {
 	}
 }
 
-func TestBuildMsg_InjectsTraceContext(t *testing.T) {
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+// TestPublish_TraceParenting checks that the traceparent on the sent message names
+// the producer span, so the consumer's span is its child.
+func TestPublish_TraceParenting(t *testing.T) {
+	useTraceContextPropagator(t)
 
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	var captured *nats.Msg
+	mock := &mockProducer{sendSyncFunc: func(_ context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
+		captured = msg
+		return &jetstream.PubAck{}, nil
+	}}
+	p, _, ex := setupProducer(t, mock)
 
-	p, err := New(testAppInfo)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	if err := p.PublishSync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "key", Body: []byte("hello")}); err != nil {
+		t.Fatalf("PublishSync: %v", err)
+	}
+	sp, ok := ex.last()
+	if !ok {
+		t.Fatal("no span recorded")
 	}
 
-	ctx, span := tp.Tracer("test").Start(context.Background(), "parent")
-	defer span.End()
-
-	msg := p.buildMsg(ctx, "reporting", "tag", "key", []byte("body"))
-	if got := msg.Header.Get("traceparent"); got == "" {
-		t.Fatal("expected traceparent header to be injected")
+	parts := strings.Split(captured.Header.Get("traceparent"), "-")
+	if len(parts) != 4 {
+		t.Fatalf("traceparent = %q, want 4 fields", strings.Join(parts, "-"))
+	}
+	if got, want := parts[1], sp.SpanContext().TraceID().String(); got != want {
+		t.Errorf("trace id = %q, want %q", got, want)
+	}
+	if got, want := parts[2], sp.SpanContext().SpanID().String(); got != want {
+		t.Errorf("span id = %q, want %q", got, want)
 	}
 }
