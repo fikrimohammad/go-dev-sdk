@@ -1,134 +1,85 @@
-# Implementation Plan: foundations (SDK fix backlog, PR 1)
+# Implementation Plan: data-clients (SDK fix backlog, PR 2)
 
-Spec: [SPEC-foundations](../docs/specs/sdk-fix-backlog/SPEC-foundations.md) (approved
-2026-11-01). Capability map: [capability-map](../docs/specs/sdk-fix-backlog/capability-map.md).
-Item index: [docs/ideas/sdk-fix-backlog.md](../docs/ideas/sdk-fix-backlog.md#item-index).
-Tasks: [tasks/todo.md](todo.md).
+Spec: [SPEC-data-clients](../docs/specs/sdk-fix-backlog/SPEC-data-clients.md) (approved
+2026-11-02; assumptions 1–10 confirmed). Capability map:
+[capability-map](../docs/specs/sdk-fix-backlog/capability-map.md). Item index:
+[docs/ideas/sdk-fix-backlog.md](../docs/ideas/sdk-fix-backlog.md#item-index). Tasks:
+[tasks/todo.md](todo.md). PR 1 (`foundations`) shipped as #16.
 
 ## Overview
 
-One PR, branch `feat/foundations`, with one commit per task, so the owner can review the
-PR commit by commit. It fixes `identity`, `errs`, `errgroup`, and `observability`, makes
-SDK telemetry follow the OTel global providers, migrates callers off `SetDefault`, and
-switches those modules plus `rest` to full-tree lint in CI.
+One PR on branch `feat/data-clients`, one commit per task. It makes db, redis, and s3 telemetry
+follow semconv v1.43.0 with bounded cardinality, gives their constructors a `ctx`, switches redis
+to `redis.UniversalClient`, and makes all three strict on full-tree lint.
 
-## Execution Roles (owner decision 2026-11-01)
+## Execution Roles (same as PR 1)
 
-- **Coder and tester:** a Haiku 5.5 subagent per task (T2–T19). It gets the task, its spec
-  section, and the go-best-practices skill. It doesn't commit or push.
-- **Orchestrator:** the main session. It dispatches tasks, reruns the task's verification
-  independently, commits one task per commit, pushes, and ticks todo.md. It does T1
-  itself (setup, no code).
-- **Reviewer:** an Opus 5.5 subagent at each checkpoint (A–D). It reviews the commits
-  since the previous checkpoint against the spec and the go-best-practices skill.
-  Findings are fixed before the next phase starts.
+- **Coder and tester:** a Haiku subagent per task. It never commits, and git is read-only for it.
+- **Orchestrator:** reruns each task's checks independently, commits one task per commit, pushes,
+  and ticks todo.md. It applies small reviewer fixes itself when that is faster or safer.
+- **Reviewer:** an Opus subagent at each checkpoint.
 
 ## Architecture Decisions
 
-- **Ratchet first, with `rest` only.** T2 lands the `STRICT_LINT_MODULES` mechanism with
-  `rest`, which is already clean, so a mistake in the CI expression shows up before any
-  module depends on it. Each later task adds its module to the list in the same commit
-  that makes it clean. The list only grows, and every commit stays green.
-- **Small modules before observability.** identity, errs, and errgroup are independent
-  and quick. They prove the TDD-plus-strict loop before the big module.
-- **Convert goconvey before changing behavior.** Each observability package's tests are
-  converted to package `testing` with no behavior change, guarded by coverage at least
-  equal to its baseline. New regression tests then land in files that are already
-  converted, so no file mixes styles. The cost is converting a few SetDefault tests
-  that T19 deletes; that's accepted.
-- **Transitional default, then deletion.** In T12/T13, `Default()` returns the
-  `SetDefault` override if one is set. Otherwise it resolves `otel.Get*Provider()` per
-  call, cached by provider identity; see the spec's design note on why an init-time
-  capture is wrong. `SetDefault` still compiles for callers. T15–T18 migrate the callers. T19 deletes `SetDefault` and
-  the package-level `Stop`. Every commit builds; a grep in T19 proves no transitional
-  code is left.
-- **Caller tests inject; one fallback test per module uses OTel.** The db, redis, and s3
-  helpers build their structs directly, so they set `meta.metrics` / `meta.tracer` to
-  their fakes, with no globals. Each module's "falls back to the default" test installs
-  an OTel span recorder or manual reader with `otel.Set*Provider`, restored in
-  `t.Cleanup`.
-- **OTel delegate behavior was validated by two probes** (2026-11-01). Providers captured
-  before `otel.Set*Provider` forward to the *first* install, including instruments created
-  before it, but never to a later install. Hence the per-call resolution.
+- **Waves by module.** db, redis, and s3 are separate modules with no shared files, so each wave
+  runs one task per module in parallel. Within a module the tasks are sequential, because they
+  edit the same files.
+- **redis API first.** The `UniversalClient` switch (T3) changes redis's whole surface, so it lands
+  before redis's telemetry and pool-metric work, which then target the final API.
+- **Telemetry before cleanup.** The behaviour changes (telemetry, ctx constructors) come first.
+  The lint/strict cleanup comes last in each module, so the strict list grows only once a module
+  is final.
+- **semconv constants.** Attribute keys come from `go.opentelemetry.io/otel/semconv/v1.43.0`, as
+  rest does. Each module's telemetry test asserts the exact name, unit, and attribute set.
+- **go.mod changes are the orchestrator's.** When a task needs a new direct import (for example
+  semconv), the agent stops at the boundary and the orchestrator runs `go mod tidy` once, after
+  the agents in that module finish. This is the lesson from PR 1's T16–T18.
 
-## Coverage Baselines (main @ a86089d, 2026-11-01)
+## Coverage Baselines (main @ 411bb72, 2026-11-02)
 
-| Package | Coverage |
+| Module | Coverage |
 | --- | --- |
-| observability/attributes | 97.7% |
-| observability/logs | 94.2% |
-| observability/metrics | 90.0% |
-| observability/tracer | 83.0% |
-| errs | 98.5% |
-| errgroup | 100.0% |
-| identity | 100.0% |
-
-Command: `go test -count=1 -gcflags="all=-N -l" -cover ./...` in each module.
+| db | 87.4% |
+| redis | 68.2% |
+| s3 | 85.5% |
 
 ## Task List
 
 Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Phase 0: Setup
-- [x] T1: Branch, commit the docs, open a draft PR
-- [x] T2: Strict-lint ratchet (`rest`), ireturn allow-list, AGENTS.md convention
+- [ ] T1: Commit the spec and plan, and open a draft PR
 
-### Phase 1: Small modules
-- [x] T3: identity: ErrName prefix (I1), strict
-- [x] T4: errs: Is, LogValue, SlogAttr fixes, test first (E1–E3)
-- [x] T5: errs: package doc, AsType, test wording, strict (E4, X8, X9)
-- [x] T6: errgroup: PanicError, no naked returns, no nil-ctx fallback, test first (G2, X7)
-- [x] T7: errgroup: const default, docs, nolint, test wording, strict (G1, G3, G4, X9)
+### Wave 1 (parallel)
+- [ ] T2: db telemetry: semconv attributes, no count metric, span name, error.type (D1, D2, X2–X4, X6)
+- [ ] T3: redis returns `redis.UniversalClient`; interfaces and aliases deleted (R6, R5)
+- [ ] T4: s3 telemetry: `rpc.client.call.duration`, `rpc.system.name`/`rpc.method` (S-telemetry, X4, X6)
 
-### Checkpoint A: small modules strict
-### Phase 2: goconvey → package testing (no behavior change)
-- [x] T8: attributes tests
-- [x] T9: logs tests
-- [x] T10: metrics tests
-- [x] T11: tracer tests; remove goconvey from go.mod
+### Wave 2 (parallel)
+- [ ] T5: db `Connect(ctx)`; examples and README updated (X5)
+- [ ] T6: redis telemetry: semconv attributes, no count metric, error.type (R1, X2–X4, X6)
+- [ ] T7: s3 `New(ctx)`, lint cleanup, testing recipe, strict (X5, X8, X9, S2, N19)
 
-### Checkpoint B: goconvey gone, coverage held
-### Phase 3: observability behavior
-- [x] T12: metrics: Default follows the OTel global, Insecure bool, no nil-ctx fallback (X10, O1, X7)
-- [x] T13: tracer: the same, plus the doc fix (X10, O1, O3, X7)
-- [x] T14: logs: delete SetStreams and the stream vars (O2)
+### Checkpoint A: Opus review of T1–T7
+### Wave 3 (parallel)
+- [ ] T8: db cleanup: D3 (prove or drop), D4, X8, X9, testing recipe, strict (N19)
+- [ ] T9: redis pool metrics in semconv form; Close waits for the poller (R2, R3, R4)
 
-### Checkpoint C: new behavior in place, callers still compile
-### Phase 4: migrate callers, then delete
-- [x] T15: db and redis tests and docs off SetDefault
-- [x] T16: s3 tests and docs, nats docs off SetDefault
-- [x] T17: rest/server tests and docs off SetDefault
-- [x] T18: rest/client tests and docs off SetDefault
-- [x] T19: delete SetDefault and the package Stop, rewrite observability/doc.go, observability strict
+### Wave 4
+- [ ] T10: redis `New(ctx)` check, lint cleanup, testing recipe, strict (X8, X9, N19)
 
-### Checkpoint D: complete; owner review
-
-### Phase 5: repository conventions (owner feedback 2026-11-01; spec amendment R1–R4)
-Wave 1 runs in parallel because the tasks touch disjoint files. Wave 2 waits for wave 1
-because it moves declarations out of the files wave 1 edits. Wave 3 adds examples once the
-API is final.
-- [x] T20: Codify R1–R4 in AGENTS.md; record them as confloader redesign requirements (wave 1)
-- [x] T21: R1 observability logs/metrics/tracer: export SetDefaults/Validate (wave 1)
-- [x] T22: R1 rest/client, rest/server, cron/engine: export, and Join in Validate (wave 1)
-- [x] T23: R4 cron, db, redis: move interfaces.go into <pkg>.go (wave 1)
-- [x] T24: R3 errors.go in errgroup, identity, attributes, logs, metrics, rest/client, redis, errs (wave 2)
-- [x] T25: R2 runnable examples: errs, errgroup, attributes, cron, cron/engine, plus a compile-only observability root example (wave 3)
-- [x] T26: R2 compile-only examples: db, redis, s3, nats/consumer, nats/producer (wave 3)
-
-### Checkpoint E: conventions complete; Opus review; owner review
+### Checkpoint B: final Opus review; PR description; owner review
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| goconvey conversion silently drops assertions | High | Convert test by test, keeping names; per-package coverage must be at least baseline; the diff of `func Test` names before and after must match |
-| OTel global state leaks between tests (CI runs `-shuffle=on`) | Med | Never `t.Parallel()` with globals; restore the previous provider in `t.Cleanup`; run each module's tests locally with `-shuffle=on -count=3` |
-| CI ratchet expression is wrong | Med | Lands first (T2) with only `rest`, verified on the draft PR's CI run before anything depends on it |
-| Transitional SetDefault survives | Low | T19's acceptance grep (spec criterion 5) |
-| The PR is too large to review | Med | One commit per task with an item-ID commit subject; checkpoints A–D give natural review stops |
-| `Insecure` default flip breaks the testing app | Low | Expected and accepted (the app is frozen until after `guardrails`); called out in the PR body |
+| Renaming metrics breaks dashboards | Med | No backward compatibility is needed (only the testing app uses the SDK, and it is migrated after guardrails); the PR body lists every renamed or dropped metric |
+| `UniversalClient` changes redis behaviour (cluster vs. standalone routing) | Med | `createUnderlyingClient` keeps the per-mode constructors; a test covers each mode's type and that the hook records commands |
+| Pool-metric delta math drifts (an up-down counter never returning to 0) | Med | The same attribute set on every increment and decrement; a test drives PoolStats through a sequence and asserts the running count |
+| Agents need a new direct import (semconv) | Low | Orchestrator-run `go mod tidy` after the module's agents finish (see Architecture Decisions) |
+| The Haiku usage limit interrupts a task | Low | Saved work is checked and finished by the orchestrator, as in PR 1's T25 |
 
 ## Open Questions
 
-- None blocking. T1 opens a **draft** PR early, so CI validates the ratchet (T2) and every
-  later commit. It becomes ready for review at Checkpoint D.
+- None. A draft PR is opened in T1, as in PR 1.
