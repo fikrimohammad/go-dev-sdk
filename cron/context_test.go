@@ -8,12 +8,12 @@ import (
 func TestFencingTokenContext(t *testing.T) {
 	ctx := context.Background()
 	if _, ok := FencingTokenFromContext(ctx); ok {
-		t.Fatal("expected no fencing token on empty context")
+		t.Fatal("FencingTokenFromContext(empty) ok = true, want false")
 	}
 
 	var nilCtx context.Context
 	if _, ok := FencingTokenFromContext(nilCtx); ok {
-		t.Fatal("expected no fencing token on nil context")
+		t.Fatal("FencingTokenFromContext(nil) ok = true, want false")
 	}
 
 	ctx = WithFencingToken(ctx, "token-uuid-12345")

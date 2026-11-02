@@ -1,15 +1,14 @@
+// Package producer publishes messages to NATS JetStream streams. A [Producer]
+// owns the stream of each registered topic and sends messages synchronously,
+// delayed through message schedules, or asynchronously.
 package producer
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -17,47 +16,37 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
 // jsProducer defines the subset of NATS JetStream publisher operations used by this package.
 type jsProducer interface {
-	Start() error
-	Shutdown() error
 	Publish(ctx context.Context, msg *nats.Msg) (*jetstream.PubAck, error)
 	PublishAsync(ctx context.Context, msg *nats.Msg, cb func(ctx context.Context, ack *jetstream.PubAck, err error)) error
+	// Drain closes the connection after pending publishes are flushed. It closes
+	// the connection at once if ctx ends first.
+	Drain(ctx context.Context) error
+	// Close closes the connection without flushing.
+	Close()
 }
 
-// producerFactory creates a jsProducer from the given configuration.
-type producerFactory func(cfg Config) (jsProducer, error)
+// producerFactory connects to the server for cfg and ensures the stream exists. It
+// is bounded by ctx.
+type producerFactory func(ctx context.Context, cfg Config) (jsProducer, error)
 
 type defaultJSProducer struct {
-	nc  *nats.Conn
-	js  jetstream.JetStream
-	cfg Config
+	nc *nats.Conn
+	js jetstream.JetStream
 }
 
-func (p *defaultJSProducer) Start() error {
-	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.Timeout)
-	defer cancel()
-
-	_, err := p.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:              p.cfg.Topic,
-		Subjects:          []string{p.cfg.Topic, p.cfg.Topic + ".>"},
-		AllowMsgSchedules: true,
-	})
-	if err != nil {
-		return fmt.Errorf("producer: ensure stream %s: %w", p.cfg.Topic, err)
-	}
-	return nil
+func (p *defaultJSProducer) Drain(ctx context.Context) error {
+	return wire.Drain(ctx, p.nc)
 }
 
-func (p *defaultJSProducer) Shutdown() error {
-	if p.nc != nil {
-		return p.nc.Drain()
-	}
-	return nil
+func (p *defaultJSProducer) Close() {
+	p.nc.Close()
 }
 
 func (p *defaultJSProducer) Publish(ctx context.Context, msg *nats.Msg) (*jetstream.PubAck, error) {
@@ -70,61 +59,74 @@ func (p *defaultJSProducer) PublishAsync(ctx context.Context, msg *nats.Msg, cb 
 		return err
 	}
 
+	// Wait only for the ack. The message is already with the transport, so the
+	// caller's ctx ending must not fail it. WithPublishAsyncTimeout bounds the wait.
 	go func() {
 		select {
 		case ack := <-ackF.Ok():
 			cb(ctx, ack, nil)
 		case err := <-ackF.Err():
 			cb(ctx, nil, err)
-		case <-ctx.Done():
-			cb(ctx, nil, ctx.Err())
 		}
 	}()
 
 	return nil
 }
 
-func defaultProducerFactory(cfg Config) (jsProducer, error) {
-	opts := []nats.Option{
-		nats.Name(cfg.Topic),
-		nats.Timeout(cfg.Timeout),
-		nats.RetryOnFailedConnect(true),
-	}
-
-	if cfg.Token != "" {
-		opts = append(opts, nats.Token(cfg.Token))
-	}
-	if cfg.Username != "" || cfg.Password != "" {
-		opts = append(opts, nats.UserInfo(cfg.Username, cfg.Password))
-	}
-	if cfg.NKey != "" {
-		opt, err := nats.NkeyOptionFromSeed(cfg.NKey)
-		if err != nil {
-			return nil, fmt.Errorf("producer: nkey option: %w", err)
-		}
-		opts = append(opts, opt)
-	}
-	if cfg.CredentialsFile != "" {
-		opts = append(opts, nats.UserCredentials(cfg.CredentialsFile))
-	}
-
-	endpoints := strings.Join(cfg.Endpoints, ",")
-	nc, err := nats.Connect(endpoints, opts...)
+// defaultProducerFactory connects to the first reachable server in cfg.Endpoints
+// and ensures the stream for cfg.Topic exists.
+func defaultProducerFactory(ctx context.Context, cfg Config) (jsProducer, error) {
+	nc, err := wire.Connect(ctx, cfg.Topic, wire.Options{
+		Endpoints:       cfg.Endpoints,
+		Timeout:         cfg.Timeout,
+		Token:           cfg.Token,
+		Username:        cfg.Username,
+		Password:        cfg.Password,
+		NKey:            cfg.NKey,
+		CredentialsFile: cfg.CredentialsFile,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("producer: connect to %s: %w", endpoints, err)
+		return nil, fmt.Errorf("producer: %w", err)
 	}
 
-	js, err := jetstream.New(nc)
+	// An async publish whose ack never arrives fails after cfg.Timeout instead
+	// of waiting until the connection closes.
+	js, err := jetstream.New(nc, jetstream.WithPublishAsyncTimeout(cfg.Timeout))
 	if err != nil {
 		nc.Close()
 		return nil, fmt.Errorf("producer: create jetstream: %w", err)
 	}
 
-	return &defaultJSProducer{
-		nc:  nc,
-		js:  js,
-		cfg: cfg,
-	}, nil
+	if err := ensureStream(ctx, js, cfg.Topic); err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("producer: ensure stream %s: %w", cfg.Topic, err)
+	}
+
+	return &defaultJSProducer{nc: nc, js: js}, nil
+}
+
+// ensureStream creates the stream for topic when it is missing. An existing stream
+// keeps its operator settings and gets only the SDK subjects, and it is updated
+// only when those subjects are missing.
+func ensureStream(ctx context.Context, js jetstream.JetStream, topic string) error {
+	s, err := js.Stream(ctx, topic)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		_, err = js.CreateStream(ctx, wire.StreamConfig(topic))
+		return err
+	}
+	if err != nil {
+		return err
+	}
+
+	patched, changed, err := wire.PatchStream(s.CachedInfo().Config, topic)
+	if err != nil {
+		return err // already names the stream; the caller adds the producer prefix
+	}
+	if !changed {
+		return nil
+	}
+	_, err = js.UpdateStream(ctx, patched)
+	return err
 }
 
 // Option configures a Producer returned by New.
@@ -147,16 +149,30 @@ func WithTracer(t tracer.Client) Option {
 	return func(o *options) { o.tracer = t }
 }
 
+// Message is one message to publish.
+type Message struct {
+	// Topic is the stream the message is published to.
+	Topic string
+	// Tag is an optional sub-subject. It is published as Topic.Tag and carried in
+	// the Sdk-Msg-Tag header. It must not contain dots.
+	Tag string
+	// Key is an optional business key carried in the Sdk-Msg-Key header. It is
+	// never used for deduplication.
+	Key string
+	// Body is the message payload.
+	Body []byte
+}
+
 // Client is the send surface of a NATS JetStream producer, implemented by *Producer.
 // It lets callers (e.g. the repository layer) depend on the contract without
 // the manager lifecycle.
 type Client interface {
-	// PublishSync sends a message synchronously to the producer registered for topic.
-	PublishSync(ctx context.Context, topic, tag, key string, message []byte) error
+	// PublishSync sends a message synchronously to the producer registered for msg.Topic.
+	PublishSync(ctx context.Context, msg Message) error
 	// PublishSyncWithDelay sends a message that becomes consumable only after delay.
-	PublishSyncWithDelay(ctx context.Context, topic, tag, key string, message []byte, delay time.Duration) error
+	PublishSyncWithDelay(ctx context.Context, msg Message, delay time.Duration) error
 	// PublishAsync sends a message asynchronously; callback receives the result or error.
-	PublishAsync(ctx context.Context, topic, tag, key string, message []byte,
+	PublishAsync(ctx context.Context, msg Message,
 		callback func(ctx context.Context, result *jetstream.PubAck, err error)) error
 }
 
@@ -165,20 +181,31 @@ type Client interface {
 //
 // Usage lifecycle:
 //  1. Create with New()
-//  2. Register topics with Register()
-//  3. Call Start() to start all registered producers
+//  2. Register topics with Register(), which validates and stores the config only
+//  3. Call Start(ctx) to connect and ensure the stream for every registered topic
 //  4. Use PublishSync/PublishAsync to send messages
-//  5. Call Shutdown() when done
+//  5. Call Shutdown(ctx) when done
 type Producer struct {
-	appName         string
-	producers       sync.Map // map[string]jsProducer
-	producerMeta    sync.Map // map[string]producerMeta, server address for telemetry
-	started         atomic.Bool
 	producerFactory producerFactory
-	mu              sync.Mutex
 
 	metrics metrics.Client
 	tracer  tracer.Client
+
+	mu      sync.RWMutex
+	configs map[string]Config // registered configs, keyed by topic
+	// run holds the state of the current Start, or nil before Start and after
+	// Shutdown.
+	run *run
+}
+
+// run is the state of one Start/Shutdown cycle. Each cycle has its own pending
+// WaitGroup, so a callback left over from an earlier cycle cannot affect a later
+// one.
+type run struct {
+	producers    map[string]jsProducer // connected producers, keyed by topic
+	producerMeta map[string]producerMeta
+	// pending counts the async publishes whose callbacks have not returned yet.
+	pending *sync.WaitGroup
 }
 
 var _ Client = (*Producer)(nil)
@@ -203,22 +230,21 @@ func New(info identity.Info, opts ...Option) (*Producer, error) {
 	}
 
 	return &Producer{
-		appName:         info.Name,
-		producers:       sync.Map{},
-		producerMeta:    sync.Map{},
 		producerFactory: defaultProducerFactory,
 		metrics:         o.metrics,
 		tracer:          o.tracer,
+		configs:         make(map[string]Config),
 	}, nil
 }
 
-// Register creates and stores a producer for cfg.Topic.
+// Register validates cfg and stores it for cfg.Topic. It does not connect; Start
+// does that. It returns ErrProducerExists when the topic is already registered.
 func (p *Producer) Register(cfg Config) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.started.Load() {
-		return errors.New("producer: cannot register after Start")
+	if p.run != nil {
+		return ErrAlreadyStarted
 	}
 
 	cfg = cfg.SetDefaults()
@@ -226,63 +252,66 @@ func (p *Producer) Register(cfg Config) error {
 		return err
 	}
 
-	pr, err := p.getProducer(cfg.Topic)
-	if err != nil && !errors.Is(err, ErrProducerNotFound) {
-		return err
-	}
-
-	if pr != nil {
+	if _, ok := p.configs[cfg.Topic]; ok {
 		return fmt.Errorf("%w: %s", ErrProducerExists, cfg.Topic)
 	}
 
-	pd, err := p.producerFactory(cfg)
-	if err != nil {
-		return fmt.Errorf("producer: create for topic %s: %w", cfg.Topic, err)
-	}
-
-	addr, port := serverAddrPort(cfg.Endpoints)
-	p.setProducer(cfg.Topic, pd)
-	p.producerMeta.Store(cfg.Topic, producerMeta{serverAddr: addr, serverPort: port})
+	p.configs[cfg.Topic] = cfg
 	return nil
 }
 
-// PublishSync sends a message synchronously to the producer registered for topic.
-func (p *Producer) PublishSync(ctx context.Context, topic, tag, key string, message []byte) error {
-	if strings.Contains(tag, ".") {
+// PublishSync sends msg synchronously to the producer registered for msg.Topic. It
+// returns once the server acknowledges the message.
+func (p *Producer) PublishSync(ctx context.Context, msg Message) error {
+	if strings.Contains(msg.Tag, ".") {
 		return ErrInvalidTag
 	}
-	msg := p.buildMsg(ctx, topic, tag, key, message)
-	_, err := p.metaFor(topic).instrumentPublish(ctx, topic, tag, key, msg.Subject, len(message), func(ctx context.Context) (*jetstream.PubAck, error) {
-		return p.sendSync(ctx, topic, msg)
-	})
-	return err
+	nm := buildMsg(msg)
+	target := nm.Subject
+	return p.publishSync(ctx, msg, nm, target)
 }
 
-// PublishSyncWithDelay sends a message that becomes consumable only after delay using NATS 2.12+ message schedule.
-func (p *Producer) PublishSyncWithDelay(ctx context.Context, topic, tag, key string, message []byte, delay time.Duration) error {
-	if strings.Contains(tag, ".") {
+// PublishSyncWithDelay sends msg so that it is delivered once, at delay after the
+// call, using a NATS message schedule. The message goes to a schedule subject
+// with the data subject in Nats-Schedule-Target. The server copies the body, the
+// SDK headers, and the trace context to the delivered message. The server stores
+// the delivered message under a new stream sequence, so the consumer's message id
+// differs from the one on this publish span, which is the schedule message's
+// sequence; correlate the two with Key or the trace. A delay of zero or less sends
+// the message at once,
+// as PublishSync does. The call returns once the server accepts the schedule.
+func (p *Producer) PublishSyncWithDelay(ctx context.Context, msg Message, delay time.Duration) error {
+	if strings.Contains(msg.Tag, ".") {
 		return ErrInvalidTag
 	}
 	if delay <= 0 {
-		return p.PublishSync(ctx, topic, tag, key, message)
+		return p.PublishSync(ctx, msg)
 	}
-	msg := p.buildMsg(ctx, topic, tag, key, message)
-	targetSubject := msg.Subject
-	scheduleAt := time.Now().Add(delay).UTC().Format(time.RFC3339)
-	msg.Header.Set("Nats-Schedule", "@at "+scheduleAt)
-	msg.Header.Set("Nats-Schedule-Target", targetSubject)
+	target := buildSubject(msg.Topic, msg.Tag)
+	nm := buildMsg(msg)
+	nm.Subject = wire.ScheduleSubject(msg.Topic)
+	nm.Header.Set("Nats-Schedule", "@at "+time.Now().Add(delay).UTC().Format(time.RFC3339Nano))
+	nm.Header.Set("Nats-Schedule-Target", target)
+	return p.publishSync(ctx, msg, nm, target)
+}
 
-	_, err := p.metaFor(topic).instrumentPublish(ctx, topic, tag, key, targetSubject, len(message), func(ctx context.Context) (*jetstream.PubAck, error) {
-		return p.sendSync(ctx, topic, msg)
-	})
+// publishSync sends nm, the wire form of msg, inside a producer span. target is
+// the data subject the message is delivered to, which is nm.Subject for a plain
+// publish and the schedule target for a delayed one.
+func (p *Producer) publishSync(ctx context.Context, msg Message, nm *nats.Msg, target string) error {
+	_, err := p.metaFor(msg.Topic).instrumentPublish(ctx, msg, target, nm,
+		func(ctx context.Context) (*jetstream.PubAck, error) {
+			return p.sendSync(ctx, msg.Topic, nm)
+		})
 	return err
 }
 
-// PublishAsync sends a message asynchronously; callback receives the result or error.
-func (p *Producer) PublishAsync(ctx context.Context, topic, tag, key string, message []byte,
+// PublishAsync sends msg asynchronously; callback receives the result or error.
+// Start must have succeeded for the topic. Shutdown waits for callback to return.
+func (p *Producer) PublishAsync(ctx context.Context, msg Message,
 	callback func(ctx context.Context, result *jetstream.PubAck, err error)) error {
 
-	if strings.Contains(tag, ".") {
+	if strings.Contains(msg.Tag, ".") {
 		return ErrInvalidTag
 	}
 
@@ -290,87 +319,120 @@ func (p *Producer) PublishAsync(ctx context.Context, topic, tag, key string, mes
 		callback = func(context.Context, *jetstream.PubAck, error) {}
 	}
 
-	msg := p.buildMsg(ctx, topic, tag, key, message)
-	targetSubject := msg.Subject
-	return p.metaFor(topic).instrumentPublishAsync(ctx, topic, tag, key, targetSubject, len(message), func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error {
-		pd, err := p.getProducer(topic)
+	nm := buildMsg(msg)
+	return p.metaFor(msg.Topic).instrumentPublishAsync(ctx, msg, nm.Subject, nm, func(ctx context.Context, cb func(context.Context, *jetstream.PubAck, error)) error {
+		pd, pending, err := p.acquire(msg.Topic)
 		if err != nil {
 			return err
 		}
 
-		if err := pd.PublishAsync(ctx, msg, cb); err != nil {
-			return fmt.Errorf("producer: async publish to topic %s: %w", topic, err)
+		done := func(cctx context.Context, ack *jetstream.PubAck, sendErr error) {
+			defer pending.Done()
+			cb(cctx, ack, sendErr)
+		}
+		if err := pd.PublishAsync(ctx, nm, done); err != nil {
+			pending.Done()
+			return fmt.Errorf("producer: async publish to topic %s: %w", msg.Topic, err)
 		}
 
 		return nil
 	}, callback)
 }
 
-// Start starts every registered producer. It is idempotent; calling it
-// multiple times after the first successful call is a no-op.
-func (p *Producer) Start() error {
+// Start connects a producer for every registered topic and ensures each stream
+// exists. The work is bounded by ctx. If any topic fails, Start closes the
+// connections it opened and returns the error, and a later Start may retry. It is
+// idempotent: once started, further calls return nil.
+func (p *Producer) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !p.started.CompareAndSwap(false, true) {
+	if p.run != nil {
 		return nil
 	}
 
-	producers, err := p.getAllProducers()
-	if err != nil {
-		p.started.Store(false)
-		return err
+	cfgs := make([]Config, 0, len(p.configs))
+	for _, cfg := range p.configs {
+		cfgs = append(cfgs, cfg)
 	}
 
-	var errGroup errgroup.Group
-	for topic, pd := range producers {
-		errGroup.Go(func() error {
-			if pErr := pd.Start(); pErr != nil {
-				return fmt.Errorf("start topic %s: %w", topic, pErr)
+	pds := make([]jsProducer, len(cfgs))
+	g, gctx := errgroup.WithContext(ctx)
+	for i, cfg := range cfgs {
+		g.Go(func() error {
+			pd, err := p.producerFactory(gctx, cfg)
+			if err != nil {
+				return fmt.Errorf("producer: start topic %s: %w", cfg.Topic, err)
 			}
+			pds[i] = pd
 			return nil
 		})
 	}
-
-	if err := errGroup.Wait(); err != nil {
-		p.started.Store(false)
+	if err := g.Wait(); err != nil {
+		for _, pd := range pds {
+			if pd != nil {
+				pd.Close()
+			}
+		}
 		return err
 	}
 
+	r := &run{
+		producers:    make(map[string]jsProducer, len(cfgs)),
+		producerMeta: make(map[string]producerMeta, len(cfgs)),
+		pending:      &sync.WaitGroup{},
+	}
+	for i, cfg := range cfgs {
+		r.producers[cfg.Topic] = pds[i]
+		addr, port := wire.ServerAddrPort(cfg.Endpoints)
+		r.producerMeta[cfg.Topic] = producerMeta{serverAddr: addr, serverPort: port}
+	}
+	p.run = r
 	return nil
 }
 
-// Shutdown shuts every registered producer down. It is idempotent; calling it
-// multiple times after the first successful call is a no-op.
-func (p *Producer) Shutdown() error {
+// Shutdown waits for pending async publish callbacks, then drains every connection.
+// Both steps are bounded by ctx. If ctx ends first, Shutdown closes the connections
+// without draining and returns ctx.Err(). Without a successful Start, it is a
+// no-op. It is idempotent.
+func (p *Producer) Shutdown(ctx context.Context) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if !p.started.CompareAndSwap(true, false) {
+	r := p.run
+	if r == nil {
+		p.mu.Unlock()
 		return nil
 	}
+	p.run = nil
+	p.mu.Unlock()
 
-	producers, err := p.getAllProducers()
-	if err != nil {
-		return err
+	// No Add can run now: acquire needs the run that was just cleared.
+	pendingDone := make(chan struct{})
+	go func() {
+		r.pending.Wait()
+		close(pendingDone)
+	}()
+
+	select {
+	case <-pendingDone:
+	case <-ctx.Done():
+		for _, pd := range r.producers {
+			pd.Close()
+		}
+		return ctx.Err()
 	}
 
-	var errGroup errgroup.Group
-	for topic, pd := range producers {
-		errGroup.Go(func() error {
-			if pErr := pd.Shutdown(); pErr != nil {
-				return fmt.Errorf("shutdown topic %s: %w", topic, pErr)
-			}
-			return nil
-		})
+	var errs []error
+	for topic, pd := range r.producers {
+		if err := pd.Drain(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("producer: shutdown topic %s: %w", topic, err))
+		}
 	}
-
-	return errGroup.Wait()
+	return errors.Join(errs...)
 }
 
 // sendSync resolves the producer and performs a synchronous send.
 func (p *Producer) sendSync(ctx context.Context, topic string, msg *nats.Msg) (*jetstream.PubAck, error) {
-	pd, err := p.getProducer(topic)
+	pd, err := p.producerFor(topic)
 	if err != nil {
 		return nil, err
 	}
@@ -385,62 +447,43 @@ func (p *Producer) sendSync(ctx context.Context, topic string, msg *nats.Msg) (*
 
 // metaFor returns the telemetry metadata for the given topic.
 func (p *Producer) metaFor(topic string) meta {
-	m := meta{metrics: p.metrics, tracer: p.tracer}
-	if raw, ok := p.producerMeta.Load(topic); ok {
-		if pm, ok := raw.(producerMeta); ok {
-			m.serverAddr, m.serverPort = pm.serverAddr, pm.serverPort
-		}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var pm producerMeta
+	if p.run != nil {
+		pm = p.run.producerMeta[topic]
 	}
-	return m
+	return meta{topic: topic, serverAddr: pm.serverAddr, serverPort: pm.serverPort, metrics: p.metrics, tracer: p.tracer}
 }
 
-// getProducer returns the producer for topic or ErrProducerNotFound.
-func (p *Producer) getProducer(topic string) (jsProducer, error) {
-	pRaw, ok := p.producers.Load(topic)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrProducerNotFound, topic)
-	}
+// producerFor returns the started producer for topic or ErrProducerNotFound.
+func (p *Producer) producerFor(topic string) (jsProducer, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	pd, ok := pRaw.(jsProducer)
-	if !ok {
-		return nil, fmt.Errorf("producer: invalid producer type: %s", topic)
+	if p.run != nil {
+		if pd, ok := p.run.producers[topic]; ok {
+			return pd, nil
+		}
 	}
-
-	return pd, nil
+	return nil, fmt.Errorf("%w: %s", ErrProducerNotFound, topic)
 }
 
-func (p *Producer) getAllProducers() (map[string]jsProducer, error) {
-	var (
-		result = make(map[string]jsProducer)
-		errs   []error
-	)
+// acquire returns the started producer for topic and counts one pending async
+// publish in the current run. The caller must call Done on the returned WaitGroup
+// once the callback has returned, or right away if the publish fails.
+func (p *Producer) acquire(topic string) (jsProducer, *sync.WaitGroup, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	p.producers.Range(func(key, value any) bool {
-		k, ok := key.(string)
-		if !ok {
-			errs = append(errs, fmt.Errorf("producer: invalid producer key type: %s", key))
-			return true
+	if p.run != nil {
+		if pd, ok := p.run.producers[topic]; ok {
+			p.run.pending.Add(1)
+			return pd, p.run.pending, nil
 		}
-
-		pd, ok := value.(jsProducer)
-		if !ok {
-			errs = append(errs, fmt.Errorf("producer: invalid producer type: %s", key))
-			return true
-		}
-
-		result[k] = pd
-		return true
-	})
-
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
 	}
-
-	return result, nil
-}
-
-func (p *Producer) setProducer(topic string, pd jsProducer) {
-	p.producers.Store(topic, pd)
+	return nil, nil, fmt.Errorf("%w: %s", ErrProducerNotFound, topic)
 }
 
 // buildSubject constructs the target NATS subject. If tag is provided,
@@ -452,52 +495,19 @@ func buildSubject(topic, tag string) string {
 	return topic + "." + tag
 }
 
-// buildMsg constructs a NATS message with subject, data, headers, and injected trace context.
-func (p *Producer) buildMsg(ctx context.Context, topic, tag, key string, body []byte) *nats.Msg {
-	subject := buildSubject(topic, tag)
-	msg := nats.NewMsg(subject)
-	msg.Data = body
+// buildMsg constructs the NATS message for msg with its body and SDK headers. It
+// never sets Nats-Msg-Id, so the key cannot deduplicate messages. The trace context
+// is injected later, inside the producer span.
+func buildMsg(msg Message) *nats.Msg {
+	nm := nats.NewMsg(buildSubject(msg.Topic, msg.Tag))
+	nm.Data = msg.Body
 
-	if msg.Header == nil {
-		msg.Header = make(nats.Header)
+	if msg.Key != "" {
+		nm.Header.Set(wire.HeaderKey, msg.Key)
 	}
-
-	if key != "" {
-		msg.Header.Set("Nats-Msg-Id", key)
-	}
-	if tag != "" {
-		msg.Header.Set("Nats-Msg-Tag", tag)
+	if msg.Tag != "" {
+		nm.Header.Set(wire.HeaderTag, msg.Tag)
 	}
 
-	injectTraceContext(ctx, msg)
-
-	return msg
-}
-
-// serverAddrPort splits the first endpoint (host:port or nats://host:port) into its parts.
-func serverAddrPort(endpoints []string) (string, int) {
-	if len(endpoints) == 0 {
-		return "", 0
-	}
-	ep := endpoints[0]
-	if strings.Contains(ep, "://") {
-		u, err := url.Parse(ep)
-		if err == nil {
-			host := u.Hostname()
-			port, _ := strconv.Atoi(u.Port())
-			if port == 0 {
-				port = 4222
-			}
-			return host, port
-		}
-	}
-	host, portStr, err := net.SplitHostPort(ep)
-	if err != nil {
-		return ep, 4222
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return host, 4222
-	}
-	return host, port
+	return nm
 }

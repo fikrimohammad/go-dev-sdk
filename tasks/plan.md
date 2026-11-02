@@ -1,85 +1,98 @@
-# Implementation Plan: data-clients (SDK fix backlog, PR 2)
+# Implementation Plan: messaging (SDK fix backlog, PR 3)
 
-Spec: [SPEC-data-clients](../docs/specs/sdk-fix-backlog/SPEC-data-clients.md) (approved
-2026-11-02; assumptions 1–10 confirmed). Capability map:
-[capability-map](../docs/specs/sdk-fix-backlog/capability-map.md). Item index:
+Spec: [SPEC-messaging](../docs/specs/sdk-fix-backlog/SPEC-messaging.md) (approved 2026-11-02).
+Capability map: [capability-map](../docs/specs/sdk-fix-backlog/capability-map.md). Item index:
 [docs/ideas/sdk-fix-backlog.md](../docs/ideas/sdk-fix-backlog.md#item-index). Tasks:
-[tasks/todo.md](todo.md). PR 1 (`foundations`) shipped as #16.
+[tasks/todo.md](todo.md). PR 1 shipped as #16 and PR 2 as #17.
 
 ## Overview
 
-One PR on branch `feat/data-clients`, one commit per task. It makes db, redis, and s3 telemetry
-follow semconv v1.43.0 with bounded cardinality, gives their constructors a `ctx`, switches redis
-to `redis.UniversalClient`, and makes all three strict on full-tree lint.
+One PR on branch `feat/messaging`, one commit per task. It fixes nats's delayed publish,
+silent dedup, lifecycle, and handler contract, and cron's lifecycle. It moves both modules'
+telemetry to semconv v1.43.0 with bounded cardinality, and makes both strict on full-tree lint.
 
-## Execution Roles (same as PR 1)
+## Execution Roles (same as PR 1 and PR 2)
 
 - **Coder and tester:** a Haiku subagent per task. It never commits, and git is read-only for it.
-- **Orchestrator:** reruns each task's checks independently, commits one task per commit, pushes,
-  and ticks todo.md. It applies small reviewer fixes itself when that is faster or safer.
+- **Orchestrator:** reruns each task's checks, commits one task per commit, pushes, and ticks
+  todo.md. It also:
+  - applies small reviewer fixes itself;
+  - owns go.mod (nuid becomes a direct dependency);
+  - owns `nats/parity_test.go` and module-wide compile fixes during parallel waves.
 - **Reviewer:** an Opus subagent at each checkpoint.
 
 ## Architecture Decisions
 
-- **Waves by module.** db, redis, and s3 are separate modules with no shared files, so each wave
-  runs one task per module in parallel. Within a module the tasks are sequential, because they
-  edit the same files.
-- **redis API first.** The `UniversalClient` switch (T3) changes redis's whole surface, so it lands
-  before redis's telemetry and pool-metric work, which then target the final API.
-- **Telemetry before cleanup.** The behaviour changes (telemetry, ctx constructors) come first.
-  The lint/strict cleanup comes last in each module, so the strict list grows only once a module
-  is final.
-- **semconv constants.** Attribute keys come from `go.opentelemetry.io/otel/semconv/v1.43.0`, as
-  rest does. Each module's telemetry test asserts the exact name, unit, and attribute set.
-- **go.mod changes are the orchestrator's.** When a task needs a new direct import (for example
-  semconv), the agent stops at the boundary and the orchestrator runs `go mod tidy` once, after
-  the agents in that module finish. This is the lesson from PR 1's T16–T18.
+- **Two lanes.** cron is its own module and shares nothing with nats, so the cron tasks run
+  alongside the nats tasks.
+- **Wire first.** `nats/internal/wire` (T2) holds the stream layout, the header names, the
+  connect options, and server-address parsing. The producer and consumer tasks build on it, so
+  their stream configs can't drift apart again (N7).
+- **Lifecycle before behaviour.** Within each nats package, I/O moves into `Start(ctx)` and
+  `Shutdown(ctx)` is bounded (T3, T4) before the message contract changes (T5, T6). The
+  embedded-JetStream tests then run against the final lifecycle.
+- **Telemetry after the contract.** One task (T9) moves producer and consumer telemetry
+  together, once the APIs it instruments are final. Both sides share the messaging attribute
+  set and the `error.type` rule.
+- **Package-scoped checks in parallel waves.** The producer and consumer agents share the
+  `nats` module and its root `parity_test.go`. Each agent runs checks on its own package
+  (`./producer/...` or `./consumer/...`). The orchestrator fixes `parity_test.go` and runs the
+  module-wide checks before committing.
+- **Embedded JetStream in the mirror files.** Tests that need a real server use an
+  in-process `nats-server/v2/test` server through a `helpers_test.go` helper. They need no env
+  var, so `go test ./...` stays hermetic.
 
-## Coverage Baselines (main @ 411bb72, 2026-11-02)
+## Coverage Baselines (main @ 216b2aa, 2026-11-02)
 
-| Module | Coverage |
+| Package | Coverage |
 | --- | --- |
-| db | 87.4% |
-| redis | 68.2% |
-| s3 | 85.5% |
+| nats/consumer | 68.6% |
+| nats/producer | 70.1% |
+| cron | 100.0% |
+| cron/engine | 93.7% |
+
+Full-tree lint gap: nats 37 findings plus 4 gostyle findings; cron 36 findings plus 1 gostyle
+finding.
 
 ## Task List
 
 Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Phase 0: Setup
-- [x] T1: Commit the spec and plan, and open a draft PR (#17)
+- [x] T1: Commit the spec and plan, and open a draft PR (#18)
 
 ### Wave 1 (parallel)
-- [x] T2: db telemetry: semconv attributes, no count metric, span name, error.type (D1, D2, X2–X4, X6)
-- [x] T3: redis returns `redis.UniversalClient`; interfaces and aliases deleted (R6, R5)
-- [x] T4: s3 telemetry: `rpc.client.call.duration`, `rpc.system.name`/`rpc.method` (S-telemetry, X4, X6)
+- [x] T2: `nats/internal/wire`: stream layout, headers, connect options, server address (N7, N15, N18)
+- [x] T7: cron lifecycle: lock, contexts, middleware order, errors (C2, C3, C4, C5, X1, X7)
 
 ### Wave 2 (parallel)
-- [x] T5: db `Connect(ctx)`; examples and README updated (X5)
-- [x] T6: redis telemetry: semconv attributes, no count metric, error.type (R1, X2–X4, X6)
-- [x] T7: s3 `New(ctx)`, lint cleanup, testing recipe, strict (X5, X8, X9, S2, N19)
+- [x] T3: producer lifecycle: `Register` without I/O, `Start(ctx)` owns the stream, `Shutdown(ctx)` waits (N2, N6, N7, N14, N20 ownership)
+- [x] T4: consumer lifecycle: `Register` without I/O, `Start(ctx)`, bounded `Shutdown(ctx)`, data-subject filter, `DeliverNew` (N2, N3, N4, N14, N18 filter)
+- [x] T8: cron telemetry, docs, recipe, strict (C1, C6, X2–X6, N19)
 
-### Checkpoint A: Opus review of T1–T7 (done; fixes in 326fd73 and the redis fix commit)
+### Checkpoint A: Opus review of T1–T4, T7, T8 (done; fixes in 4df0457 and the nats fix commit)
 ### Wave 3 (parallel)
-- [x] T8: db cleanup: D3 (prove or drop), D4, X8, X9, testing recipe, strict (N19)
-- [x] T9: redis pool metrics in semconv form; Close waits for the poller (R2, R3, R4)
+- [x] T5: producer `Message` API, SDK headers, delayed publish, trace parenting (N5, N9, N13, N18, N20)
+- [x] T6: consumer `Message` handler, `HandlerTimeout` heartbeat, `ErrNoRetry`, ack logging, panic innermost (N1, N8, N21, X1)
 
 ### Wave 4
-- [x] T10: redis `New(ctx)` check, lint cleanup, testing recipe, strict (X8, X9, N19)
+- [x] T9: nats telemetry, both sides: messagingconv metrics, bounded attributes, `error.type` (N10, N11, X2–X6)
 
-### Checkpoint B: final Opus review (approved; fixes applied); PR description published; marked ready for owner review
+### Wave 5
+- [x] T10: nats cleanup, docs, testing recipe, strict (N16, N17, N19)
+
+### Checkpoint B: final Opus review (fixes applied); PR description published; marked ready for owner review
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Renaming metrics breaks dashboards | Med | No backward compatibility is needed (only the testing app uses the SDK, and it is migrated after guardrails); the PR body lists every renamed or dropped metric |
-| `UniversalClient` changes redis behaviour (cluster vs. standalone routing) | Med | `createUnderlyingClient` keeps the per-mode constructors; a test covers each mode's type and that the hook records commands |
-| Pool-metric delta math drifts (an up-down counter never returning to 0) | Med | The same attribute set on every increment and decrement; a test drives PoolStats through a sequence and asserts the running count |
-| Agents need a new direct import (semconv) | Low | Orchestrator-run `go mod tidy` after the module's agents finish (see Architecture Decisions) |
-| The Haiku usage limit interrupts a task | Low | Saved work is checked and finished by the orchestrator, as in PR 1's T25 |
+| Timing-based JetStream tests flake in CI (delay, heartbeat) | Med | Assert ordering and counts, not exact times. Use tolerances of 100 ms or more, waits of seconds, and `-count=3` locally before commit. |
+| Parallel producer and consumer agents break the shared `parity_test.go` | Med | The agents check only their own package; the orchestrator fixes the root tests (see Architecture Decisions). |
+| Patching the stream on `Start` misses an SDK-owned field | Med | `TestStart_PreservesOperatorStreamSettings` covers create, update, and an existing stream without `schedules.<topic>.>`. |
+| The heartbeat goroutine leaks or races with ack | Med | The heartbeat stops before ack/nak/term, a test runs under `-race`, and the handler ctx bounds it. |
+| The Haiku usage limit interrupts a task | Low | The orchestrator checks and finishes the saved work, as in PR 1. |
 
 ## Open Questions
 
-- None. A draft PR is opened in T1, as in PR 1.
+- None.

@@ -1,6 +1,6 @@
-# Tasks: data-clients (SDK fix backlog, PR 2)
+# Tasks: messaging (SDK fix backlog, PR 3)
 
-Plan: [plan.md](plan.md). Spec: [SPEC-data-clients](../docs/specs/sdk-fix-backlog/SPEC-data-clients.md).
+Plan: [plan.md](plan.md). Spec: [SPEC-messaging](../docs/specs/sdk-fix-backlog/SPEC-messaging.md).
 
 **Module checks.** Run these in every module a task touches (AGENTS.md verification):
 - `gofmt -l .`
@@ -9,7 +9,10 @@ Plan: [plan.md](plan.md). Spec: [SPEC-data-clients](../docs/specs/sdk-fix-backlo
 - lint: full-tree `golangci-lint run ./...` once a module is strict, otherwise
   `--new-from-merge-base=main`
 - gostyle
-- `go mod tidy -diff`, including in any module that requires the changed one
+- `go mod tidy -diff`
+
+In parallel nats waves, an agent runs these on its own package path and the orchestrator runs
+them on the whole module.
 
 **Test-wording check.** For the lines a task changes, this must print nothing:
 `git diff -U0 | grep '^+' | grep -E 't\.(Errorf|Fatalf|Error|Fatal)\(.*\b(should|expected|actual|Expected|Actual)\b'`
@@ -17,8 +20,14 @@ Plan: [plan.md](plan.md). Spec: [SPEC-data-clients](../docs/specs/sdk-fix-backlo
 **TDD rule.** Every test marked *(regression)* is written first and shown failing on the current
 code. Only then is the fix implemented.
 
-**Telemetry rule.** Attribute keys come from `semconv/v1.43.0` constants. Telemetry tests assert
-the exact metric name, unit, and attribute set, and that no attribute is ever an empty string.
+**Telemetry rule.**
+- Names, units, and descriptions come from `semconv/v1.43.0/messagingconv` where they exist.
+- Attribute keys come from semconv constants.
+- Tests assert the exact name, unit, instrument type, and attribute set.
+
+**JetStream rule.** Tests that need a server use the embedded `nats-server/v2/test` helper in
+`helpers_test.go`, which runs with JetStream on, a temp store dir, and cleanup. Timing tests
+assert order and counts, with tolerances of at least 100 ms.
 
 Each task is one commit, with the subject `<type>(<module>): <summary> (<task>, <item IDs>)`.
 
@@ -26,209 +35,305 @@ Each task is one commit, with the subject `<type>(<module>): <summary> (<task>, 
 
 ## Task 1: Commit the spec and plan, open a draft PR
 
-**Description:** Branch `feat/data-clients` (from main @ 411bb72). Commit SPEC-data-clients,
-the capability-map link, this plan, and the task list. Open a draft PR whose body links the spec.
+**Description:** On branch `feat/messaging` (from main @ 216b2aa), commit SPEC-messaging, the
+capability-map link, the backlog-doc sync, this plan, and the task list. Open a draft PR whose
+body links the spec.
 
 **Acceptance criteria:**
-- [x] One `docs:` commit holds the spec, the map, and the tasks.
+- [x] One `docs:` commit holds them.
 - [x] A draft PR targets `main`.
 
 **Verification:**
 - [x] `gh pr view --json isDraft` reports true.
 
-**Dependencies:** None · **Files:** `docs/specs/sdk-fix-backlog/*`, `tasks/*` · **Scope:** XS
+**Dependencies:** None · **Files:** `docs/**`, `tasks/*` · **Scope:** XS
 
-## Task 2: db telemetry
+## Task 2: nats/internal/wire
+
+**Description:** A new internal package, the single source of the stream layout, the headers,
+and the connection setup:
+- `StreamConfig(topic)`: subjects `[topic, topic.>, schedules.topic.>]`, plus
+  `AllowMsgSchedules`.
+- `DataSubjects(topic)` returns `[topic, topic.>]`.
+- `ScheduleSubject(topic)` returns `schedules.<topic>.<nuid>`.
+- `PatchStream(existing, topic)` adds the missing SDK subjects and sets `AllowMsgSchedules`,
+  keeping every other field.
+- Header constants: `HeaderKey = "Sdk-Msg-Key"` and `HeaderTag = "Sdk-Msg-Tag"`.
+- `ServerAddrPort(endpoints)`: moved from the two packages.
+- `Options` plus `Connect(name, opts)`: the token, user, nkey, and creds options both factories
+  copy today.
+- Nothing calls it yet; T3 and T4 switch over. The nuid import is the one go.mod change, and
+  the orchestrator promotes it after the agent stops.
+
+**Acceptance criteria:**
+- [x] Table tests cover `StreamConfig`, `DataSubjects`, `ScheduleSubject` (unique across
+      calls), `PatchStream`, and `ServerAddrPort`. For `PatchStream`: operator `MaxAge` and
+      `Replicas` are kept, subjects are de-duplicated, and an existing extra subject is kept.
+- [x] The package comment and doc comments follow Go Doc Comments.
+
+**Verification:**
+- [x] nats module checks (lint new-from-merge-base); `go test ./internal/...` covers 90% or more.
+
+**Dependencies:** T1 · **Files:** `nats/internal/wire/wire.go`, `nats/internal/wire/wire_test.go`, `nats/go.mod` (orchestrator) · **Scope:** S
+
+## Task 3: producer lifecycle
 
 **Description:**
-- The duration metric `db.client.operation.duration` keeps only the spec's metric attributes;
-  `db.query.text` moves to spans only.
-- Drop `db.client.operation.count`. The span name becomes `{db.operation.name}`.
-- `error.type` is the driver code, or `timeout`, `canceled`, or `_OTHER`. `db.response.status_code`
-  is set only when there is a driver code, and nothing is ever set to "".
-- One `metricsClient()` helper and one tracer helper replace the duplicated nil-check branches.
-- Attribute keys come from semconv constants. If that needs a direct semconv import that go.mod
-  lacks, stop and report it; the orchestrator tidies.
+- `Register(cfg)` validates and stores only, with no dial.
+- `Start(ctx)` connects through `wire.Connect`. It ensures the stream: if the stream exists,
+  it is `PatchStream`ed and `UpdateStream` is called only when something changed; if it is
+  missing, it is created from `StreamConfig`. All of this is bounded by ctx.
+- `Shutdown(ctx)` waits for pending `PublishAsync` callbacks (a WaitGroup) and then drains,
+  until ctx is done; then it returns `ctx.Err()`. Without `Start`, it is a no-op.
+- The `sync.Map` registry plus the mutex become a plain map under the mutex (N14).
+- `serverAddrPort` is replaced by `wire.ServerAddrPort`.
+- Keep the positional publish API (T5 changes it). Update the callers in `producer/*_test.go`
+  and `example_test.go`.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestInstrument_MetricAttributes`: exact attribute set on success and on
-      failure; no `db.query.text` on the metric; the span carries it.
-- [x] *(regression)* `TestErrorInfo` (rework): MySQL and PostgreSQL errors give their code; an
-      unknown error gives `_OTHER`, never its message.
-- [x] No `db.client.operation.count`, and the span name is the operation name.
+- [x] *(regression)* `TestStart_PreservesOperatorStreamSettings` (embedded JetStream):
+      precreate a stream with MaxAge 1h and only `[topic]`; after `Start`, MaxAge is kept and
+      the subjects include `topic.>` and `schedules.topic.>`.
+- [x] *(regression)* `TestShutdown_WaitsForAsyncPublish`: Shutdown returns only after a pending
+      async callback has run (a stub transport that delays the ack).
+- [x] `TestRegister_NoIO`: Register with an unreachable endpoint succeeds and dials nothing.
+- [x] `TestShutdown_Deadline`: a hung drain returns `ctx.Err()` by the deadline.
 
 **Verification:**
-- [x] db module checks (lint new-from-merge-base); coverage ≥ 87.4%.
+- [x] `./producer/...` checks; coverage ≥ 70.1%.
 
-**Dependencies:** T1 · **Files:** `db/db.go`, `db/drivers.go`, `db/db_test.go`, `db/drivers_test.go` · **Scope:** M
+**Dependencies:** T2 · **Files:** `nats/producer/producer.go`, `nats/producer/producer_test.go`, `nats/producer/helpers_test.go`, `nats/producer/mock_test.go`, `nats/producer/example_test.go` · **Scope:** M
 
-## Task 3: redis returns redis.UniversalClient
+## Task 4: consumer lifecycle
 
 **Description:**
-- `New(ctx, cfg, opts...)` returns `redis.UniversalClient`; delete `NewWithContext`.
-- `createUnderlyingClient` returns `redis.UniversalClient`. A small wrapper embeds it and
-  overrides only `Close`, which stops the pool poller.
-- Delete `ReadCommands`, `WriteCommands`, `ScriptCommands`, `Client`, `Pipeline`, the
-  `pipeline` wrapper, `underlyingClient`, and every alias (`Nil`, `TxFailedErr`, `Script`,
-  `NewScript`, `Z`, `ZRangeBy`, `PoolStats`, `Tx`, `PubSub`, `Message`, `Subscription`).
-  Delete `redis/errors.go`.
-- Update tests, `example_test.go`, and README to use go-redis types.
+- `Register(cfg, handler)` validates and stores only.
+- `Start(ctx)`:
+  - connects through `wire.Connect`;
+  - looks the stream up, and creates it from `StreamConfig` only if it is missing;
+  - creates or updates the durable consumer, all bounded by ctx.
+- The default filter (`Tags` empty or `["*"]`) is `wire.DataSubjects(topic)`.
+- `ConsumeFromLast` maps to `DeliverNewPolicy`.
+- `Shutdown(ctx)`:
+  - stops intake: `consumeCtx.Drain()`, then wait on `Closed()` (N4: no `wg.Add` after Wait
+    can start);
+  - waits for in-flight handlers until ctx is done;
+  - drains the connection;
+  - returns `ctx.Err()` on timeout.
+  - Without `Start`, it is a no-op.
+- The plain-map registry and `wire.ServerAddrPort`.
+- Keep `HandlerFunc(ctx, []byte)` (T6 changes it). Handler ctx cancellation is T6.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestNew_ReturnsUniversalClient`: each mode's `createUnderlyingClient`
-      returns a `redis.UniversalClient`, and the hook records a command sent through it
-      (in-process, no miniredis).
-- [x] `grep -n 'type .* interface\|= redis\.' redis/*.go | grep -v _test` shows only the
-      unexported seams that remain, if any.
-- [x] `redis/errors.go` is gone.
+- [x] *(regression)* `TestShutdown_WithoutStart`: Register then Shutdown dials nothing and
+      leaks nothing (a factory spy counts dials).
+- [x] *(regression)* `TestShutdown_RespectsDeadline`: with a handler that ignores ctx, Shutdown
+      returns `context.DeadlineExceeded` by the deadline (±200 ms).
+- [x] *(regression)* `TestConsumer_DefaultFilterSkipsSchedules` (embedded JetStream): a message
+      published raw on `schedules.<topic>.x` is not delivered; `topic` and `topic.tag` are.
+- [x] `TestBuildConsumerConfig` covers `DeliverNewPolicy` for "last".
 
 **Verification:**
-- [x] redis module checks; coverage ≥ 68.2%.
+- [x] `./consumer/...` checks under `-race`; coverage ≥ 68.6%.
 
-**Dependencies:** T1 · **Files:** `redis/redis.go`, `redis/errors.go` (delete), `redis/redis_test.go`, `redis/example_test.go`, `redis/README.md` · **Scope:** L (mostly deletions)
+**Dependencies:** T2 · **Files:** `nats/consumer/consumer.go`, `nats/consumer/config.go`, `nats/consumer/consumer_test.go`, `nats/consumer/config_test.go`, `nats/consumer/helpers_test.go` · **Scope:** M
 
-## Task 4: s3 telemetry
+## Task 7: cron lifecycle
 
 **Description:**
-- The metric becomes `rpc.client.call.duration` (s); drop `s3.client.operation.{count,duration}`.
-- Attributes: `rpc.system.name=aws-api`, `rpc.method=S3/<Operation>`, `aws.s3.bucket`,
-  `cloud.region`, `server.address`/`server.port` when known, and `error.type` on failure.
-  `rpc.system` and `rpc.service` are removed.
-- Keys come from semconv constants. If `aws-api` has no constant, use
-  `semconv.RPCSystemNameKey.String("aws-api")`.
-- One metrics helper and one tracer helper (X6).
+- C2: `Register`'s started/stopping check and the map write happen under the same mutex that
+  `Start` takes.
+- C3:
+  - Scheduled runs use the engine's stop context as their parent (no `Background`).
+  - `Unlock` uses `context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)`.
+- X1/C4:
+  - The chain becomes tracer → logger → toggler → locker → metrics → panicRecovery → handler.
+  - The toggler and locker return their errors without logging.
+  - The logger logs a skip (`ErrJobDisabled`, `ErrLockHeld`, `ErrJobRunning`) at Info and a
+    failure at Error.
+- C5:
+  - `fmt.Errorf("%w: %w", ErrInvalidSchedule, err)`.
+  - `inFlight` becomes a set of names under a mutex; the stored cancel funcs go, since
+    `stopCancel` covers them.
+- X7: drop the nil-ctx fallbacks in `runJob` and `Stop`.
+- Telemetry names don't change here; that is T8.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestMiddleware_MetricAttributes`: the exact name, unit, and attribute set;
-      no `rpc.system` or `rpc.service` anywhere.
-- [x] The span keeps its name (the operation) and kind (client).
+- [x] *(regression)* `TestRegister_RacesStart`: a concurrent `Register` and `Start` under
+      `-race`. Either Register returns `ErrEngineAlreadyStarted` or the job is scheduled, never
+      a race report.
+- [x] *(regression)* `TestUnlock_AfterCancel`: a job canceled by `Stop` still calls Unlock with
+      a live ctx that keeps the span context.
+- [x] *(regression)* `TestJob_PanicIsMeasured`: a panicking job produces a duration point with
+      an error, and the span has error status.
+- [x] `TestRegister_InvalidSchedule`: `errors.Is` matches both `ErrInvalidSchedule` and the
+      parser error.
 
 **Verification:**
-- [x] s3 module checks; coverage ≥ 85.5%.
+- [x] cron module checks (lint new-from-merge-base); coverage: cron 100%, engine ≥ 93.7%.
 
-**Dependencies:** T1 · **Files:** `s3/s3.go`, `s3/middleware.go`, `s3/s3_test.go` · **Scope:** M
+**Dependencies:** T1 · **Files:** `cron/engine/engine.go`, `cron/engine/middleware.go`, `cron/engine/engine_test.go`, `cron/engine/middleware_test.go` · **Scope:** M
 
-## Task 5: db Connect(ctx)
-
-**Description:** `Connect(ctx, cfg, opts...)`. The ctx bounds the initial ping: use
-`sqlx.ConnectContext`, or open and `PingContext`. Update `example_test.go`, README, and
-the integration tests' call sites.
-
-**Acceptance criteria:**
-- [x] *(regression)* `TestConnect_ContextDeadline`: an already-expired ctx makes `Connect` return
-      an error matching `context.DeadlineExceeded` without waiting for a dial timeout.
-
-**Verification:**
-- [x] db module checks; `go vet` compiles the examples and integration tests.
-
-**Dependencies:** T2 · **Files:** `db/db.go`, `db/db_test.go`, `db/example_test.go`, `db/integration_test.go`, `db/README.md` · **Scope:** S
-
-## Task 6: redis telemetry
-
-**Description:** The same treatment as T2, for redis's command and pipeline hooks:
-- The metric keeps only the spec's attributes; `db.query.text` and `db.operation.batch.size` move
-  to spans only.
-- Drop `db.client.operation.count`.
-- `error.type` is the simple-error prefix, or `timeout`, `canceled`, or `_OTHER`; never the
-  message, and never "".
-- One metrics/tracer helper each (X6); remove the trivial `errorMessage` wrapper (R4).
-- Semconv constants.
-
-**Acceptance criteria:**
-- [x] *(regression)* `TestInstrumentHook_MetricAttributes` (commands and pipelines): exact
-      attribute sets; no query text, batch size, or message on metrics.
-
-**Verification:**
-- [x] redis module checks; coverage ≥ 68.2%.
-
-**Dependencies:** T3 · **Files:** `redis/redis.go`, `redis/redis_test.go` · **Scope:** M
-
-## Task 7: s3 New(ctx), cleanup, testing recipe, strict
+## Task 8: cron telemetry, docs, recipe, strict
 
 **Description:**
-- `New(ctx, cfg, opts...)`: the ctx bounds `LoadDefaultConfig`.
-- Fix every full-tree lint finding, including errors.As → AsType (X8) and test wording (X9).
-- S2: `// gostyle:ignore getter-prefix` with the reason (S3's API names the operation
-  `GetObject`), and drop the redundant import aliases.
-- Add a README "Testing your code" section showing gofakes3 + httptest with
-  `Config{Endpoint: ts.URL}` (N19), written as documentation, not a dependency.
-- Update `example_test.go`. Add `s3` to `STRICT_LINT_MODULES`.
+- C1:
+  - Drop the `cron.job.runs` counter.
+  - `cron.job.duration` (s) keeps only `cron.job.name`, `cron.job.trigger`, and `error.type` on
+    failure.
+  - `error.type`: an `*errs.Error` code, `timeout`, `canceled`, `panic`, or `_OTHER`. The code is
+    read through `errors.AsType[interface{ Code() int }]`, so cron gains no dependency on
+    errs.
+  - The span gets `cron.job.fencing_token`, and `status` goes.
+- X6: one metrics helper and one tracer helper, resolved per call.
+- C6: package comments (cron and engine) and Config field docs.
+- Fix every full-tree lint finding (X8, X9).
+- Add a README "Testing your code" section: call the `HandlerFunc` directly, or use
+  `Engine.Trigger` with fake `Toggler`/`Locker`.
+- Add `cron` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestNew_ContextCanceled`: a canceled ctx makes `New` fail.
-- [x] Full-tree lint 0 and gostyle 0 in s3; `s3` is in the strict list.
+- [x] *(regression)* `TestMetrics_Attributes`: the exact name, unit, and attribute sets on
+      success and failure. No fencing token, status, or message; no `cron.job.runs`.
+- [x] Full-tree lint 0 and gostyle 0 in cron; `cron` is in the strict list.
 
 **Verification:**
-- [x] s3 module checks (strict).
+- [x] cron module checks (strict).
 
-**Dependencies:** T4 · **Files:** `s3/s3.go`, `s3/s3_test.go`, `s3/example_test.go`, `s3/README.md`, `.github/workflows/ci.yml` · **Scope:** M
+**Dependencies:** T7 · **Files:** `cron/engine/middleware.go`, `cron/engine/middleware_test.go`, `cron/engine/config.go`, `cron/*.go` docs, `cron/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 
-### Checkpoint A: Opus review of T1–T7
-- [x] Spec criteria 2–4 hold for every module so far; CI is green; review fixes are applied.
+### Checkpoint A: Opus review of T1–T4, T7, T8
+- [x] The spec criteria hold for cron, and the lifecycle criteria hold for nats; CI is green;
+      review fixes are applied.
 
-## Task 8: db cleanup, testing recipe, strict
+## Task 5: producer Message API, headers, delayed publish, trace parenting
 
 **Description:**
-- D3: write `TestBindQuery_TypedNilValuer` first. If it panics, mirror database/sql's nil-pointer
-  Valuer handling; if it passes, drop D3 and note that in the commit.
-- D4: goimports, `reflect.DeepEqual` → `==`/`slices.Equal`, and `Config` json tags.
-- X8 AsType, X9 wording, and every other full-tree lint finding.
-- Add a README "Testing your code" section showing sqlmock via
-  `Config{Driver: "sqlmock", DSN: ...}` (N19).
-- Add `db` to `STRICT_LINT_MODULES`.
+- N13: `producer.Message{Topic, Tag, Key string; Body []byte}`, used by
+  `PublishSync(ctx, msg)`, `PublishSyncWithDelay(ctx, msg, delay)`, and
+  `PublishAsync(ctx, msg, cb)`. `Client` gets the same signatures. `Message` is a struct, not
+  an interface, so it lives in `producer.go` beside `Client`.
+- N20: never set `Nats-Msg-Id`; set `wire.HeaderKey` and `wire.HeaderTag`.
+- N18 and N9: a delayed message publishes on `wire.ScheduleSubject(topic)`, with
+  `Nats-Schedule-Target` set to the data subject and `@at` in RFC3339Nano.
+- N5: the trace context is injected inside the producer span, after it starts.
 
 **Acceptance criteria:**
-- [x] *(regression, conditional)* D3 is fixed with a failing-first test, or dropped with evidence.
-- [x] Full-tree lint 0 and gostyle 0 in db; `db` is in the strict list.
+- [x] *(regression)* `TestPublishSyncWithDelay_DeliversOnceAtDelay` (embedded JetStream, read
+      through a raw jetstream consumer filtered on `DataSubjects`):
+  - two concurrent publishes with delays of 1 s and 1.5 s each arrive exactly once, no
+    earlier than their delay minus 100 ms;
+  - no schedule-subject message is seen;
+  - `Sdk-Msg-Tag` and `traceparent` survive.
+- [x] *(regression)* `TestPublishSync_SameKeyNotDeduplicated`: two messages with one key give
+      two stored messages.
+- [x] *(regression)* `TestPublish_TraceParenting`: the injected `traceparent` span id equals
+      the producer span's.
 
 **Verification:**
-- [x] db module checks (strict); coverage ≥ 87.4%.
+- [x] `./producer/...` checks (`-count=3` for the timing test); coverage ≥ 70.1%.
 
-**Dependencies:** T5 · **Files:** `db/bind.go`, `db/bind_test.go`, `db/config.go`, `db/drivers.go`, `db/README.md`, `.github/workflows/ci.yml` · **Scope:** M
+**Dependencies:** T3, Checkpoint A · **Files:** `nats/producer/producer.go`, `nats/producer/telemetry.go` (inject only), `nats/producer/producer_test.go`, `nats/producer/example_test.go`, `nats/producer/mock_test.go` · **Scope:** M
 
-## Task 9: redis pool metrics in semconv form
+## Task 6: consumer Message handler, heartbeat, ErrNoRetry, ack logging, panic innermost
 
 **Description:**
-- Replace the six custom pool instruments with `db.client.connection.count` (up-down counter,
-  `{connection}`, `db.client.connection.state` = idle|used, plus `db.client.connection.pool.name`)
-  and `db.client.connection.timeouts` (counter, `{timeout}`). Each poll records deltas, with the
-  same attributes on increment and decrement.
-- Drop hits, misses, and stale.
-- The poller has a visible end: `Close` closes stop and waits on a WaitGroup (R3).
-- One poll helper; no duplicated branches (R2).
+- N21:
+  - `type Message interface` in `consumer.go` (spec Code Style), plus an unexported wrapper
+    that parses the metadata once.
+  - `HandlerFunc(ctx, msg Message) error`.
+  - A message without JetStream metadata is nak'd before the handler runs.
+- N1 and N21 heartbeat:
+  - The handler ctx derives from the consumer's run ctx, which `Shutdown` cancels.
+  - Its deadline is `Config.HandlerTimeout`, a new field that defaults to `Timeout` (R1
+    SetDefaults and Validate; it must be > 0).
+  - While the handler runs, a heartbeat calls `msg.InProgress()` every AckWait/2.
+  - The heartbeat stops before ack, nak, or term.
+- N21 `ErrNoRetry` in `errors.go`: a handler error matching it with `errors.Is` terms the
+  message; any other error naks with RetryBackoff.
+- N8: Ack, Nak, Term, and InProgress errors are logged at Warn (topic, group, sequence) and
+  added to the span as an event.
+- X1: the chain is tracer → logger → metrics → panicRecovery → handler.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestPoolMetrics`: driving PoolStats through a sequence (via a stubbed stats
-      source) gives the right running count per state and timeout total; after `Close`, the
-      poller has exited (WaitGroup).
+- [x] *(regression)* `TestHandler_ContextCanceledOnShutdown`: a blocked handler's ctx is done
+      after Shutdown, and its deadline is about `HandlerTimeout`.
+- [x] *(regression)* `TestHandler_HeartbeatPreventsRedelivery` (embedded JetStream): AckWait 1 s,
+      HandlerTimeout 5 s, and a 2.5 s handler give exactly one delivery.
+- [x] *(regression)* `TestHandler_ErrNoRetryTerms`: a wrapped `ErrNoRetry` gives one delivery,
+      and the message is termed.
+- [x] *(regression)* `TestHandler_MessageMetadata`: the key, tag, subject, sequence, and delivery
+      count are 1, then 2 on redelivery.
+- [x] *(regression)* `TestHandler_PanicIsMeasured`: the metrics middleware sees the recovered
+      panic as an error, the message is nak'd, and the span has error status.
 
 **Verification:**
-- [x] redis module checks; coverage ≥ 68.2%.
+- [x] `./consumer/...` checks under `-race` (`-count=3` for the timing tests); coverage ≥ 68.6%.
 
-**Dependencies:** T6 · **Files:** `redis/redis.go`, `redis/redis_test.go` · **Scope:** M
+**Dependencies:** T4, Checkpoint A · **Files:** `nats/consumer/consumer.go`, `nats/consumer/handler.go`, `nats/consumer/middleware.go` (order only), `nats/consumer/config.go`, `nats/consumer/errors.go`, `*_test.go` · **Scope:** L
 
-## Task 10: redis cleanup, testing recipe, strict
+## Task 9: nats telemetry, both sides
 
 **Description:**
-- Confirm `New(ctx)` from T3 bounds the ping with ctx (add `TestNew_ContextCanceled` if T3 didn't).
-- X8 AsType, X9 wording, and every other full-tree lint finding, including the removed
-  `min`/`max` and `interfacebloat` nolints if those declarations are gone.
-- Add a README "Testing your code" section showing miniredis with `Config{Addrs: []string{m.Addr()}}`
-  (N19).
-- Add `redis` to `STRICT_LINT_MODULES`.
+- N11: metrics from `messagingconv`:
+  - producer: `ClientOperationDuration` and `ClientSentMessages` (success only);
+  - consumer: `ProcessDuration` and `ClientConsumedMessages` (every delivery).
+- N10, X2, X4: the metric attributes are only `messaging.system=nats`,
+  `messaging.operation.name`, `messaging.operation.type`, `messaging.destination.name`,
+  `messaging.consumer.group.name` (consumer), `server.address`, `server.port`, and
+  `error.type` on failure.
+- The spans add these:
+  - `messaging.nats.subject`
+  - `messaging.message.id` (the producer's PubAck sequence, or the consumer's stream sequence)
+  - `messaging.message.body.size`
+  - `messaging.nats.message.key` and `.tag`
+  - `messaging.nats.message.delivery_count`
+- Span names become `publish <topic>` and `process <topic>`.
+- X3 `error.type`: an `*errs.Error` code, a `jetstream.APIError` ErrorCode, `timeout`
+  (including a `net.Error` timeout), `canceled`, `panic`, or `_OTHER`.
+- X6 helpers.
 
 **Acceptance criteria:**
-- [x] Full-tree lint 0 and gostyle 0 in redis; `redis` is in the strict list; no stale `//nolint`
-      remains.
+- [x] *(regression)* `TestPublish_MetricAttributes` and `TestProcess_MetricAttributes`: the exact
+      names, units, and instrument types, and the exact attribute sets on success and failure.
+      No id, key, tag, subject, body size, or message on metrics.
+- [x] *(regression)* `TestErrorType` (both packages): every class above.
 
 **Verification:**
-- [x] redis module checks (strict).
+- [x] nats module checks; coverage ≥ baselines.
 
-**Dependencies:** T9 · **Files:** `redis/redis.go`, `redis/redis_test.go`, `redis/README.md`, `.github/workflows/ci.yml` · **Scope:** M
+**Dependencies:** T5, T6 · **Files:** `nats/producer/telemetry.go`, `nats/producer/telemetry_test.go`, `nats/consumer/middleware.go`, `nats/consumer/middleware_test.go` · **Scope:** M
+
+## Task 10: nats cleanup, docs, testing recipe, strict
+
+**Description:**
+- N16: package comments (producer, consumer, wire) and every exported declaration.
+- N17: remove the unused handlerAdapter fields and the repeated metadata lookups, and rename
+  the get-prefixed helpers.
+- X8 and X9 across nats, plus every other full-tree lint and gostyle finding.
+- The READMEs:
+  - the new APIs;
+  - at-least-once delivery both ways, and deduping on `Key()`;
+  - `ErrNoRetry` and `HandlerTimeout`;
+  - `MaxRetryAttempts` exhaustion (JetStream stops redelivering; a DLQ is a separate
+    project);
+  - a "Testing your code" section: an embedded nats-server, and a fake `consumer.Message` for
+    handler unit tests.
+- Update `example_test.go` (compile-only) and `parity_test.go`.
+- Add `nats` to `STRICT_LINT_MODULES`.
+
+**Acceptance criteria:**
+- [x] Full-tree lint 0 and gostyle 0 in nats; `nats` is in the strict list; no stale `//nolint`.
+- [x] README snippets compile; the orchestrator checks them in a scratch module.
+
+**Verification:**
+- [x] nats module checks (strict).
+
+**Dependencies:** T9 · **Files:** `nats/**/*.go` (docs and renames), `nats/README.md` or the package READMEs, `.github/workflows/ci.yml` · **Scope:** M
 
 ### Checkpoint B: complete
-- [x] SPEC-data-clients success criteria 1–7 are verified with evidence.
+- [x] SPEC-messaging success criteria 1–8 are verified with evidence.
 - [x] Final Opus review, with its fixes applied.
-- [x] The PR body (prepared by the orchestrator) lists every renamed or dropped metric and
-      attribute and the API breaks. The owner updates it and marks the PR ready, or tells the
+- [x] The PR body (prepared by the orchestrator) lists every API break and every renamed or
+      dropped metric and attribute. The owner updates it and marks the PR ready, or tells the
       orchestrator to.

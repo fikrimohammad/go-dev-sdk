@@ -34,12 +34,15 @@ func ExampleNew() {
 		return
 	}
 
-	if err := p.Start(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := p.Start(ctx); err != nil {
 		log.Println("start producer:", err)
 		return
 	}
 	defer func() {
-		if err := p.Shutdown(); err != nil {
+		if err := p.Shutdown(ctx); err != nil {
 			log.Println("shutdown producer:", err)
 		}
 	}()
@@ -53,10 +56,7 @@ func ExampleNew() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := p.PublishSync(ctx, "orders", "created", "order-42", body); err != nil {
+	if err := p.PublishSync(ctx, producer.Message{Topic: "orders", Tag: "created", Key: "order-42", Body: body}); err != nil {
 		log.Println("publish order-42:", err)
 	}
 }
@@ -79,29 +79,28 @@ func ExampleProducer_PublishAsync() {
 		return
 	}
 
-	if err := p.Start(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := p.Start(ctx); err != nil {
 		log.Println("start producer:", err)
 		return
 	}
 	defer func() {
-		if err := p.Shutdown(); err != nil {
+		if err := p.Shutdown(ctx); err != nil {
 			log.Println("shutdown producer:", err)
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	done := make(chan struct{})
-	err = p.PublishAsync(ctx, "orders", "paid", "order-42", []byte(`{"id":"order-42"}`),
-		func(_ context.Context, ack *jetstream.PubAck, err error) {
-			defer close(done)
-			if err != nil {
-				log.Println("async publish order-42 failed:", err)
-				return
-			}
-			fmt.Println("async publish order-42 acked in stream", ack.Stream, "seq", ack.Sequence)
-		})
+	err = p.PublishAsync(ctx, producer.Message{Topic: "orders", Tag: "paid", Key: "order-42", Body: []byte(`{"id":"order-42"}`)}, func(_ context.Context, ack *jetstream.PubAck, err error) {
+		defer close(done)
+		if err != nil {
+			log.Println("async publish order-42 failed:", err)
+			return
+		}
+		fmt.Println("async publish order-42 acked in stream", ack.Stream, "seq", ack.Sequence)
+	})
 	if err != nil {
 		log.Println("enqueue order-42:", err)
 		return

@@ -4,18 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"runtime/debug"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/semconv/v1.43.0/messagingconv"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/errs"
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
@@ -25,34 +26,48 @@ const (
 	// tracerScope is the OTel instrumentation scope name.
 	tracerScope = "nats.consumer"
 
-	// metricCount and metricDuration are the OTel metric names emitted per
-	// processed message, following the messaging semantic conventions.
-	metricCount    = "messaging.process.messages"
-	metricDuration = "messaging.process.duration"
+	// attrSubject, attrKey, attrTag, and attrDeliveryCount are the NATS-specific
+	// span attributes.
+	attrSubject       = "messaging.nats.subject"
+	attrKey           = "messaging.nats.message.key"
+	attrTag           = "messaging.nats.message.tag"
+	attrDeliveryCount = "messaging.nats.message.delivery_count"
 )
 
 var (
-	metricCountInstrument = metrics.Instrument{
-		Name:        metricCount,
-		Unit:        "{message}",
-		Description: "Messages processed",
+	// processDurationInstrument is messaging.process.duration, recorded for every
+	// processed message.
+	processDurationInstrument = metrics.Instrument{
+		Name:        messagingconv.ProcessDuration{}.Name(),
+		Unit:        messagingconv.ProcessDuration{}.Unit(),
+		Description: messagingconv.ProcessDuration{}.Description(),
 	}
-	metricDurationInstrument = metrics.Instrument{
-		Name:        metricDuration,
-		Unit:        "s",
-		Description: "Message processing duration",
+
+	// consumedInstrument is messaging.client.consumed.messages, incremented once per
+	// delivery handed to the handler.
+	consumedInstrument = metrics.Instrument{
+		Name:        messagingconv.ClientConsumedMessages{}.Name(),
+		Unit:        messagingconv.ClientConsumedMessages{}.Unit(),
+		Description: messagingconv.ClientConsumedMessages{}.Description(),
 	}
 )
 
 // consumeHandler processes a single consumed message.
-type consumeHandler func(ctx context.Context, msg jetstream.Msg) error
+type consumeHandler func(ctx context.Context, msg *message) error
 
 // meta carries the attributes held by every instrumented message.
 type meta struct {
 	topic      string // messaging.destination.name
-	group      string // messaging.nats.client_group
+	group      string // messaging.consumer.group.name
 	serverAddr string // server.address, from the first endpoint
 	serverPort int    // server.port
+
+	// base holds the baseAttrs of the topic and group. It is built once by
+	// newHandlerAdapter and shared read-only by the middleware.
+	base map[string]any
+
+	// retryBackoff is the NakWithDelay used for a failed message, or zero for Nak.
+	retryBackoff time.Duration
 
 	// propagator extracts the incoming trace context from message headers.
 	propagator propagation.TextMapPropagator
@@ -62,95 +77,81 @@ type meta struct {
 	tracer  tracer.Client
 }
 
-// tracerOr returns the configured tracer or one from the OTel global provider.
-func (m meta) tracerOr() trace.Tracer {
-	if m.tracer != nil {
-		return m.tracer.Tracer(tracerScope)
+// metricsClient returns the injected metrics client, or metrics.Default() when
+// none was injected. It is resolved per call so a later otel.SetMeterProvider
+// still applies.
+func (m meta) metricsClient() metrics.Client {
+	if m.metrics != nil {
+		return m.metrics
 	}
-	return tracer.Tracer(tracerScope)
+	return metrics.Default()
+}
+
+// tracerClient returns the injected tracer client, or tracer.Default() when none
+// was injected. It is resolved per call so a later otel.SetTracerProvider still
+// applies.
+func (m meta) tracerClient() tracer.Client {
+	if m.tracer != nil {
+		return m.tracer
+	}
+	return tracer.Default()
 }
 
 // processSpanName is the span name for a processed message, per the messaging
-// semantic conventions: "{destination} process".
+// semantic conventions: "process <destination>".
 func (m meta) processSpanName() string {
-	return m.topic + " process"
+	return "process " + m.topic
 }
 
-// resolveMsgID extracts a message ID from headers or stream metadata sequence.
-func resolveMsgID(msg jetstream.Msg) string {
-	if msg == nil {
-		return ""
-	}
-	if headers := msg.Headers(); headers != nil {
-		if id := headers.Get("Nats-Msg-Id"); id != "" {
-			return id
-		}
-	}
-	if meta, err := msg.Metadata(); err == nil && meta != nil {
-		return strconv.FormatUint(meta.Sequence.Stream, 10)
-	}
-	return ""
-}
-
-// resolveTag extracts a message tag from headers or the subject suffix.
-func (m meta) resolveTag(msg jetstream.Msg) string {
-	if msg == nil {
-		return ""
-	}
-	if headers := msg.Headers(); headers != nil {
-		if tag := headers.Get("Nats-Msg-Tag"); tag != "" {
-			return tag
-		}
-	}
-	subject := msg.Subject()
-	prefix := m.topic + "."
-	if after, ok := strings.CutPrefix(subject, prefix); ok {
-		return after
-	}
-	return ""
-}
-
-// consumeAttrs builds the OTel messaging attributes for a consumed message.
-func (m meta) consumeAttrs(msg jetstream.Msg) map[string]any {
-	bodyLen := 0
-	subject := ""
-	if msg != nil {
-		bodyLen = len(msg.Data())
-		subject = msg.Subject()
-	}
-
+// baseAttrs returns the attributes shared by the metrics and the span of one
+// processed message: the system, operation, destination, consumer group, and
+// server.
+func (m meta) baseAttrs() map[string]any {
 	a := map[string]any{
-		"messaging.system":            "nats",
-		"messaging.operation":         "process",
-		"messaging.destination.name":  m.topic,
-		"messaging.nats.subject":      subject,
-		"messaging.message.id":        resolveMsgID(msg),
-		"messaging.message.body.size": bodyLen,
+		string(otelsemconv.MessagingSystemKey):          "nats",
+		string(otelsemconv.MessagingOperationNameKey):   "process",
+		string(otelsemconv.MessagingOperationTypeKey):   string(messagingconv.OperationTypeProcess),
+		string(otelsemconv.MessagingDestinationNameKey): m.topic,
 	}
 	if m.group != "" {
-		a["messaging.nats.client_group"] = m.group
+		a[string(otelsemconv.MessagingConsumerGroupNameKey)] = m.group
 	}
 	if m.serverAddr != "" {
-		a["server.address"] = m.serverAddr
-		a["server.port"] = m.serverPort
-	}
-	if tag := m.resolveTag(msg); tag != "" {
-		a["messaging.nats.message.tag"] = tag
+		a[string(otelsemconv.ServerAddressKey)] = m.serverAddr
+		a[string(otelsemconv.ServerPortKey)] = m.serverPort
 	}
 	return a
 }
 
-// eventAttrs returns the full attribute set for a completed consume event.
-func (m meta) eventAttrs(msg jetstream.Msg, etype string) map[string]any {
-	a := m.consumeAttrs(msg)
-	a["error.type"] = etype
+// messageAttrs returns the span-only attributes of one message: its subject,
+// stream sequence, body size, delivery count, and the key and tag when set.
+func messageAttrs(msg *message) map[string]any {
+	a := map[string]any{
+		attrSubject: msg.subject,
+		string(otelsemconv.MessagingMessageIDKey):       msg.id,
+		string(otelsemconv.MessagingMessageBodySizeKey): len(msg.body),
+		attrDeliveryCount: msg.deliveryCount,
+	}
+	if msg.key != "" {
+		a[attrKey] = msg.key
+	}
+	if msg.tag != "" {
+		a[attrTag] = msg.tag
+	}
+	return a
+}
+
+// withAttrs returns a copy of base with extra added. base is not modified.
+func withAttrs(base, extra map[string]any) map[string]any {
+	a := maps.Clone(base)
+	maps.Copy(a, extra)
 	return a
 }
 
 // panicRecovery recovers panics raised while consuming a message, logs the
 // stack trace, and converts them into errors so the message is retried.
 func (m meta) panicRecovery(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) (err error) {
+	return func(ctx context.Context, msg *message) (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
@@ -163,7 +164,7 @@ func (m meta) panicRecovery(next consumeHandler) consumeHandler {
 					attrs = append(attrs, "trace_id", id)
 				}
 				logs.Error(ctx, "panic recovered", attrs...)
-				err = fmt.Errorf("panic recovered: %v", r)
+				err = fmt.Errorf("%w: %v", wire.ErrPanic, r)
 			}
 		}()
 		return next(ctx, msg)
@@ -171,29 +172,27 @@ func (m meta) panicRecovery(next consumeHandler) consumeHandler {
 }
 
 // tracerMW extracts the incoming trace context from the message headers,
-// starts a CONSUMER span, and sets error status on failure.
+// starts a CONSUMER span, settles the message from the outcome while the span is
+// open, and sets error status and error.type on failure.
 func (m meta) tracerMW(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) error {
-		var headers nats.Header
-		if msg != nil {
-			headers = msg.Headers()
-		}
-		ctx = m.propagator.Extract(ctx, natsHeaderCarrier{header: headers})
+	return func(ctx context.Context, msg *message) error {
+		ctx = m.propagator.Extract(ctx, natsHeaderCarrier{header: msg.raw.Headers()})
 
-		ctx, span := m.tracerOr().Start(ctx, m.processSpanName(),
+		ctx, span := m.tracerClient().Tracer(tracerScope).Start(ctx, m.processSpanName(),
 			trace.WithSpanKind(trace.SpanKindConsumer),
-			trace.WithAttributes(tracer.Attrs(m.consumeAttrs(msg))...),
+			trace.WithAttributes(tracer.Attrs(withAttrs(m.base, messageAttrs(msg)))...),
 		)
 		defer span.End()
 
 		err := next(ctx, msg)
+		m.settleOutcome(ctx, msg, err)
 
-		etype := ""
 		if err != nil {
 			span.SetStatus(codes.Error, err.Error())
-			etype = err.Error()
+			span.SetAttributes(tracer.Attrs(map[string]any{
+				string(otelsemconv.ErrorTypeKey): wire.ErrorType(err),
+			})...)
 		}
-		span.SetAttributes(tracer.Attrs(m.eventAttrs(msg, etype))...)
 		return err
 	}
 }
@@ -201,20 +200,16 @@ func (m meta) tracerMW(next consumeHandler) consumeHandler {
 // logger logs every consumed message as structured attributes: success at
 // Info level, failure at Error level.
 func (m meta) logger(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) error {
+	return func(ctx context.Context, msg *message) error {
 		start := time.Now()
 		err := next(ctx, msg)
 
-		msgID := resolveMsgID(msg)
-		tag := m.resolveTag(msg)
 		attrs := []slog.Attr{
 			slog.String("topic", m.topic),
-			slog.String("tag", tag),
-			slog.String("message_id", msgID),
+			slog.String("tag", msg.tag),
+			slog.String("message_id", msg.id),
 			slog.Duration("duration", time.Since(start)),
-		}
-		if msg != nil {
-			attrs = append(attrs, slog.String("subject", msg.Subject()))
+			slog.String("subject", msg.subject),
 		}
 		if m.group != "" {
 			attrs = append(attrs, slog.String("group", m.group))
@@ -233,30 +228,23 @@ func (m meta) logger(next consumeHandler) consumeHandler {
 	}
 }
 
-// metricsMW records one count + duration pair per processed message.
+// metricsMW records messaging.process.duration for every processed message, with
+// error.type on failure, and increments messaging.client.consumed.messages once per
+// delivery.
 func (m meta) metricsMW(next consumeHandler) consumeHandler {
-	return func(ctx context.Context, msg jetstream.Msg) error {
+	return func(ctx context.Context, msg *message) error {
 		start := time.Now()
 		err := next(ctx, msg)
 
-		attrs := m.eventAttrs(msg, errorText(err))
-		if m.metrics != nil {
-			_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
-			_ = m.metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
-		} else {
-			_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
-			_ = metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
+		duration := m.base
+		if err != nil {
+			duration = withAttrs(m.base, map[string]any{string(otelsemconv.ErrorTypeKey): wire.ErrorType(err)})
 		}
+		c := m.metricsClient()
+		_ = c.Record(ctx, processDurationInstrument, time.Since(start).Seconds(), duration)
+		_ = c.Add(ctx, consumedInstrument, 1, m.base)
 		return err
 	}
-}
-
-// errorText returns err's text, or the empty string when err is nil.
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 // natsHeaderCarrier adapts NATS message headers to the OTel

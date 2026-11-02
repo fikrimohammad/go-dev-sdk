@@ -6,11 +6,9 @@ import (
 	"time"
 )
 
-// Defaults applied by Config.SetDefaults when the corresponding field is unset.
-const (
-	DefaultTimeout          = 10 * time.Second
-	DefaultMaxRetryAttempts = 3
-)
+// DefaultTimeout is the Config.Timeout applied by Config.SetDefaults when it is
+// unset.
+const DefaultTimeout = 10 * time.Second
 
 // Config describes a single NATS JetStream producer instance.
 type Config struct {
@@ -20,14 +18,16 @@ type Config struct {
 	Topic string `yaml:"topic" json:"topic"`
 	// Timeout is the send-message timeout. Defaults to DefaultTimeout.
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
-	// MaxRetryAttempts is the number of send retries. Defaults to DefaultMaxRetryAttempts.
-	MaxRetryAttempts int `yaml:"max_retry_attempts" json:"max_retry_attempts"`
 
-	// Optional authentication settings.
-	Token           string `yaml:"token" json:"token"`
-	Username        string `yaml:"username" json:"username"`
-	Password        string `yaml:"password" json:"password"`
-	NKey            string `yaml:"nkey" json:"nkey"`
+	// Token is the access token for token authentication.
+	Token string `yaml:"token" json:"token"`
+	// Username is the user for userinfo authentication, used with Password.
+	Username string `yaml:"username" json:"username"`
+	// Password is the password for userinfo authentication, used with Username.
+	Password string `yaml:"password" json:"password"`
+	// NKey is the path to an NKey user seed file.
+	NKey string `yaml:"nkey" json:"nkey"`
+	// CredentialsFile is the path to a NATS credentials file.
 	CredentialsFile string `yaml:"credentials_file" json:"credentials_file"`
 }
 
@@ -36,9 +36,6 @@ type Config struct {
 func (c Config) SetDefaults() Config {
 	if c.Timeout <= 0 {
 		c.Timeout = DefaultTimeout
-	}
-	if c.MaxRetryAttempts <= 0 {
-		c.MaxRetryAttempts = DefaultMaxRetryAttempts
 	}
 	return c
 }

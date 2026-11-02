@@ -1,10 +1,15 @@
+// Package engine schedules and runs cron jobs from the cron package. It wraps
+// robfig/cron for the schedules, and runs each job through a middleware chain
+// that applies the toggler, the distributed locker, the timeout, panic
+// recovery, logging, metrics, and tracing. Create an Engine with [New], register
+// jobs, call [Engine.Start], and call [Engine.Stop] with a context on shutdown.
 package engine
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"runtime/debug"
 	"sync"
-	"sync/atomic"
 
 	robfigcron "github.com/robfig/cron/v3"
 
@@ -14,54 +19,61 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
-// Option configures an Engine instance.
+// Option configures an [Engine] in [New].
 type Option func(*Engine)
 
-// WithToggler injects a custom Toggler.
+// WithToggler injects the [cron.Toggler] that can disable a job before it runs.
 func WithToggler(t cron.Toggler) Option {
 	return func(e *Engine) {
 		e.toggler = t
 	}
 }
 
-// WithLocker injects a custom Locker.
+// WithLocker injects the [cron.Locker] that keeps a job on one worker at a
+// time and supplies its fencing token.
 func WithLocker(l cron.Locker) Option {
 	return func(e *Engine) {
 		e.locker = l
 	}
 }
 
-// WithMetrics injects a custom metrics client.
+// WithMetrics injects the metrics client. Without it, the engine uses
+// [metrics.Default].
 func WithMetrics(m metrics.Client) Option {
 	return func(e *Engine) {
 		e.metrics = m
 	}
 }
 
-// WithTracer injects a custom tracer client.
+// WithTracer injects the tracer client. Without it, the engine uses
+// [tracer.Default].
 func WithTracer(t tracer.Client) Option {
 	return func(e *Engine) {
 		e.tracer = t
 	}
 }
 
-// Engine wraps robfig/cron and orchestrates job scheduling, execution, and instrumentation.
+// Engine schedules and runs cron jobs, and instruments each run.
 type Engine struct {
-	cfg     Config
-	cron    *robfigcron.Cron
-	parser  robfigcron.ScheduleParser
-	jobs    map[string]cron.Job
-	jobsMu  sync.RWMutex
-	running atomic.Bool
+	cfg    Config
+	cron   *robfigcron.Cron
+	parser robfigcron.ScheduleParser
 
-	// Lifecycle & shutdown synchronization
-	stopMu     sync.RWMutex
-	stopping   atomic.Bool
-	stopCtx    context.Context
+	// mu guards jobs, running, and stopping. Register, Start, and Stop take it
+	// for writing; Trigger and the run guard take it for reading.
+	mu       sync.RWMutex
+	jobs     map[string]cron.Job
+	running  bool
+	stopping bool
+
+	// stopCtx is canceled by Stop when its deadline expires. robfig/cron runs a
+	// scheduled job with no context, so stopCtx is the root of those runs; every
+	// run also watches it and is canceled with it.
+	stopCtx    context.Context //nolint:containedctx // robfig/cron passes no context to scheduled jobs, so the engine lifetime needs one
 	stopCancel context.CancelFunc
 
-	// inFlight tracks currently executing jobs to prevent local overlap.
-	inFlight sync.Map // jobName -> context.CancelFunc
+	// inFlight is the set of job names currently executing, to prevent local overlap.
+	inFlight sync.Map // jobName -> struct{}
 	activeWg sync.WaitGroup
 
 	toggler cron.Toggler
@@ -87,7 +99,7 @@ func New(cfg Config, opts ...Option) (*Engine, error) {
 			robfigcron.Descriptor,
 	)
 
-	stopCtx, stopCancel := context.WithCancel(context.Background())
+	stopCtx, stopCancel := context.WithCancel(context.Background()) //nolint:forbidigo // the engine lifetime is a root that no caller owns; Start and New take no context
 
 	e := &Engine{
 		cfg:        cfg,
@@ -109,7 +121,10 @@ func New(cfg Config, opts ...Option) (*Engine, error) {
 
 // Register registers a job with the engine. Must be called before Start().
 func (e *Engine) Register(job cron.Job) error {
-	if e.running.Load() || e.stopping.Load() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.running || e.stopping {
 		return cron.ErrEngineAlreadyStarted
 	}
 	if job.Name == "" {
@@ -121,11 +136,8 @@ func (e *Engine) Register(job cron.Job) error {
 
 	schedule, err := e.parser.Parse(job.Schedule)
 	if err != nil {
-		return errors.Join(cron.ErrInvalidSchedule, err)
+		return fmt.Errorf("%w: %w", cron.ErrInvalidSchedule, err)
 	}
-
-	e.jobsMu.Lock()
-	defer e.jobsMu.Unlock()
 
 	if _, exists := e.jobs[job.Name]; exists {
 		return cron.ErrJobAlreadyExists
@@ -133,7 +145,7 @@ func (e *Engine) Register(job cron.Job) error {
 
 	jobCopy := job
 	e.cron.Schedule(schedule, robfigcron.FuncJob(func() {
-		_ = e.runJob(context.Background(), jobCopy, "scheduled")
+		_ = e.runJob(e.stopCtx, jobCopy, "scheduled")
 	}))
 	e.jobs[job.Name] = jobCopy
 
@@ -142,9 +154,9 @@ func (e *Engine) Register(job cron.Job) error {
 
 // Trigger triggers a job manually by name.
 func (e *Engine) Trigger(ctx context.Context, jobName string) error {
-	e.jobsMu.RLock()
+	e.mu.RLock()
 	job, exists := e.jobs[jobName]
-	e.jobsMu.RUnlock()
+	e.mu.RUnlock()
 
 	if !exists {
 		return cron.ErrJobNotFound
@@ -153,15 +165,29 @@ func (e *Engine) Trigger(ctx context.Context, jobName string) error {
 	return e.runJob(ctx, job, "manual")
 }
 
-func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string) error {
+func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string) (err error) {
+	// Outermost guard: a panic from a Toggler, Locker, or Unlock would otherwise
+	// crash the process on a scheduled run. Handler panics are recovered inside
+	// the chain, so this only sees the panics the chain does not own.
+	defer func() {
+		if r := recover(); r != nil {
+			logs.Error(parentCtx, "cron job panicked",
+				"job", job.Name,
+				"trigger", trigger,
+				"panic", r,
+				"stack", string(debug.Stack()))
+			err = fmt.Errorf("%w: %v", errPanic, r)
+		}
+	}()
+
 	// Guard against starting jobs during or after shutdown.
-	e.stopMu.RLock()
-	if e.stopping.Load() {
-		e.stopMu.RUnlock()
+	e.mu.RLock()
+	if e.stopping {
+		e.mu.RUnlock()
 		return cron.ErrEngineStopped
 	}
 	e.activeWg.Add(1)
-	e.stopMu.RUnlock()
+	e.mu.RUnlock()
 	defer e.activeWg.Done()
 
 	timeout := job.Timeout
@@ -169,31 +195,29 @@ func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string)
 		timeout = e.cfg.GlobalTimeout
 	}
 
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
-	// Watch for engine shutdown to signal cancellation promptly.
-	stopWatcher := context.AfterFunc(e.stopCtx, cancel)
-	defer stopWatcher()
-
-	// Skip-on-overlap protection: only 1 in-flight execution per job name locally.
-	if _, loaded := e.inFlight.LoadOrStore(job.Name, cancel); loaded {
-		logs.Debug(ctx, "cron job skipped: previous run still in-flight", "job", job.Name)
-		return cron.ErrJobRunning
-	}
-	defer e.inFlight.Delete(job.Name)
+	// Watch for engine shutdown to signal cancellation promptly. The watcher
+	// exits with the run, because cancel runs when the run returns.
+	stopped := e.stopCtx.Done()
+	go func() {
+		select {
+		case <-stopped:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	m := meta{
-		job:     job,
-		trigger: trigger,
-		timeout: timeout,
-		toggler: e.toggler,
-		locker:  e.locker,
-		metrics: e.metrics,
-		tracer:  e.tracer,
+		job:      job,
+		trigger:  trigger,
+		timeout:  timeout,
+		inFlight: &e.inFlight,
+		toggler:  e.toggler,
+		locker:   e.locker,
+		metrics:  e.metrics,
+		tracer:   e.tracer,
 	}
 
 	return m.buildChain(job.Handler)(ctx)
@@ -201,34 +225,31 @@ func (e *Engine) runJob(parentCtx context.Context, job cron.Job, trigger string)
 
 // Start begins scheduling and executing jobs.
 func (e *Engine) Start() {
-	e.stopMu.Lock()
-	defer e.stopMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	if e.stopping.Load() {
+	if e.stopping || e.running {
 		return
 	}
-	if e.running.CompareAndSwap(false, true) {
-		e.cron.Start()
-	}
+	e.running = true
+	e.cron.Start()
 }
 
 // Stop initiates a two-phase graceful shutdown: waits for active jobs up to ctx deadline;
 // cancels in-flight job contexts if the deadline expires.
-// If the input ctx is nil or has no deadline, Config.ShutdownTimeout is applied.
+// ctx is required. If it has no deadline, Config.ShutdownTimeout is applied.
 func (e *Engine) Stop(ctx context.Context) error {
-	e.stopMu.Lock()
-	if e.stopping.Swap(true) {
-		e.stopMu.Unlock()
+	e.mu.Lock()
+	if e.stopping {
+		e.mu.Unlock()
 		return nil // already stopping or stopped
 	}
-	e.running.Store(false)
-	cronStopCtx := e.cron.Stop()
-	e.stopMu.Unlock()
+	e.stopping = true
+	e.running = false
+	cronDone := e.cron.Stop().Done()
+	e.mu.Unlock()
 
 	// Ensure context has a timeout to prevent hanging.
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, e.cfg.ShutdownTimeout)
@@ -237,23 +258,18 @@ func (e *Engine) Stop(ctx context.Context) error {
 
 	done := make(chan struct{})
 	go func() {
-		<-cronStopCtx.Done()
+		<-cronDone
 		e.activeWg.Wait()
 		close(done)
 	}()
 
 	select {
 	case <-done:
+		e.stopCancel()
 		return nil
 	case <-ctx.Done():
-		// Cancel all active jobs via the engine-level cancel func and in-flight map.
+		// Canceling stopCtx cancels every active run through its stop watcher.
 		e.stopCancel()
-		e.inFlight.Range(func(key, val any) bool {
-			if cancel, ok := val.(context.CancelFunc); ok {
-				cancel()
-			}
-			return true
-		})
 		return ctx.Err()
 	}
 }

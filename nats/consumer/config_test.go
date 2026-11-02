@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -62,6 +63,28 @@ func TestConfig_SetDefaults_Explicit(t *testing.T) {
 	}
 }
 
+func TestConfig_SetDefaults_HandlerTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  Config
+		want time.Duration
+	}{
+		{name: "defaults to Timeout", cfg: Config{Timeout: 30 * time.Second}, want: 30 * time.Second},
+		{name: "defaults to DefaultTimeout", cfg: Config{}, want: DefaultTimeout},
+		{name: "keeps explicit value", cfg: Config{Timeout: 30 * time.Second, HandlerTimeout: 5 * time.Second}, want: 5 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.cfg.SetDefaults().HandlerTimeout; got != tc.want {
+				t.Fatalf("HandlerTimeout = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConfig_Validate_Valid(t *testing.T) {
 	t.Parallel()
 
@@ -95,17 +118,20 @@ func TestConfig_Validate_Errors(t *testing.T) {
 		{"timestamp missing when required", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", ConsumeFromWhere: ConsumeFromTimestamp}, ErrInvalidConsumeTimestamp},
 		{"timestamp malformed", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", ConsumeFromWhere: ConsumeFromTimestamp, ConsumeTimestamp: "not-a-time"}, ErrInvalidConsumeTimestamp},
 		{"negative retry backoff", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", RetryBackoff: -time.Second}, ErrNegativeRetryBackoff},
+		{"negative handler timeout", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", HandlerTimeout: -time.Second}, ErrInvalidHandlerTimeout},
 		{"topic with dots", Config{Endpoints: valid.Endpoints, Topic: "has.dots", Group: "g"}, ErrInvalidTopic},
 		{"group with dots", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "has.dots"}, ErrInvalidGroup},
 		{"tag with dots", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Tags: []string{"has.dots"}}, ErrInvalidTag},
 		{"empty tag in tags", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Tags: []string{""}}, ErrEmptyTag},
+		{"timeout below minimum", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Timeout: time.Nanosecond}, ErrInvalidTimeout},
+		{"timeout just below minimum", Config{Endpoints: valid.Endpoints, Topic: "t", Group: "g", Timeout: 99 * time.Millisecond}, ErrInvalidTimeout},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := tc.cfg.SetDefaults().Validate()
 			if err == nil {
-				t.Fatal("Validate: expected error")
+				t.Fatal("Validate() = nil, want error")
 			}
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Validate() = %v, want it to wrap %v", err, tc.want)
@@ -119,7 +145,7 @@ func TestConfig_Validate_Aggregates(t *testing.T) {
 
 	err := Config{ConsumeFromWhere: "weird"}.SetDefaults().Validate()
 	if err == nil {
-		t.Fatal("Validate: expected error")
+		t.Fatal("Validate() = nil, want error")
 	}
 	if !errors.Is(err, ErrEndpointsRequired) {
 		t.Fatalf("Validate() = %v, want endpoints error", err)
@@ -148,13 +174,19 @@ func TestConfig_BuildFilterSubjects(t *testing.T) {
 			name:  "default wildcard",
 			topic: "orders",
 			tags:  []string{"*"},
-			want:  nil,
+			want:  []string{"orders", "orders.>"},
 		},
 		{
 			name:  "empty tags",
 			topic: "orders",
 			tags:  nil,
-			want:  nil,
+			want:  []string{"orders", "orders.>"},
+		},
+		{
+			name:  "wildcard mixed with tag",
+			topic: "orders",
+			tags:  []string{"*", "created"},
+			want:  []string{"orders.>", "orders.created"},
 		},
 		{
 			name:  "single tag",
@@ -238,11 +270,108 @@ func TestConfig_BuildConsumerConfig(t *testing.T) {
 		ConsumeFromWhere: ConsumeFromTimestamp,
 		ConsumeTimestamp: "2026-01-01T00:00:00Z",
 	}.SetDefaults()
-	jsCfgTs := tsCfg.buildConsumerConfig("durable")
-	if jsCfgTs.DeliverPolicy != jetstream.DeliverByStartTimePolicy {
-		t.Errorf("DeliverPolicy = %v, want DeliverByStartTimePolicy", jsCfgTs.DeliverPolicy)
+	jsCfgTS := tsCfg.buildConsumerConfig("durable")
+	if jsCfgTS.DeliverPolicy != jetstream.DeliverByStartTimePolicy {
+		t.Errorf("DeliverPolicy = %v, want DeliverByStartTimePolicy", jsCfgTS.DeliverPolicy)
 	}
-	if jsCfgTs.OptStartTime == nil {
+	if jsCfgTS.OptStartTime == nil {
 		t.Error("OptStartTime is nil")
+	}
+}
+
+func TestBuildConsumerConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		cfg           Config
+		wantPolicy    jetstream.DeliverPolicy
+		wantFilters   []string
+		wantSingleSub string
+	}{
+		{
+			name:        "last delivers new messages only",
+			cfg:         Config{Topic: "orders", ConsumeFromWhere: ConsumeFromLast},
+			wantPolicy:  jetstream.DeliverNewPolicy,
+			wantFilters: []string{"orders", "orders.>"},
+		},
+		{
+			name:        "default is last",
+			cfg:         Config{Topic: "orders"},
+			wantPolicy:  jetstream.DeliverNewPolicy,
+			wantFilters: []string{"orders", "orders.>"},
+		},
+		{
+			name:        "first delivers all",
+			cfg:         Config{Topic: "orders", ConsumeFromWhere: ConsumeFromFirst},
+			wantPolicy:  jetstream.DeliverAllPolicy,
+			wantFilters: []string{"orders", "orders.>"},
+		},
+		{
+			name:          "single tag sets FilterSubject",
+			cfg:           Config{Topic: "orders", Tags: []string{"created"}, ConsumeFromWhere: ConsumeFromLast},
+			wantPolicy:    jetstream.DeliverNewPolicy,
+			wantSingleSub: "orders.created",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.cfg.SetDefaults().buildConsumerConfig("durable")
+			if got.DeliverPolicy != tt.wantPolicy {
+				t.Errorf("DeliverPolicy = %v, want %v", got.DeliverPolicy, tt.wantPolicy)
+			}
+			if want := tt.cfg.SetDefaults().MaxConcurrent; got.MaxAckPending != want {
+				t.Errorf("MaxAckPending = %d, want MaxConcurrent %d", got.MaxAckPending, want)
+			}
+			if tt.wantSingleSub != "" && got.FilterSubject != tt.wantSingleSub {
+				t.Errorf("FilterSubject = %q, want %q", got.FilterSubject, tt.wantSingleSub)
+			}
+			if tt.wantFilters != nil && !slices.Equal(got.FilterSubjects, tt.wantFilters) {
+				t.Errorf("FilterSubjects = %v, want %v", got.FilterSubjects, tt.wantFilters)
+			}
+		})
+	}
+}
+
+// regression: a Timeout below MinTimeout is rejected, so the heartbeat never gets a
+// non-positive interval.
+func TestConfig_Validate_MinTimeout(t *testing.T) {
+	t.Parallel()
+
+	if MinTimeout != 100*time.Millisecond {
+		t.Fatalf("MinTimeout = %v, want 100ms", MinTimeout)
+	}
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		wantErr bool
+	}{
+		{name: "1ns rejected", timeout: time.Nanosecond, wantErr: true},
+		{name: "99ms rejected", timeout: 99 * time.Millisecond, wantErr: true},
+		{name: "100ms accepted", timeout: 100 * time.Millisecond},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := Config{
+				Endpoints: []string{"localhost:4222"},
+				Topic:     "t",
+				Group:     "g",
+				Timeout:   tc.timeout,
+			}.SetDefaults().Validate()
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidTimeout) {
+				t.Fatalf("Validate() = %v, want it to wrap %v", err, ErrInvalidTimeout)
+			}
+		})
 	}
 }

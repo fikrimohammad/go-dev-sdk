@@ -35,9 +35,20 @@ type Locker interface {
 
 // Job specifies a scheduled task.
 type Job struct {
-	Name        string        // Unique identifier (required)
-	Schedule    string        // 5-field, 6-field (seconds), or descriptor expression (required)
-	Description string        // Human-readable summary for developers
-	Timeout     time.Duration // Per-job timeout override (zero = use GlobalTimeout)
-	Handler     HandlerFunc   // The executable function (required)
+	// Name is the unique identifier of the job. It is required.
+	Name string
+
+	// Schedule is a 5-field, 6-field (with seconds), or descriptor expression,
+	// such as "0 3 * * *" or "@every 1h". It is required.
+	Schedule string
+
+	// Description is a human-readable summary for developers.
+	Description string
+
+	// Timeout overrides the engine's GlobalTimeout for this job. Zero uses
+	// GlobalTimeout.
+	Timeout time.Duration
+
+	// Handler is the business logic to run. It is required.
+	Handler HandlerFunc
 }

@@ -3,23 +3,36 @@ package consumer
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
 var errHandler = errors.New("process failed")
+
+// metric names as the messaging semantic conventions define them.
+const (
+	metricConsumed = "messaging.client.consumed.messages"
+	metricDuration = "messaging.process.duration"
+)
 
 // --- fake metrics client -----------------------------------------------------------
 
@@ -158,7 +171,7 @@ func setupAdapter(t *testing.T, retryBackoff time.Duration, handler HandlerFunc)
 		propagator: testPropagator,
 		metrics:    fm,
 		tracer:     tracer.Wrap(tp),
-	}, retryBackoff, handler)
+	}, Config{RetryBackoff: retryBackoff}.SetDefaults(), handler)
 	if err != nil {
 		t.Fatalf("newHandlerAdapter: %v", err)
 	}
@@ -168,12 +181,16 @@ func setupAdapter(t *testing.T, retryBackoff time.Duration, handler HandlerFunc)
 // testMsg builds a message on the "reporting" topic with a tag and an ID.
 func testMsg(body string) *mockMsg {
 	h := make(nats.Header)
-	h.Set("Nats-Msg-Id", "MSG-1")
-	h.Set("Nats-Msg-Tag", "export_report_process")
+	h.Set(wire.HeaderTag, "export_report_process")
 	return &mockMsg{
 		subject: "reporting.export_report_process",
 		data:    []byte(body),
 		headers: h,
+		meta: &jetstream.MsgMetadata{
+			Sequence:     jetstream.SequencePair{Stream: 1},
+			NumDelivered: 1,
+			Timestamp:    time.Unix(1_700_000_000, 0),
+		},
 	}
 }
 
@@ -181,8 +198,8 @@ func testMsg(body string) *mockMsg {
 
 func TestHandle_Success(t *testing.T) {
 	var gotBody []byte
-	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error {
-		gotBody = msgBody
+	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
+		gotBody = msg.Body()
 		return nil
 	})
 
@@ -192,7 +209,7 @@ func TestHandle_Success(t *testing.T) {
 		t.Fatalf("HandleMsg: %v", err)
 	}
 	if !msg.acked {
-		t.Fatal("expected message to be acked")
+		t.Fatal("acked = false, want true")
 	}
 	if msg.nacked {
 		t.Fatal("message was unexpectedly nacked")
@@ -202,68 +219,71 @@ func TestHandle_Success(t *testing.T) {
 	}
 
 	count, ok := fm.lastCount()
-	if !ok {
-		t.Fatal("no count recorded")
+	if !ok || count.name != metricConsumed || count.value != 1 {
+		t.Fatalf("count = %+v, want %s with value 1", count, metricConsumed)
 	}
-	if count.name != metricCount || count.value != 1 {
-		t.Fatalf("count = %+v", count)
+	hist, ok := fm.lastHist()
+	if !ok || hist.name != metricDuration {
+		t.Fatalf("hist = %+v, want %s", hist, metricDuration)
 	}
-	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration {
-		t.Fatalf("hist = %+v", hist)
+	wantMetricAttrs := map[string]any{
+		"messaging.system":              "nats",
+		"messaging.operation.name":      "process",
+		"messaging.operation.type":      "process",
+		"messaging.destination.name":    "reporting",
+		"messaging.consumer.group.name": "export_consumer",
+		"server.address":                "localhost",
+		"server.port":                   4222,
 	}
-	wantCountAttrs := map[string]any{
-		"messaging.system":            "nats",
-		"messaging.operation":         "process",
-		"messaging.destination.name":  "reporting",
-		"messaging.nats.subject":      "reporting.export_report_process",
-		"messaging.nats.client_group": "export_consumer",
-		"messaging.nats.message.tag":  "export_report_process",
-		"messaging.message.id":        "MSG-1",
-		"messaging.message.body.size": 5,
-		"server.address":              "localhost",
-		"server.port":                 4222,
-		"error.type":                  "",
+	for _, rec := range []metricRec{count, hist} {
+		assertAttrs(t, rec.attrs, wantMetricAttrs)
+		if len(rec.attrs) != len(wantMetricAttrs) {
+			t.Fatalf("%s attrs = %v, want only %v", rec.name, rec.attrs, wantMetricAttrs)
+		}
 	}
-	assertAttrs(t, count.attrs, wantCountAttrs)
 
 	sp, ok := ex.last()
 	if !ok {
 		t.Fatal("no span recorded")
 	}
-	if sp.Name() != "reporting process" || sp.SpanKind() != trace.SpanKindConsumer {
+	if sp.Name() != "process reporting" || sp.SpanKind() != trace.SpanKindConsumer {
 		t.Fatalf("span name=%q kind=%v", sp.Name(), sp.SpanKind())
 	}
 	wantSpanAttrs := map[string]any{
-		"messaging.system":            "nats",
-		"messaging.operation":         "process",
-		"messaging.destination.name":  "reporting",
-		"messaging.nats.subject":      "reporting.export_report_process",
-		"messaging.nats.client_group": "export_consumer",
-		"messaging.nats.message.tag":  "export_report_process",
-		"messaging.message.id":        "MSG-1",
-		"messaging.message.body.size": "5",
-		"server.address":              "localhost",
-		"server.port":                 "4222",
-		"error.type":                  "",
+		"messaging.system":                      "nats",
+		"messaging.operation.name":              "process",
+		"messaging.operation.type":              "process",
+		"messaging.destination.name":            "reporting",
+		"messaging.consumer.group.name":         "export_consumer",
+		"messaging.nats.subject":                "reporting.export_report_process",
+		"messaging.nats.message.tag":            "export_report_process",
+		"messaging.message.id":                  "1",
+		"messaging.message.body.size":           "5",
+		"messaging.nats.message.delivery_count": "1",
+		"server.address":                        "localhost",
+		"server.port":                           "4222",
 	}
 	assertAttrs(t, spanAttrs(sp), wantSpanAttrs)
+	if _, ok := spanAttrs(sp)["error.type"]; ok {
+		t.Error("success span has error.type, want none")
+	}
 	if sp.Status().Code == codes.Error {
 		t.Fatalf("status = %v, want not error", sp.Status().Code)
 	}
 }
 
 func TestHandle_Error(t *testing.T) {
-	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error {
+	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		return errHandler
 	})
 
 	msg := testMsg("hello")
 	err := a.HandleMsg(context.Background(), msg)
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("error = nil, want non-nil")
 	}
 	if !msg.nacked {
-		t.Fatal("expected message to be nacked")
+		t.Fatal("nacked = false, want true")
 	}
 	if msg.acked {
 		t.Fatal("message was unexpectedly acked")
@@ -276,22 +296,22 @@ func TestHandle_Error(t *testing.T) {
 	if sp.Status().Code != codes.Error {
 		t.Fatalf("status = %v, want error", sp.Status().Code)
 	}
-	assertAttrs(t, spanAttrs(sp), map[string]any{"error.type": errHandler.Error()})
+	assertAttrs(t, spanAttrs(sp), map[string]any{"error.type": "_OTHER"})
 }
 
 func TestHandle_RetryBackoff(t *testing.T) {
 	delay := 3 * time.Second
-	a, _, _ := setupAdapter(t, delay, func(ctx context.Context, msgBody []byte) error {
+	a, _, _ := setupAdapter(t, delay, func(ctx context.Context, msg Message) error {
 		return errHandler
 	})
 
 	msg := testMsg("hello")
 	err := a.HandleMsg(context.Background(), msg)
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("error = nil, want non-nil")
 	}
 	if !msg.nacked {
-		t.Fatal("expected message to be nacked")
+		t.Fatal("nacked = false, want true")
 	}
 	if msg.nakDelay != delay {
 		t.Fatalf("nakDelay = %v, want %v", msg.nakDelay, delay)
@@ -299,17 +319,49 @@ func TestHandle_RetryBackoff(t *testing.T) {
 }
 
 func TestHandle_PanicRecovery(t *testing.T) {
-	a, _, _ := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error {
+	a, _, _ := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		panic("boom")
 	})
 
 	msg := testMsg("hello")
 	err := a.HandleMsg(context.Background(), msg)
 	if err == nil {
-		t.Fatal("expected error from recovered panic")
+		t.Fatal("error = nil after panic, want non-nil")
 	}
 	if !msg.nacked {
-		t.Fatal("expected message to be nacked after panic")
+		t.Fatal("nacked = false after panic, want true")
+	}
+}
+
+// regression: a panicking handler is recovered inside the metrics middleware, so
+// metrics record an error, the span has error status, and the message is nak'd.
+func TestHandler_PanicIsMeasured(t *testing.T) {
+	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
+		panic("boom")
+	})
+
+	msg := testMsg("hello")
+	if err := a.HandleMsg(context.Background(), msg); err == nil {
+		t.Fatal("HandleMsg() error = nil, want error from recovered panic")
+	}
+	if !msg.nacked {
+		t.Fatal("message was not nacked")
+	}
+
+	hist, ok := fm.lastHist()
+	if !ok {
+		t.Fatal("no duration recorded")
+	}
+	if v, ok := hist.attrs["error.type"]; !ok || v != "panic" {
+		t.Fatalf("error.type = %#v, want %q", v, "panic")
+	}
+
+	sp, ok := ex.last()
+	if !ok {
+		t.Fatal("no span recorded")
+	}
+	if sp.Status().Code != codes.Error {
+		t.Fatalf("status = %v, want error", sp.Status().Code)
 	}
 }
 
@@ -323,7 +375,7 @@ func TestHandle_ExtractsParentTrace(t *testing.T) {
 	testPropagator.Inject(parentCtx, natsHeaderCarrier{header: msg.headers})
 	parentSpan.End()
 
-	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msgBody []byte) error { return nil })
+	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error { return nil })
 	if err := a.HandleMsg(context.Background(), msg); err != nil {
 		t.Fatalf("HandleMsg: %v", err)
 	}
@@ -334,5 +386,128 @@ func TestHandle_ExtractsParentTrace(t *testing.T) {
 	}
 	if sp.Parent().SpanID() != parentSpan.SpanContext().SpanID() {
 		t.Fatalf("consumer span parent = %v, want %v", sp.Parent().SpanID(), parentSpan.SpanContext().SpanID())
+	}
+}
+
+// codedError is a handler error with an errs-style code.
+type codedError struct{ code int }
+
+func (e codedError) Error() string { return "coded failure" }
+func (e codedError) Code() int     { return e.code }
+
+// TestProcess_MetricAttributes is a regression test. The process histogram
+// carries the metric attribute set (with the group, and error.type on failure),
+// the consumed counter counts every delivery, and no message detail reaches a
+// metric.
+func TestProcess_MetricAttributes(t *testing.T) {
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(ctx) })
+	ex := &recordingExporter{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
+	t.Cleanup(func() { _ = tp.Shutdown(ctx) })
+
+	a, err := newHandlerAdapter(meta{
+		topic:      "reporting",
+		group:      "export_consumer",
+		serverAddr: "localhost",
+		serverPort: 4222,
+		propagator: testPropagator,
+		metrics:    metrics.Wrap(mp),
+		tracer:     tracer.Wrap(tp),
+	}, Config{}.SetDefaults(), func(ctx context.Context, msg Message) error {
+		if msg.Key() == "k2" {
+			return codedError{code: 4001}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("newHandlerAdapter: %v", err)
+	}
+
+	okMsg := testMsg("hello")
+	okMsg.headers.Set(wire.HeaderKey, "k1")
+	if err := a.HandleMsg(ctx, okMsg); err != nil {
+		t.Fatalf("HandleMsg(k1) error = %v, want nil", err)
+	}
+	badMsg := testMsg("hello")
+	badMsg.headers.Set(wire.HeaderKey, "k2")
+	badMsg.meta.Sequence.Stream = 2
+	badMsg.meta.NumDelivered = 3
+	if err := a.HandleMsg(ctx, badMsg); err == nil {
+		t.Fatal("HandleMsg(k2) error = nil, want error")
+	}
+
+	got := collectMetrics(t, reader)
+	wantNames := []string{"messaging.client.consumed.messages", "messaging.process.duration"}
+	if names := slices.Sorted(maps.Keys(got)); !slices.Equal(names, wantNames) {
+		t.Fatalf("metric names = %v, want %v", names, wantNames)
+	}
+
+	dur := got["messaging.process.duration"]
+	if dur.Unit != "s" {
+		t.Errorf("duration unit = %q, want %q", dur.Unit, "s")
+	}
+	hist, ok := dur.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("duration data = %T, want metricdata.Histogram[float64]", dur.Data)
+	}
+	base := map[string]string{
+		"messaging.system":              "nats",
+		"messaging.operation.name":      "process",
+		"messaging.operation.type":      "process",
+		"messaging.destination.name":    "reporting",
+		"messaging.consumer.group.name": "export_consumer",
+		"server.address":                "localhost",
+		"server.port":                   "4222",
+	}
+	failed := maps.Clone(base)
+	failed["error.type"] = "4001"
+	durSets := make([]attribute.Set, 0, len(hist.DataPoints))
+	for _, dp := range hist.DataPoints {
+		durSets = append(durSets, dp.Attributes)
+	}
+	if gotSets, want := pointStrings(durSets...), mapStrings(base, failed); !slices.Equal(gotSets, want) {
+		t.Errorf("duration attributes = %v, want %v", gotSets, want)
+	}
+
+	consumed := got["messaging.client.consumed.messages"]
+	if consumed.Unit != "{message}" {
+		t.Errorf("consumed unit = %q, want %q", consumed.Unit, "{message}")
+	}
+	sum, ok := consumed.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("consumed data = %T, want metricdata.Sum[int64]", consumed.Data)
+	}
+	if len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != 2 {
+		t.Fatalf("consumed points = %+v, want one point with value 2", sum.DataPoints)
+	}
+	if gotSets, want := pointStrings(sum.DataPoints[0].Attributes), mapStrings(base); !slices.Equal(gotSets, want) {
+		t.Errorf("consumed attributes = %v, want %v", gotSets, want)
+	}
+
+	if len(ex.spans) != 2 {
+		t.Fatalf("spans = %d, want 2", len(ex.spans))
+	}
+	okSpan, badSpan := ex.spans[0], ex.spans[1]
+	if okSpan.Name() != "process reporting" || okSpan.SpanKind() != trace.SpanKindConsumer {
+		t.Fatalf("span name=%q kind=%v, want %q kind=%v", okSpan.Name(), okSpan.SpanKind(), "process reporting", trace.SpanKindConsumer)
+	}
+	assertAttrs(t, spanAttrs(okSpan), map[string]any{
+		"messaging.message.id":                  "1",
+		"messaging.nats.message.key":            "k1",
+		"messaging.nats.message.tag":            "export_report_process",
+		"messaging.nats.subject":                "reporting.export_report_process",
+		"messaging.message.body.size":           "5",
+		"messaging.nats.message.delivery_count": "1",
+	})
+	assertAttrs(t, spanAttrs(badSpan), map[string]any{
+		"messaging.message.id":                  "2",
+		"messaging.nats.message.delivery_count": "3",
+		"error.type":                            "4001",
+	})
+	if badSpan.Status().Code != codes.Error {
+		t.Fatalf("failed span status = %v, want error", badSpan.Status().Code)
 	}
 }

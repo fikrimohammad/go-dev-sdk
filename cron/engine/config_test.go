@@ -26,11 +26,11 @@ func TestConfig_SetDefaults(t *testing.T) {
 
 func TestConfig_Validate(t *testing.T) {
 	if err := (Config{GlobalTimeout: -time.Second}).Validate(); err == nil {
-		t.Fatal("expected error on negative GlobalTimeout")
+		t.Fatal("Validate(GlobalTimeout < 0) = nil, want error")
 	}
 
 	if err := (Config{ShutdownTimeout: -time.Second}).Validate(); err == nil {
-		t.Fatal("expected error on negative ShutdownTimeout")
+		t.Fatal("Validate(ShutdownTimeout < 0) = nil, want error")
 	}
 
 	if err := (Config{GlobalTimeout: time.Minute, ShutdownTimeout: 5 * time.Second}).Validate(); err != nil {

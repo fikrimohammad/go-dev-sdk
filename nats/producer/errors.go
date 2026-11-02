@@ -6,6 +6,9 @@ import "errors"
 var (
 	ErrProducerExists   = errors.New("producer: already registered for this topic")
 	ErrProducerNotFound = errors.New("producer: not registered for this topic")
+	// ErrAlreadyStarted is returned by Register after Start. Register first, then
+	// Start.
+	ErrAlreadyStarted = errors.New("producer: cannot register after Start")
 )
 
 // Config-related sentinel errors. Callers can match them with errors.Is.

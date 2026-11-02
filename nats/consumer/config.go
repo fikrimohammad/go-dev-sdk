@@ -6,18 +6,32 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 )
 
+// Defaults applied by Config.SetDefaults when the corresponding field is unset.
 const (
-	DefaultTimeout          = 60 * time.Second
+	// DefaultTimeout is the AckWait used when Config.Timeout is unset.
+	DefaultTimeout = 60 * time.Second
+	// DefaultMaxRetryAttempts is the MaxDeliver used when Config.MaxRetryAttempts
+	// is unset.
 	DefaultMaxRetryAttempts = 5
-	DefaultMaxConcurrent    = 10
-	DefaultTags             = "*"
+	// DefaultMaxConcurrent is the number of messages handled at once when
+	// Config.MaxConcurrent is unset.
+	DefaultMaxConcurrent = 10
+	// DefaultTags is the tag that selects every message of the topic.
+	DefaultTags = "*"
 )
+
+// MinTimeout is the smallest Config.Timeout the consumer accepts. It is the
+// smallest AckWait the heartbeat can serve: the heartbeat runs every Timeout/2.
+const MinTimeout = 100 * time.Millisecond
 
 // ConsumeFromWhere values for Config.ConsumeFromWhere.
 const (
-	// ConsumeFromLast resumes from the last message in the stream (default).
+	// ConsumeFromLast delivers only messages published after the durable consumer
+	// is created (default).
 	ConsumeFromLast = "last"
 	// ConsumeFromFirst starts from the earliest available message.
 	ConsumeFromFirst = "first"
@@ -27,13 +41,30 @@ const (
 
 // Config describes a single NATS JetStream consumer instance.
 type Config struct {
-	Endpoints        []string      `yaml:"endpoints" json:"endpoints"`
-	Topic            string        `yaml:"topic" json:"topic"`
-	Group            string        `yaml:"group" json:"group"`
-	Tags             []string      `yaml:"consumption_tags" json:"consumption_tags"`
-	Timeout          time.Duration `yaml:"timeout" json:"timeout"`
-	MaxRetryAttempts int           `yaml:"max_retry_attempts" json:"max_retry_attempts"`
-	MaxConcurrent    int           `yaml:"max_concurrent" json:"max_concurrent"`
+	// Endpoints is the list of NATS server addresses (e.g. "nats://127.0.0.1:4222" or "127.0.0.1:4222").
+	Endpoints []string `yaml:"endpoints" json:"endpoints"`
+	// Topic is the JetStream stream name the consumer reads from.
+	Topic string `yaml:"topic" json:"topic"`
+	// Group names the durable consumer, which is {appName}_{Topic}_{Group}. Each
+	// group gets its own copy of every message.
+	Group string `yaml:"group" json:"group"`
+	// Tags selects the messages to deliver: each tag is a sub-subject of Topic,
+	// and "*" selects every message of the topic. Defaults to ["*"].
+	Tags []string `yaml:"consumption_tags" json:"consumption_tags"`
+	// Timeout is the JetStream AckWait: how long the server waits for an ack
+	// before it redelivers. While a handler runs, the consumer sends an InProgress
+	// heartbeat every Timeout/2. It must be at least MinTimeout.
+	Timeout time.Duration `yaml:"timeout" json:"timeout"`
+	// HandlerTimeout bounds each handler call. Its context is canceled when the
+	// deadline passes or when Shutdown starts. Zero uses Timeout.
+	HandlerTimeout time.Duration `yaml:"handler_timeout" json:"handler_timeout"`
+	// MaxRetryAttempts is the JetStream MaxDeliver: the number of deliveries
+	// before the server stops redelivering a message. Defaults to
+	// DefaultMaxRetryAttempts. There is no dead-letter queue.
+	MaxRetryAttempts int `yaml:"max_retry_attempts" json:"max_retry_attempts"`
+	// MaxConcurrent is the number of messages handled at once. Defaults to
+	// DefaultMaxConcurrent.
+	MaxConcurrent int `yaml:"max_concurrent" json:"max_concurrent"`
 
 	// ConsumeFromWhere is "last" (default), "first", or "timestamp".
 	ConsumeFromWhere string `yaml:"consume_from_where" json:"consume_from_where"`
@@ -44,11 +75,15 @@ type Config struct {
 	// Zero uses the SDK default (immediate NAK).
 	RetryBackoff time.Duration `yaml:"retry_backoff" json:"retry_backoff"`
 
-	// Optional authentication parameters.
-	Token           string `yaml:"token" json:"token"`
-	Username        string `yaml:"username" json:"username"`
-	Password        string `yaml:"password" json:"password"`
-	NKey            string `yaml:"nkey" json:"nkey"`
+	// Token is the access token for token authentication.
+	Token string `yaml:"token" json:"token"`
+	// Username is the user for userinfo authentication, used with Password.
+	Username string `yaml:"username" json:"username"`
+	// Password is the password for userinfo authentication, used with Username.
+	Password string `yaml:"password" json:"password"`
+	// NKey is the path to an NKey user seed file.
+	NKey string `yaml:"nkey" json:"nkey"`
+	// CredentialsFile is the path to a NATS credentials file.
 	CredentialsFile string `yaml:"credentials_file" json:"credentials_file"`
 }
 
@@ -57,6 +92,10 @@ type Config struct {
 func (c Config) SetDefaults() Config {
 	if c.Timeout <= 0 {
 		c.Timeout = DefaultTimeout
+	}
+
+	if c.HandlerTimeout == 0 {
+		c.HandlerTimeout = c.Timeout
 	}
 
 	if c.MaxRetryAttempts <= 0 {
@@ -122,13 +161,23 @@ func (c Config) Validate() error {
 		errs = append(errs, ErrNegativeRetryBackoff)
 	}
 
+	if c.HandlerTimeout <= 0 {
+		errs = append(errs, ErrInvalidHandlerTimeout)
+	}
+
+	if c.Timeout < MinTimeout {
+		errs = append(errs, ErrInvalidTimeout)
+	}
+
 	return errors.Join(errs...)
 }
 
-// buildFilterSubjects converts Tags into full NATS subjects for the topic.
+// buildFilterSubjects converts Tags into full NATS subjects for the topic. Empty
+// Tags or only the "*" wildcard select the data subjects of the topic, so schedule
+// messages are never delivered.
 func (c Config) buildFilterSubjects() []string {
 	if len(c.Tags) == 0 || (len(c.Tags) == 1 && c.Tags[0] == DefaultTags) {
-		return nil
+		return wire.DataSubjects(c.Topic)
 	}
 
 	var subjects []string
@@ -152,6 +201,9 @@ func (c Config) buildConsumerConfig(durableName string) jetstream.ConsumerConfig
 		Name:       durableName,
 		AckWait:    c.Timeout,
 		MaxDeliver: c.MaxRetryAttempts,
+		// Cap the unacked messages at the handler slots, so a message waiting for a
+		// free slot is not redelivered after AckWait.
+		MaxAckPending: c.MaxConcurrent,
 	}
 
 	filters := c.buildFilterSubjects()
@@ -170,7 +222,7 @@ func (c Config) buildConsumerConfig(durableName string) jetstream.ConsumerConfig
 			cfg.OptStartTime = &t
 		}
 	default:
-		cfg.DeliverPolicy = jetstream.DeliverLastPolicy
+		cfg.DeliverPolicy = jetstream.DeliverNewPolicy
 	}
 
 	return cfg
