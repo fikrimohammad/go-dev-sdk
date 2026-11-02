@@ -56,14 +56,16 @@
 // (use IN (:ids) rather than = ANY(:ids); wrap the slice in a [driver.Valuer] for
 // an array column).
 //
-// For each executed statement, one client span named "db.query" and the
-// db.client.operation.{count,duration} metrics are recorded with OTel
-// attributes: db.system.name, db.namespace (when known), server.address and
-// server.port (when known), db.operation.name, db.query.text,
-// db.response.status_code (MySQL error number or PostgreSQL SQLSTATE, empty on
-// success) and error.type (the error message, empty on success). Transaction
-// begin, commit, and rollback are lifecycle operations and are not
-// instrumented.
+// For each executed statement, one client span named after its operation (for
+// example "SELECT") and one db.client.operation.duration histogram sample are
+// recorded. The metric carries db.system.name, db.namespace (when known),
+// server.address and server.port (when known), and db.operation.name. On
+// failure it also carries error.type (the MySQL error number, the PostgreSQL
+// SQLSTATE, "timeout", "canceled", or "_OTHER") and db.response.status_code
+// (the MySQL error number or PostgreSQL SQLSTATE, when the driver reports one).
+// The span also carries db.query.text; the metric does not, to keep its
+// cardinality bounded. Transaction begin, commit, and rollback are lifecycle
+// operations and are not instrumented.
 //
 // Tracing and metrics use the OTel global providers (otel.SetTracerProvider and
 // otel.SetMeterProvider) unless overridden with [WithMetrics] or [WithTracer].
@@ -72,44 +74,44 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 	"go.opentelemetry.io/otel/codes"
+	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/semconv/v1.43.0/dbconv"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
 )
 
-const (
-	// tracerScope is both the OTel instrumentation scope name and the span name.
-	tracerScope = "db.query"
-
-	// metricCount and metricDuration are the OTel metric names emitted per executed statement.
-	metricCount    = "db.client.operation.count"
-	metricDuration = "db.client.operation.duration"
-)
+// tracerScope is the OTel instrumentation scope name.
+const tracerScope = "db.query"
 
 var (
-	metricCountInstrument = metrics.Instrument{
-		Name:        metricCount,
-		Unit:        "{operation}",
-		Description: "Database client operations",
-	}
+	// metricDuration is the OTel metric name emitted per executed statement.
+	metricDuration = dbconv.ClientOperationDuration{}.Name()
+
+	// metricDurationInstrument takes its name, unit, and description from
+	// semconv, so it is identical to redis's and both register in one metrics
+	// client without conflict.
 	metricDurationInstrument = metrics.Instrument{
 		Name:        metricDuration,
-		Unit:        "s",
-		Description: "Database client operation duration",
+		Unit:        dbconv.ClientOperationDuration{}.Unit(),
+		Description: dbconv.ClientOperationDuration{}.Description(),
 	}
 )
 
 // sqlOpRE matches the leading SQL verb used for the db.operation.name
-// attribute.
-var sqlOpRE = regexp.MustCompile(`(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE|CALL|CREATE|ALTER|DROP|TRUNCATE|SET|EXPLAIN|SHOW|DESCRIBE|VACUUM|ANALYZE)\b`)
+// attribute, after any leading whitespace, block or line comments (as
+// sqlcommenter adds), and opening parentheses.
+var sqlOpRE = regexp.MustCompile(`(?is)^(?:\s+|/\*.*?\*/|--[^\n]*\n|\()*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE|CALL|CREATE|ALTER|DROP|TRUNCATE|SET|EXPLAIN|SHOW|DESCRIBE|VACUUM|ANALYZE)\b`)
 
 // Queryer executes read queries (SELECT).
 type Queryer interface {
@@ -187,10 +189,12 @@ func WithTracer(t tracer.Client) Option {
 // Connect applies [Config.SetDefaults] and [Config.Validate], opens a database
 // from the resulting config (using Config.DSN when set, otherwise building a
 // driver-specific data source name), applies the pool settings, pings it, and
-// returns an instrumented [DB]. It returns an error if validation fails or the
-// database cannot be opened or pinged. Metrics and tracing use the OTel global
-// providers unless overridden with [WithMetrics] or [WithTracer].
-func Connect(cfg Config, opts ...Option) (DB, error) {
+// returns an instrumented [DB]. The ctx bounds the initial ping; if it is done
+// first, Connect returns an error wrapping its cause. It returns an error if
+// validation fails or the database cannot be opened or pinged. Metrics and
+// tracing use the OTel global providers unless overridden with [WithMetrics] or
+// [WithTracer].
+func Connect(ctx context.Context, cfg Config, opts ...Option) (DB, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -211,7 +215,7 @@ func Connect(cfg Config, opts ...Option) (DB, error) {
 		return nil, fmt.Errorf("db: driver %q requires Config.DSN", cfg.Driver)
 	}
 
-	raw, err := sqlx.Connect(spec.name, dsn)
+	raw, err := sqlx.ConnectContext(ctx, spec.name, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: connect %s: %w", spec.systemName, err)
 	}
@@ -356,63 +360,81 @@ func execute(ctx context.Context, d driverSpec, m meta, op, query string, arg an
 	})
 }
 
-// instrument records one span, one count metric, and one duration histogram
-// around fn, which is the actual statement execution.
+// metricsClient returns the injected metrics client, or metrics.Default() when
+// none was injected. It is resolved per call so a later otel.SetMeterProvider
+// still applies.
+func (m meta) metricsClient() metrics.Client {
+	if m.metrics != nil {
+		return m.metrics
+	}
+	return metrics.Default()
+}
+
+// tracerClient returns the injected tracer client, or tracer.Default() when
+// none was injected. It is resolved per call so a later otel.SetTracerProvider
+// still applies.
+func (m meta) tracerClient() tracer.Client {
+	if m.tracer != nil {
+		return m.tracer
+	}
+	return tracer.Default()
+}
+
+// instrument records one span and one duration histogram sample around fn,
+// which is the actual statement execution.
 func (m meta) instrument(ctx context.Context, op, query string, fn func(context.Context) error) error {
 	opName := operationName(op, query)
 
-	var tr trace.Tracer
-	if m.tracer != nil {
-		tr = m.tracer.Tracer(tracerScope)
-	} else {
-		tr = tracer.Tracer(tracerScope)
-	}
-	ctx, span := tr.Start(ctx, tracerScope,
+	// The base attributes are set at start so samplers can read them.
+	ctx, span := m.tracerClient().Tracer(tracerScope).Start(ctx, opName,
 		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(tracer.Attrs(m.attrs(opName, "", ""))...),
 	)
 	start := time.Now()
 	err := fn(ctx)
 
-	// db.response.status_code and error.type are set on every event: to the
-	// driver error code / message on failure, and to the empty string on
-	// success.
-	code, etype := "", ""
-	if err != nil {
+	// sql.ErrNoRows is a normal "not found" result, not a failure; the caller
+	// still receives it.
+	var code, errType string
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		span.SetStatus(codes.Error, err.Error())
-		code, etype = errorInfo(err)
+		code, errType = errorInfo(err)
 	}
 
-	attrs := m.attrs(opName, query, code, etype)
-	span.SetAttributes(tracer.Attrs(attrs)...)
+	attrs := m.attrs(opName, code, errType)
+	spanAttrs := maps.Clone(attrs)
+	spanAttrs[string(otelsemconv.DBQueryTextKey)] = query
+	span.SetAttributes(tracer.Attrs(spanAttrs)...)
 	span.End()
 
-	if m.metrics != nil {
-		_ = m.metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = m.metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
-	} else {
-		_ = metrics.Add(ctx, metricCountInstrument, 1, attrs)
-		_ = metrics.Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
-	}
+	_ = m.metricsClient().Record(ctx, metricDurationInstrument, time.Since(start).Seconds(), attrs)
 	return err
 }
 
-// attrs builds the OTel attributes for a single span or metric event.
-func (m meta) attrs(opName, query, code, etype string) map[string]any {
+// attrs builds the metric attributes for one statement. Empty values are
+// omitted, so error.type and db.response.status_code appear only on failure,
+// and db.response.status_code only when the driver reports a code.
+func (m meta) attrs(opName, code, errType string) map[string]any {
 	a := map[string]any{
-		"db.system.name":          m.systemName,
-		"db.operation.name":       opName,
-		"db.query.text":           query,
-		"db.response.status_code": code,
-		"error.type":              etype,
+		string(otelsemconv.DBOperationNameKey): opName,
+	}
+	if m.systemName != "" {
+		a[string(otelsemconv.DBSystemNameKey)] = m.systemName
 	}
 	if m.namespace != "" {
-		a["db.namespace"] = m.namespace
+		a[string(otelsemconv.DBNamespaceKey)] = m.namespace
 	}
 	if m.serverAddr != "" {
-		a["server.address"] = m.serverAddr
+		a[string(otelsemconv.ServerAddressKey)] = m.serverAddr
 	}
 	if m.serverPort > 0 {
-		a["server.port"] = m.serverPort
+		a[string(otelsemconv.ServerPortKey)] = m.serverPort
+	}
+	if code != "" {
+		a[string(otelsemconv.DBResponseStatusCodeKey)] = code
+	}
+	if errType != "" {
+		a[string(otelsemconv.ErrorTypeKey)] = errType
 	}
 	return a
 }
@@ -424,5 +446,5 @@ func operationName(op, query string) string {
 	if m := sqlOpRE.FindStringSubmatch(query); len(m) > 1 {
 		return strings.ToUpper(m[1])
 	}
-	return op
+	return strings.ToUpper(op)
 }

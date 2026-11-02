@@ -1,579 +1,234 @@
-# Tasks: foundations (SDK fix backlog, PR 1)
+# Tasks: data-clients (SDK fix backlog, PR 2)
 
-Plan: [plan.md](plan.md). Spec: [SPEC-foundations](../docs/specs/sdk-fix-backlog/SPEC-foundations.md).
+Plan: [plan.md](plan.md). Spec: [SPEC-data-clients](../docs/specs/sdk-fix-backlog/SPEC-data-clients.md).
 
-**Module checks** (in every module a task touches; AGENTS.md verification):
-`gofmt -l .`, `go vet ./...`, `go test -count=1 -shuffle=on -gcflags="all=-N -l" ./...`,
-lint (full `golangci-lint run ./...` for strict modules; `--new-from-merge-base=main`
-otherwise), gostyle, and `go mod tidy -diff`. A task that changes a module's go.mod must
-also run `go mod tidy -diff` in every module that requires it through a `replace`
-(observability → db, redis, s3, nats, cron, rest, confloader). Module-graph pruning makes
-their go.sum change too (missed in T11).
+**Module checks.** Run these in every module a task touches (AGENTS.md verification):
+- `gofmt -l .`
+- `go vet ./...`
+- `go test -count=1 -shuffle=on ./...` and `-race`
+- lint: full-tree `golangci-lint run ./...` once a module is strict, otherwise
+  `--new-from-merge-base=main`
+- gostyle
+- `go mod tidy -diff`, including in any module that requires the changed one
 
-**Test-wording check** (added after the Checkpoint A review: lint misses the
-"X should Y" style). In every module a task touches, this must print nothing:
-`grep -rnE 't\.(Errorf|Fatalf|Error|Fatal)\(.*\b(should|expected|actual|Expected|Actual)\b' --include=*_test.go .`
+**Test-wording check.** For the lines a task changes, this must print nothing:
+`git diff -U0 | grep '^+' | grep -E 't\.(Errorf|Fatalf|Error|Fatal)\(.*\b(should|expected|actual|Expected|Actual)\b'`
 
-**TDD rule:** for every test marked *(regression)*, run it before the fix and record that
-it fails, then implement.
+**TDD rule.** Every test marked *(regression)* is written first and shown failing on the current
+code. Only then is the fix implemented.
 
-Each task is one commit with the subject `<type>(<module>): <summary> (<item IDs>)`.
+**Telemetry rule.** Attribute keys come from `semconv/v1.43.0` constants. Telemetry tests assert
+the exact metric name, unit, and attribute set, and that no attribute is ever an empty string.
 
----
-
-## Phase 0: Setup
-
-## Task 1: Branch, commit the docs, open a draft PR
-
-**Description:** Create `feat/foundations` from `main` (a86089d). Commit the idea doc,
-the capability map, SPEC-foundations, this plan and task list, and the deletion of the
-shipped rest plan files. Open a draft PR so CI checks every later commit.
-
-**Acceptance criteria:**
-- [x] The branch exists, and one `docs:` commit holds `docs/ideas/sdk-fix-backlog.md`,
-      `docs/specs/sdk-fix-backlog/*`, `tasks/plan.md`, `tasks/todo.md`, and the old
-      tasks' deletion.
-- [x] A draft PR targets `main`, and its body links the spec.
-
-**Verification:**
-- [x] `git log --stat -1` shows only docs and tasks files.
-- [x] `gh pr view --json isDraft` reports `true`.
-
-**Dependencies:** None
-**Files likely touched:** `docs/ideas/sdk-fix-backlog.md`, `docs/specs/sdk-fix-backlog/*`, `tasks/*`
-**Estimated scope:** XS
-
-## Task 2: Strict-lint ratchet, ireturn allow-list, AGENTS.md convention
-
-**Description:** Add `STRICT_LINT_MODULES` to `ci.yml` (initially `["rest"]`) and set the
-lint step's `only-new-issues` to `${{ !contains(fromJSON(env.STRICT_LINT_MODULES), matrix.module) }}`.
-Add `github.com/fikrimohammad/go-dev-sdk/` to the ireturn `allow` list. Document in
-AGENTS.md that client packages may export and return a caller-facing interface so users
-can generate mocks, and how the strict-lint list works.
-
-**Acceptance criteria:**
-- [x] CI runs `rest` lint with `only-new-issues: false`, and every other module with `true`.
-- [x] `.golangci.yml` ireturn `allow` includes the SDK path.
-- [x] AGENTS.md states the exported-interface convention and the ratchet rule ("add a
-      module to STRICT_LINT_MODULES in the commit that makes it clean; never remove one").
-
-**Verification:**
-- [x] `golangci-lint run ./...` in `rest` reports 0 findings locally.
-- [x] On the draft PR, the `rest` CI job's lint log shows a full run; another module's
-      shows only-new-issues.
-
-**Dependencies:** T1
-**Files likely touched:** `.github/workflows/ci.yml`, `.golangci.yml`, `AGENTS.md`
-**Estimated scope:** S
+Each task is one commit, with the subject `<type>(<module>): <summary> (<task>, <item IDs>)`.
 
 ---
 
-## Phase 1: Small modules
+## Task 1: Commit the spec and plan, open a draft PR
 
-## Task 3: identity: ErrName prefix (I1), strict
-
-**Description:** Change `ErrName`'s message to `"identity: service name is required"`.
-Add `identity` to `STRICT_LINT_MODULES`.
+**Description:** Branch `feat/data-clients` (from main @ 411bb72). Commit SPEC-data-clients,
+the capability-map link, this plan, and the task list. Open a draft PR whose body links the spec.
 
 **Acceptance criteria:**
-- [x] The ErrName text has the package prefix, and `errors.Is` callers are unaffected.
-- [x] `identity` is in the strict list, with 0 full-tree lint and gostyle findings.
+- [x] One `docs:` commit holds the spec, the map, and the tasks.
+- [x] A draft PR targets `main`.
 
 **Verification:**
-- [x] Module checks pass in `identity`, plus `nats` and `observability` (they wrap ErrName).
+- [x] `gh pr view --json isDraft` reports true.
 
-**Dependencies:** T2
-**Files likely touched:** `identity/identity.go`, `.github/workflows/ci.yml`
-**Estimated scope:** XS
+**Dependencies:** None · **Files:** `docs/specs/sdk-fix-backlog/*`, `tasks/*` · **Scope:** XS
 
-## Task 4: errs: Is, LogValue, SlogAttr fixes (E1–E3)
+## Task 2: db telemetry
 
-**Description:** Write the failing tests first. Then: `(*Error).Is` matches only when the
-codes are equal and non-zero; `LogValue` emits `debug` once; `SlogAttr` finds an `*Error`
-anywhere in the chain.
+**Description:**
+- The duration metric `db.client.operation.duration` keeps only the spec's metric attributes;
+  `db.query.text` moves to spans only.
+- Drop `db.client.operation.count`. The span name becomes `{db.operation.name}`.
+- `error.type` is the driver code, or `timeout`, `canceled`, or `_OTHER`. `db.response.status_code`
+  is set only when there is a driver code, and nothing is ever set to "".
+- One `metricsClient()` helper and one tracer helper replace the duplicated nil-check branches.
+- Attribute keys come from semconv constants. If that needs a direct semconv import that go.mod
+  lacks, stop and report it; the orchestrator tidies.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestError_Is`: two code-0 errors don't match; the same non-zero code
-      matches; different codes don't.
-- [x] *(regression)* `TestError_LogValue`: `debug` appears exactly once.
-- [x] *(regression)* `TestSlogAttr`: `fmt.Errorf("x: %w", e)` logs structured fields.
+- [x] *(regression)* `TestInstrument_MetricAttributes`: exact attribute set on success and on
+      failure; no `db.query.text` on the metric; the span carries it.
+- [x] *(regression)* `TestErrorInfo` (rework): MySQL and PostgreSQL errors give their code; an
+      unknown error gives `_OTHER`, never its message.
+- [x] No `db.client.operation.count`, and the span name is the operation name.
 
 **Verification:**
-- [x] The three tests fail before the fix and pass after; errs module checks pass.
-- [x] `rest` module checks pass (rest/server reads errs codes).
+- [x] db module checks (lint new-from-merge-base); coverage ≥ 87.4%.
 
-**Dependencies:** T2
-**Files likely touched:** `errs/error.go`, `errs/slog.go`, `errs/error_test.go`, `errs/slog_test.go`
-**Estimated scope:** S
+**Dependencies:** T1 · **Files:** `db/db.go`, `db/drivers.go`, `db/db_test.go`, `db/drivers_test.go` · **Scope:** M
 
-## Task 5: errs: package doc, AsType, test wording, strict (E4, X8, X9)
+## Task 3: redis returns redis.UniversalClient
 
-**Description:** Add `errs/doc.go` with the package comment. Fix the godot findings, convert
-`errors.As` to `errors.AsType`, and reword test messages to `Func(in) = got, want want`.
-Add `errs` to the strict list.
+**Description:**
+- `New(ctx, cfg, opts...)` returns `redis.UniversalClient`; delete `NewWithContext`.
+- `createUnderlyingClient` returns `redis.UniversalClient`. A small wrapper embeds it and
+  overrides only `Close`, which stops the pool poller.
+- Delete `ReadCommands`, `WriteCommands`, `ScriptCommands`, `Client`, `Pipeline`, the
+  `pipeline` wrapper, `underlyingClient`, and every alias (`Nil`, `TxFailedErr`, `Script`,
+  `NewScript`, `Z`, `ZRangeBy`, `PoolStats`, `Tx`, `PubSub`, `Message`, `Subscription`).
+  Delete `redis/errors.go`.
+- Update tests, `example_test.go`, and README to use go-redis types.
 
 **Acceptance criteria:**
-- [x] `go doc -all .` shows a package comment and no stale references.
-- [x] 0 full-tree lint and gostyle findings, and `errs` is strict.
-- [x] Coverage ≥ 98.5%.
+- [x] *(regression)* `TestNew_ReturnsUniversalClient`: each mode's `createUnderlyingClient`
+      returns a `redis.UniversalClient`, and the hook records a command sent through it
+      (in-process, no miniredis).
+- [x] `grep -n 'type .* interface\|= redis\.' redis/*.go | grep -v _test` shows only the
+      unexported seams that remain, if any.
+- [x] `redis/errors.go` is gone.
 
 **Verification:**
-- [x] Module checks (strict) pass in `errs`.
+- [x] redis module checks; coverage ≥ 68.2%.
 
-**Dependencies:** T4
-**Files likely touched:** `errs/doc.go`, `errs/{error,constructors,slog}.go`, `errs/*_test.go`, `.github/workflows/ci.yml`
-**Estimated scope:** S
+**Dependencies:** T1 · **Files:** `redis/redis.go`, `redis/errors.go` (delete), `redis/redis_test.go`, `redis/example_test.go`, `redis/README.md` · **Scope:** L (mostly deletions)
 
-## Task 6: errgroup: PanicError, no naked returns, no nil-ctx fallback (G2, X7)
+## Task 4: s3 telemetry
 
-**Description:** Write the failing panic tests first. Then recovered panics become
-`*PanicError{Value, Stack}`, whose `Unwrap` returns Value when it's an error. Rewrite
-`adaptTask` with no naked returns (see the spec's Code Style), and drop the nil-ctx
-fallback in `New`.
+**Description:**
+- The metric becomes `rpc.client.call.duration` (s); drop `s3.client.operation.{count,duration}`.
+- Attributes: `rpc.system.name=aws-api`, `rpc.method=S3/<Operation>`, `aws.s3.bucket`,
+  `cloud.region`, `server.address`/`server.port` when known, and `error.type` on failure.
+  `rpc.system` and `rpc.service` are removed.
+- Keys come from semconv constants. If `aws-api` has no constant, use
+  `semconv.RPCSystemNameKey.String("aws-api")`.
+- One metrics helper and one tracer helper (X6).
 
 **Acceptance criteria:**
-- [x] *(regression)* Panic cases in `TestGroup_Go`: Wait returns an error that `errors.As`
-      matches as `*PanicError`, with the original Value and a non-empty Stack; an error
-      panic value is reachable with `errors.Is`.
-- [x] No `fmt.Errorf` assembles stack text.
+- [x] *(regression)* `TestMiddleware_MetricAttributes`: the exact name, unit, and attribute set;
+      no `rpc.system` or `rpc.service` anywhere.
+- [x] The span keeps its name (the operation) and kind (client).
 
 **Verification:**
-- [x] The tests fail before and pass after; errgroup module checks pass; coverage stays 100%.
+- [x] s3 module checks; coverage ≥ 85.5%.
 
-**Dependencies:** T2
-**Files likely touched:** `errgroup/errgroup.go`, `errgroup/errgroup_test.go`
-**Estimated scope:** S
+**Dependencies:** T1 · **Files:** `s3/s3.go`, `s3/middleware.go`, `s3/s3_test.go` · **Scope:** M
 
-## Task 7: errgroup: const default, docs, nolint, test wording, strict (G1, G3, G4, X9)
+## Task 5: db Connect(ctx)
 
-**Description:** Make `DefaultMaxConcurrency` a const. Add doc comments for `Option` and
-`WithMaxConcurrency`. Add the spec's `containedctx` nolint with its reason. Reword test
-messages. Add `errgroup` to the strict list.
+**Description:** `Connect(ctx, cfg, opts...)`. The ctx bounds the initial ping: use
+`sqlx.ConnectContext`, or open and `PingContext`. Update `example_test.go`, README, and
+the integration tests' call sites.
 
 **Acceptance criteria:**
-- [x] `DefaultMaxConcurrency` is a `const`, and every exported identifier is documented.
-- [x] 0 full-tree lint and gostyle findings, and `errgroup` is strict.
+- [x] *(regression)* `TestConnect_ContextDeadline`: an already-expired ctx makes `Connect` return
+      an error matching `context.DeadlineExceeded` without waiting for a dial timeout.
 
 **Verification:**
-- [x] Module checks (strict) pass in `errgroup`; coverage is 100%.
+- [x] db module checks; `go vet` compiles the examples and integration tests.
 
-**Dependencies:** T6
-**Files likely touched:** `errgroup/option.go`, `errgroup/errgroup.go`, `errgroup/*_test.go`, `.github/workflows/ci.yml`
-**Estimated scope:** S
+**Dependencies:** T2 · **Files:** `db/db.go`, `db/db_test.go`, `db/example_test.go`, `db/integration_test.go`, `db/README.md` · **Scope:** S
 
-### Checkpoint A: small modules strict
-- [x] identity, errs, errgroup, and rest are strict, and CI is green on the draft PR.
-- [x] Module checks pass in every go.work module (confloader included).
+## Task 6: redis telemetry
 
----
-
-## Phase 2: goconvey → package testing (no behavior change)
-
-For each task, the set of `func Test` names stays the same (renaming only to
-`Test<Identifier>_<Behavior>` where gostyle requires it), and coverage is at least the
-baseline in plan.md. Only `_test.go` files change.
-
-## Task 8: attributes tests
-
-**Description:** Convert `observability/attributes/attributes_test.go` to table tests in
-package `testing`.
+**Description:** The same treatment as T2, for redis's command and pipeline hooks:
+- The metric keeps only the spec's attributes; `db.query.text` and `db.operation.batch.size` move
+  to spans only.
+- Drop `db.client.operation.count`.
+- `error.type` is the simple-error prefix, or `timeout`, `canceled`, or `_OTHER`; never the
+  message, and never "".
+- One metrics/tracer helper each (X6); remove the trivial `errorMessage` wrapper (R4).
+- Semconv constants.
 
 **Acceptance criteria:**
-- [x] No goconvey import in `attributes`; coverage ≥ 97.7%.
+- [x] *(regression)* `TestInstrumentHook_MetricAttributes` (commands and pipelines): exact
+      attribute sets; no query text, batch size, or message on metrics.
 
 **Verification:**
-- [x] `go test -count=3 -shuffle=on -cover ./attributes/...` passes in `observability`.
+- [x] redis module checks; coverage ≥ 68.2%.
 
-**Dependencies:** T2
-**Files likely touched:** `observability/attributes/attributes_test.go`
-**Estimated scope:** S
+**Dependencies:** T3 · **Files:** `redis/redis.go`, `redis/redis_test.go` · **Scope:** M
 
-## Task 9: logs tests
+## Task 7: s3 New(ctx), cleanup, testing recipe, strict
 
-**Description:** Convert `logs_test.go` and `config_test.go`. Drop the two unused
-`//nolint:staticcheck` directives (O4).
+**Description:**
+- `New(ctx, cfg, opts...)`: the ctx bounds `LoadDefaultConfig`.
+- Fix every full-tree lint finding, including errors.As → AsType (X8) and test wording (X9).
+- S2: `// gostyle:ignore getter-prefix` with the reason (S3's API names the operation
+  `GetObject`), and drop the redundant import aliases.
+- Add a README "Testing your code" section showing gofakes3 + httptest with
+  `Config{Endpoint: ts.URL}` (N19), written as documentation, not a dependency.
+- Update `example_test.go`. Add `s3` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [x] No goconvey import in `logs`; coverage ≥ 94.2%; no nolintlint findings.
+- [x] *(regression)* `TestNew_ContextCanceled`: a canceled ctx makes `New` fail.
+- [x] Full-tree lint 0 and gostyle 0 in s3; `s3` is in the strict list.
 
 **Verification:**
-- [x] `go test -count=3 -shuffle=on -cover ./logs/...` passes.
+- [x] s3 module checks (strict).
 
-**Dependencies:** T2
-**Files likely touched:** `observability/logs/logs_test.go`, `observability/logs/config_test.go`
-**Estimated scope:** M
+**Dependencies:** T4 · **Files:** `s3/s3.go`, `s3/s3_test.go`, `s3/example_test.go`, `s3/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 
-## Task 10: metrics tests
+### Checkpoint A: Opus review of T1–T7
+- [x] Spec criteria 2–4 hold for every module so far; CI is green; review fixes are applied.
 
-**Description:** Convert `metrics_test.go` (592 lines) and `config_test.go`.
+## Task 8: db cleanup, testing recipe, strict
+
+**Description:**
+- D3: write `TestBindQuery_TypedNilValuer` first. If it panics, mirror database/sql's nil-pointer
+  Valuer handling; if it passes, drop D3 and note that in the commit.
+- D4: goimports, `reflect.DeepEqual` → `==`/`slices.Equal`, and `Config` json tags.
+- X8 AsType, X9 wording, and every other full-tree lint finding.
+- Add a README "Testing your code" section showing sqlmock via
+  `Config{Driver: "sqlmock", DSN: ...}` (N19).
+- Add `db` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [x] No goconvey import in `metrics`; coverage ≥ 90.0%.
+- [x] *(regression, conditional)* D3 is fixed with a failing-first test, or dropped with evidence.
+- [x] Full-tree lint 0 and gostyle 0 in db; `db` is in the strict list.
 
 **Verification:**
-- [x] `go test -count=3 -shuffle=on -cover ./metrics/...` passes.
+- [x] db module checks (strict); coverage ≥ 87.4%.
 
-**Dependencies:** T2
-**Files likely touched:** `observability/metrics/metrics_test.go`, `observability/metrics/config_test.go`
-**Estimated scope:** M
+**Dependencies:** T5 · **Files:** `db/bind.go`, `db/bind_test.go`, `db/config.go`, `db/drivers.go`, `db/README.md`, `.github/workflows/ci.yml` · **Scope:** M
 
-## Task 11: tracer tests; remove goconvey
+## Task 9: redis pool metrics in semconv form
 
-**Description:** Convert `tracer_test.go` and `config_test.go`, remove the redundant
-`noop` import alias, and run `go mod tidy` so goconvey leaves `observability/go.mod`.
+**Description:**
+- Replace the six custom pool instruments with `db.client.connection.count` (up-down counter,
+  `{connection}`, `db.client.connection.state` = idle|used, plus `db.client.connection.pool.name`)
+  and `db.client.connection.timeouts` (counter, `{timeout}`). Each poll records deltas, with the
+  same attributes on increment and decrement.
+- Drop hits, misses, and stale.
+- The poller has a visible end: `Close` closes stop and waits on a WaitGroup (R3).
+- One poll helper; no duplicated branches (R2).
 
 **Acceptance criteria:**
-- [x] No `.go` file imports goconvey (`grep -rn goconvey --include=*.go .`, excluding vendor, finds nothing); coverage ≥ 83.0%.
-- [x] `go mod tidy -diff` is clean. goconvey stays in go.mod only as `// indirect`: mockey
-      requires it, and mockey is used only to swap the stream vars T14 deletes. Removing
-      it from go.mod moved to T14.
+- [x] *(regression)* `TestPoolMetrics`: driving PoolStats through a sequence (via a stubbed stats
+      source) gives the right running count per state and timeout total; after `Close`, the
+      poller has exited (WaitGroup).
 
 **Verification:**
-- [x] Module checks pass in `observability`.
+- [x] redis module checks; coverage ≥ 68.2%.
 
-**Dependencies:** T8, T9, T10
-**Files likely touched:** `observability/tracer/tracer_test.go`, `observability/tracer/config_test.go`, `observability/go.mod`, `observability/go.sum`
-**Estimated scope:** M
+**Dependencies:** T6 · **Files:** `redis/redis.go`, `redis/redis_test.go` · **Scope:** M
 
-### Checkpoint B: goconvey gone, coverage held
-- [x] Every observability package is at or above its baseline coverage, and no goconvey
-      import is left.
-- [x] Behavior is unchanged: the other modules' tests still pass.
+## Task 10: redis cleanup, testing recipe, strict
 
----
-
-## Phase 3: observability behavior
-
-## Task 12: metrics: Default follows OTel, Insecure bool, no nil-ctx fallback (X10, O1, X7)
-
-**Description:** Write the failing test first. `Default()` returns the `SetDefault`
-override if one is set (transitional, until T19). Otherwise it resolves
-`otel.GetMeterProvider()` per call and returns a `Wrap` of it, cached by provider
-identity. `SetDefault(nil)` clears the override. `Config.Insecure` becomes `bool`, with false meaning TLS. Delete
-`contextOrBackground`.
+**Description:**
+- Confirm `New(ctx)` from T3 bounds the ping with ctx (add `TestNew_ContextCanceled` if T3 didn't).
+- X8 AsType, X9 wording, and every other full-tree lint finding, including the removed
+  `min`/`max` and `interfacebloat` nolints if those declarations are gone.
+- Add a README "Testing your code" section showing miniredis with `Config{Addrs: []string{m.Addr()}}`
+  (N19).
+- Add `redis` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [x] *(regression)* `TestDefault_FollowsOTelGlobal`: `metrics.Add` after
-      `otel.SetMeterProvider(manual reader)` is collected, including an instrument first
-      used before the install, and after a second `otel.SetMeterProvider`, new measurements
-      reach the second provider. The test restores the global in `t.Cleanup`.
-- [x] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure; `Insecure: true` does.
-- [x] No nil-ctx substitution is left in `metrics`.
+- [x] Full-tree lint 0 and gostyle 0 in redis; `redis` is in the strict list; no stale `//nolint`
+      remains.
 
 **Verification:**
-- [x] The tests fail before and pass after; observability checks pass; coverage ≥ 90.0%.
-- [x] Module checks pass in the callers (db, redis, s3, nats, cron, rest).
-
-**Dependencies:** T10
-**Files likely touched:** `observability/metrics/metrics.go`, `observability/metrics/config.go`, `observability/metrics/metrics_test.go`, `observability/metrics/config_test.go`
-**Estimated scope:** M
-
-## Task 13: tracer: Default follows OTel, Insecure bool, doc fix (X10, O1, O3, X7)
-
-**Description:** The same as T12 for `tracer`, plus removing the doc references to `Init`.
-
-**Acceptance criteria:**
-- [x] *(regression)* `TestDefault_FollowsOTelGlobal`: a span from `tracer.Tracer("x")` is
-      recorded after `otel.SetTracerProvider(recorder)`, and after a second install it
-      reaches the second recorder.
-- [x] *(regression)* `TestConfig`: the zero-value Config doesn't enable insecure.
-- [x] `go doc -all ./tracer` has no `Init`, and no nil-ctx substitution is left.
-
-**Verification:**
-- [x] The tests fail before and pass after; coverage ≥ 83.0%; callers' module checks pass.
-
-**Dependencies:** T11
-**Files likely touched:** `observability/tracer/tracer.go`, `observability/tracer/config.go`, `observability/tracer/tracer_test.go`, `observability/tracer/config_test.go`
-**Estimated scope:** M
-
-## Task 14: logs: delete SetStreams and the stream vars (O2)
-
-**Description:** Delete `SetStreams`, the package `stdout`/`stderr` vars, and
-`streamWriter`. A nil `Writer` / `ErrorWriter` means `os.Stdout` / `os.Stderr`. Tests that
-redirected streams pass `Config.Writer` / `ErrorWriter` instead.
-
-**Acceptance criteria:**
-- [x] `grep -rn 'SetStreams\|streamWriter' .` finds nothing.
-- [x] With the stream vars gone, the logs tests no longer use mockey, so `go mod tidy`
-      removes mockey and goconvey from `observability/go.mod` (moved here from T11).
-- [x] Logs still route debug/info to Writer and warn/error to ErrorWriter (existing tests).
-
-**Verification:**
-- [x] Observability checks pass; coverage ≥ 94.2%.
-
-**Dependencies:** T9
-**Files likely touched:** `observability/logs/logs.go`, `observability/logs/logs_test.go`
-**Estimated scope:** S
-
-### Checkpoint C: new behavior in place
-- [x] Every go.work module builds and passes its tests, and `SetDefault` still exists
-      (transitionally).
-- [x] Review the observability diff with the owner, if wanted, before the caller migration.
-
----
-
-## Phase 4: migrate callers, then delete
-
-## Task 15: db and redis off SetDefault
-
-**Description:** The test helpers set `meta.metrics` / `meta.tracer` to their fakes,
-instead of installing package defaults. The "uses the default when nothing is injected"
-tests install an OTel span recorder or manual reader with `otel.Set*Provider`. Doc comments
-change from "(metrics.SetDefault)" to "the OTel global meter/tracer provider".
-
-**Acceptance criteria:**
-- [x] No `metrics.SetDefault` / `tracer.SetDefault` in `db` or `redis`.
-- [x] Each module still has a test proving fallback to the OTel global.
-
-**Verification:**
-- [x] Module checks pass in `db` and `redis` (lint new-from-merge-base); `-shuffle=on -count=3`.
-
-**Dependencies:** T12, T13
-**Files likely touched:** `db/db_test.go`, `db/db.go`, `redis/redis_test.go`, `redis/redis.go`
-**Estimated scope:** M
-
-## Task 16: s3, and nats docs, off SetDefault
-
-**Description:** The same as T15 for `s3`. The nats doc comments are updated (nats has no
-SetDefault in its tests).
-
-**Acceptance criteria:**
-- [x] No `SetDefault` mention left in `s3` or `nats`.
-
-**Verification:**
-- [x] Module checks pass in `s3` and `nats`.
-
-**Dependencies:** T12, T13
-**Files likely touched:** `s3/s3_test.go`, `s3/s3.go`, `nats/consumer/consumer.go`, `nats/producer/producer.go`
-**Estimated scope:** S
-
-## Task 17: rest/server off SetDefault
-
-**Description:** `installDefaultTelemetry` installs OTel globals (a span recorder plus a
-manual reader) and asserts through them. It must stop saving `metrics.Default()` /
-`tracer.Default()` and restoring them with `SetDefault(prev)`: that now turns a snapshot
-of the global-backed client into a fixed override for the rest of the package's tests.
-The same applies to rest/client in T18. `example_test.go` uses `tracer.SetGlobal(tc)`
-and `otel.SetMeterProvider(mc.Provider())`. The doc comments are updated. Its
-`metrics.New`/`tracer.New` calls target a plaintext local collector, so they set
-`Insecure: true` (TLS is the default since T12/T13).
-
-**Acceptance criteria:**
-- [x] No `SetDefault` for metrics/tracer in `rest/server`.
-- [x] The default-fallback test still proves the server records through the defaults.
-- [x] `rest` stays at 0 full-tree lint findings (it's strict).
-
-**Verification:**
-- [x] Module checks (strict) pass in `rest`.
-
-**Dependencies:** T12, T13
-**Files likely touched:** `rest/server/server_test.go`, `rest/server/example_test.go`, `rest/server/server.go`, `rest/server/middleware.go`
-**Estimated scope:** M
-
-## Task 18: rest/client off SetDefault
-
-**Description:** The same as T17 for `rest/client`.
-
-**Acceptance criteria:**
-- [x] No `SetDefault` for metrics/tracer in `rest/client`, and the fallback test is kept.
-
-**Verification:**
-- [x] Module checks (strict) pass in `rest`.
-
-**Dependencies:** T17
-**Files likely touched:** `rest/client/client_test.go`, `rest/client/client.go`, `rest/client/middleware.go`
-**Estimated scope:** S
-
-## Task 19: delete SetDefault and the package Stop, rewrite doc.go, observability strict
-
-**Description:** Delete `metrics.SetDefault`, `metrics.Stop`, `tracer.SetDefault`, and
-`tracer.Stop`, along with their tests. Delete only the override: `Default()` keeps resolving
-`otel.Get*Provider()` per call, cached by provider identity (spec design note). An init-time
-capture would lose telemetry when the provider is swapped. Rewrite `observability/doc.go` for the OTel-global model. Its example configs
-and `observability/README.md` (the `Insecure | true (nil)` rows, about lines 164/176) document
-the new TLS default and set `Insecure: true` for a plaintext local collector. Also fix
-the README lines saying "`SetGlobal` does not change the package default; call
-`SetDefault` separately" (about lines 48-50), and doc.go's "noop default / SetDefault(nil)
-restores" text (about lines 57-59). Since T12/T13, SetGlobal and otel.Set*Provider change
-what Default returns.
-Fix the remaining full-tree findings (contextcheck, forbidigo, recvcheck, ireturn now
-allowed). Add `observability` to the strict list. mockey left the repo in T14, so also drop the
-mockey-only `-gcflags="all=-N -l"` from CI's test step, AGENTS.md's verification commands,
-and the comments that justify it. Confirm first with `grep -rn mockey --include=*.go .`.
-
-**Acceptance criteria:**
-- [x] Spec criterion 5: `grep -rn 'SetDefault\|SetStreams\|contextOrBackground' observability/metrics observability/tracer`
-      finds nothing.
-- [x] 0 full-tree lint and gostyle findings in `observability`, and it's strict.
-- [x] `go doc -all` for each observability package shows no stale references.
-
-**Verification:**
-- [x] Module checks (strict) pass in `observability`; coverage meets every baseline.
-
-**Dependencies:** T14, T15, T16, T17, T18
-**Files likely touched:** `observability/metrics/metrics.go`, `observability/tracer/tracer.go`, `observability/doc.go`, `observability/*/…_test.go`, `.github/workflows/ci.yml`
-**Estimated scope:** M
-
-### Checkpoint D: complete
-- [x] Every SPEC-foundations success criterion (1–7) is checked, with evidence in the PR body.
-- [x] Module checks pass in every go.work module, and CI is green.
-- [x] The PR body lists the breaking changes: SetDefault and the package Stop removed,
-      Insecure defaults to TLS, SetStreams removed, PanicError, and the errs.Is semantics.
-- [ ] The PR is marked ready for review, and the owner reviews.
-
----
-
-## Phase 5: repository conventions (spec amendment R1–R4)
-
-Shared acceptance for every Phase 5 task:
-- No behavior change except T22's errors.Join.
-- Tests follow moved declarations (mirror rule).
-- Strict modules stay at 0 full-tree lint findings; the others lint clean with
-  `--new-from-merge-base=main`.
-- Module checks pass in every module touched, and the test-wording grep is empty for
-  changed lines.
-- confloader is not touched.
-
-## Task 20: Codify R1–R4 (AGENTS.md, confloader redesign note)
-
-**Description:** Add R1–R4 to AGENTS.md's Non-negotiable invariants, in the file's style.
-Add a "confloader redesign must follow R1–R4" line to docs/ideas/sdk-fix-backlog.md
-(Not Doing → confloader).
-
-**Acceptance criteria:**
-- [x] AGENTS.md states the four rules, matching the spec amendment's wording.
-- [x] The idea doc records them as confloader redesign requirements.
-
-**Verification:**
-- [x] `grep -n 'errors.go\|example_test.go\|interfaces.go\|SetDefaults' AGENTS.md` shows each rule.
-
-**Dependencies:** None
-**Files likely touched:** `AGENTS.md`, `docs/ideas/sdk-fix-backlog.md`
-**Estimated scope:** XS
-
-## Task 21: R1 in observability logs, metrics, tracer
-
-**Description:** Replace `(c *Config) setDefaults()` and `(c *Config) validate()` with
-exported value-receiver `SetDefaults() Config` and `Validate() error` (they already use
-errors.Join), with doc comments. `New` calls `cfg = cfg.SetDefaults()` and then
-`cfg.Validate()`. Rename the config tests to `TestConfig_SetDefaults` and
-`TestConfig_Validate`.
-
-**Acceptance criteria:**
-- [x] No unexported setDefaults/validate in observability.
-- [x] `go doc ./logs Config` (and the same for metrics and tracer) shows both methods.
-- [x] Coverage meets each baseline (logs 97.9, metrics 93.8, tracer 92.9).
-
-**Verification:**
-- [x] Module checks (strict) pass in observability.
-
-**Dependencies:** None
-**Files likely touched:** `observability/{logs,metrics,tracer}/{config.go,config_test.go}` and each package's main file (New)
-**Estimated scope:** M
-
-## Task 22: R1 in rest/client, rest/server, cron/engine (export, errors.Join)
-
-**Description:** rest/client and rest/server get the same R1 change as T21. Their
-`validate` returns the first error today; make it collect every problem with errors.Join.
-cron/engine's exported Validate also switches to errors.Join.
-
-**Acceptance criteria:**
-- [x] Exported SetDefaults/Validate in all three, each Validate using errors.Join.
-- [x] *(regression)* Each package has a Validate test with two invalid fields that asserts
-      `errors.Is` matches both. It fails on the first-error code.
-
-**Verification:**
-- [x] Module checks pass in rest (strict) and cron.
-
-**Dependencies:** None
-**Files likely touched:** `rest/{client,server}/{config.go,config_test.go}`, the rest constructors, `cron/engine/{config.go,config_test.go}`
-**Estimated scope:** M
-
-## Task 23: R4: move interfaces into <pkg>.go (cron, db, redis)
-
-**Description:** Move the contents of `cron/interfaces.go` into a new `cron/cron.go`, of
-`db/interfaces.go` into `db/db.go`, and of `redis/interfaces.go` into `redis/redis.go`.
-Delete the interfaces.go files. Declarations, docs, and behavior don't change.
-
-**Acceptance criteria:**
-- [x] `find . -name interfaces.go -not -path './vendor/*' -not -path './confloader/*'` prints nothing.
-- [x] Every non-test `type X interface` is in `<pkg>.go`.
-
-**Verification:**
-- [x] Module checks pass in cron, db, and redis; `go doc` output is unchanged apart from file order.
-
-**Dependencies:** None
-**Files likely touched:** `cron/interfaces.go` → `cron/cron.go`, `db/interfaces.go` → `db/db.go`, `redis/interfaces.go` → `redis/redis.go`
-**Estimated scope:** S
-
-## Task 24: R3: exported errors into errors.go
-
-**Description:** Move exported errors into each package's `errors.go`:
-- errgroup: `PanicError` and its methods. Unit tests for `PanicError.Error`/`Unwrap` go in
-  `errors_test.go`.
-- identity: `ErrName`.
-- attributes: `ErrMissingServiceName`.
-- logs: `ErrInvalidLogFormat` and `ErrInvalidLogLevel`, from config.go.
-- metrics: `ErrStopped`, `ErrInvalidMetricName`, and `ErrInstrumentConflict`.
-- rest/client: `ErrInformationalResponse`.
-- redis: `Nil` and `TxFailedErr`, from redis.go after T23.
-- errs: rename `error.go` → `errors.go` and `error_test.go` → `errors_test.go`.
-
-**Acceptance criteria:**
-- [x] Spec criterion 10: outside confloader, no exported error declaration lives anywhere but `errors.go`.
-- [x] No behavior change, and `go doc` lists the same identifiers.
-
-**Verification:**
-- [x] Module checks pass in every touched module (four of them strict).
-
-**Dependencies:** T21, T22, T23
-**Files likely touched:** the `errors.go`/`errors_test.go` files listed above, plus the files the declarations move out of
-**Estimated scope:** M (many small moves)
-
-## Task 25: R2 runnable examples (errs, errgroup, attributes, cron, cron/engine, observability root)
-
-**Description:** Add `example_test.go` (package `<pkg>_test`):
-- errs: New, Wrap, WithMeta, errors.Is by code, and SlogAttr with a JSON handler on a buffer.
-- errgroup: Go/Wait, WithMaxConcurrency, and a panic surfacing as `*PanicError`.
-- attributes: NormalizeKey and ConvertMapsToKVs.
-- cron: WithFencingToken/FencingTokenFromContext.
-- cron/engine: New, Register, Trigger, and Stop, with the job printing.
-- observability root: a compile-only `Example` that wires logs, metrics, and tracer with
-  `Insecure: true`.
-
-Runnable examples have `// Output:`.
-
-**Acceptance criteria:**
-- [x] Each example runs under `go test ./...` and its output matches.
-- [x] `go doc -all` shows the examples.
-
-**Verification:**
-- [x] Module checks pass in errs, errgroup, observability, and cron.
-
-**Dependencies:** T21, T22, T24
-**Files likely touched:** `errs/`, `errgroup/`, `observability/`, `observability/attributes/`, `cron/`, and `cron/engine/` `example_test.go`
-**Estimated scope:** M
-
-## Task 26: R2 compile-only examples (db, redis, s3, nats/consumer, nats/producer)
-
-**Description:** Add `example_test.go` showing realistic setup and use: Connect with
-NamedGetContext, and a transaction (db); New, Set/Get, Pipelined (redis); New, PutObject,
-PresignGetObject (s3); Register, Start, Shutdown with a handler (consumer); Register,
-Start, PublishSync (producer). There is no `// Output:`, because these need real servers.
-
-**Acceptance criteria:**
-- [x] Each example compiles (`go vet ./...`) and appears in `go doc -all`.
-- [x] No new dependencies.
-
-**Verification:**
-- [x] Module checks pass in db, redis, s3, and nats.
-
-**Dependencies:** T23, T24
-**Files likely touched:** `db/`, `redis/`, `s3/`, `nats/consumer/`, `nats/producer/` `example_test.go`
-**Estimated scope:** M
-
-### Checkpoint E: conventions complete
-- [x] Spec criteria 8–12 are checked, with evidence.
-- [x] Opus review of T20–T26, with its fixes applied.
-- [ ] The PR body is updated (scope, and the R1 breaking change: exported config methods,
-      and Validate joining errors in rest and cron/engine). The owner then reviews.
+- [x] redis module checks (strict).
+
+**Dependencies:** T9 · **Files:** `redis/redis.go`, `redis/redis_test.go`, `redis/README.md`, `.github/workflows/ci.yml` · **Scope:** M
+
+### Checkpoint B: complete
+- [x] SPEC-data-clients success criteria 1–7 are verified with evidence.
+- [x] Final Opus review, with its fixes applied.
+- [x] The PR body (prepared by the orchestrator) lists every renamed or dropped metric and
+      attribute and the API breaks. The owner updates it and marks the PR ready, or tells the
+      orchestrator to.

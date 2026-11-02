@@ -19,7 +19,8 @@ import (
 // ExampleNew uploads a report when it is missing and prints a presigned
 // download URL that expires after 15 minutes.
 func ExampleNew() {
-	client, err := s3.New(s3.Config{
+	ctx := context.Background()
+	client, err := s3.New(ctx, s3.Config{
 		Region:          "us-east-1",
 		Endpoint:        "http://localhost:9000",
 		AccessKeyID:     "minioadmin",
@@ -30,7 +31,6 @@ func ExampleNew() {
 		return
 	}
 
-	ctx := context.Background()
 	const bucket, key = "reports", "2026/q4.txt"
 
 	_, err = client.HeadObject(ctx, &awss3.HeadObjectInput{

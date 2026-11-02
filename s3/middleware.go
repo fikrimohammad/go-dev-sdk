@@ -8,8 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go/middleware"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
@@ -32,7 +30,7 @@ func (m *instrumentationMiddleware) ID() string {
 }
 
 // HandleInitialize intercepts every S3 operation at the start of the middleware pipeline,
-// records an OpenTelemetry client span and duration/count metrics, and classifies any errors.
+// records an OpenTelemetry client span and the rpc.client.call.duration metric, and classifies any errors.
 func (m *instrumentationMiddleware) HandleInitialize(
 	ctx context.Context,
 	in middleware.InitializeInput,
@@ -43,27 +41,16 @@ func (m *instrumentationMiddleware) HandleInitialize(
 		opName = "S3Operation"
 	}
 	bucket := extractBucket(in.Parameters)
+	attrs := m.meta.attrs(opName, bucket)
 
 	start := time.Now()
-	tr := m.meta.tracerClient()
-
-	ctx, span := tr.Start(ctx, opName,
+	ctx, span := m.meta.tracerClient().Start(ctx, opName,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(tracer.Attrs(m.meta.samplingAttrs(opName, bucket))...),
+		trace.WithAttributes(tracer.Attrs(attrs)...),
 	)
 
 	out, md, err = next.HandleInitialize(ctx, in)
-
-	etype := ""
-	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		etype = errorType(err)
-		span.SetAttributes(attribute.String("error.type", etype))
-	}
-	span.End()
-
-	m.meta.recordMetrics(ctx, opName, bucket, etype, time.Since(start))
-
+	m.meta.finish(ctx, span, attrs, start, err)
 	return out, md, err
 }
 

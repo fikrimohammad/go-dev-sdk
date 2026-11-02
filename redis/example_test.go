@@ -17,7 +17,8 @@ import (
 // ExampleNew stores a session token with a time-to-live and reads it back,
 // treating a missing key as an expected result rather than a failure.
 func ExampleNew() {
-	client, err := redis.New(redis.Config{Addrs: []string{"localhost:6379"}})
+	ctx := context.Background()
+	client, err := redis.New(ctx, redis.Config{Addrs: []string{"localhost:6379"}})
 	if err != nil {
 		log.Println(err)
 		return
@@ -28,7 +29,6 @@ func ExampleNew() {
 		}
 	}()
 
-	ctx := context.Background()
 	if err := client.Set(ctx, "session:42", "active", 10*time.Minute).Err(); err != nil {
 		log.Println(err)
 		return
@@ -36,7 +36,7 @@ func ExampleNew() {
 
 	val, err := client.Get(ctx, "session:42").Result()
 	switch {
-	case errors.Is(err, redis.Nil):
+	case errors.Is(err, goredis.Nil):
 		log.Println("session expired")
 	case err != nil:
 		log.Println(err)
@@ -45,10 +45,11 @@ func ExampleNew() {
 	}
 }
 
-// ExampleClient_Pipelined sends two commands in a single round trip. Command
+// ExampleNew_pipelined sends two commands in a single round trip. Command
 // results are available once Pipelined returns nil.
-func ExampleClient_Pipelined() {
-	client, err := redis.New(redis.Config{Addrs: []string{"localhost:6379"}})
+func ExampleNew_pipelined() {
+	ctx := context.Background()
+	client, err := redis.New(ctx, redis.Config{Addrs: []string{"localhost:6379"}})
 	if err != nil {
 		log.Println(err)
 		return
@@ -59,9 +60,8 @@ func ExampleClient_Pipelined() {
 		}
 	}()
 
-	ctx := context.Background()
 	var views *goredis.IntCmd
-	err = client.Pipelined(ctx, func(pipe redis.Pipeline) error {
+	_, err = client.Pipelined(ctx, func(pipe goredis.Pipeliner) error {
 		views = pipe.Incr(ctx, "page:home:views")
 		pipe.Expire(ctx, "page:home:views", time.Hour)
 		return nil

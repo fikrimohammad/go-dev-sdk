@@ -146,7 +146,7 @@ func literalEnd(query string, i int, d dialect) int {
 func expandSlices(query string, args []any, d dialect) (string, []any, error) {
 	for i, arg := range args {
 		if v, ok := arg.(driver.Valuer); ok {
-			value, err := v.Value()
+			value, err := callValuer(v)
 			if err != nil {
 				return "", nil, err
 			}
@@ -423,4 +423,18 @@ func isSpaceByte(c byte) bool {
 	default:
 		return false
 	}
+}
+
+// valuerType is the reflect type of driver.Valuer, used by callValuer.
+var valuerType = reflect.TypeFor[driver.Valuer]()
+
+// callValuer returns v.Value(), except that a nil pointer whose element type
+// implements driver.Valuer by value binds as SQL NULL. Calling Value on such a
+// nil pointer would dereference nil. This mirrors database/sql's callValuerValue.
+func callValuer(v driver.Valuer) (driver.Value, error) {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer && rv.IsNil() && rv.Type().Elem().Implements(valuerType) {
+		return nil, nil
+	}
+	return v.Value()
 }

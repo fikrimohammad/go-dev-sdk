@@ -1,7 +1,8 @@
 package db
 
 import (
-	"reflect"
+	"database/sql/driver"
+	"slices"
 	"testing"
 )
 
@@ -73,7 +74,7 @@ func TestBindQuery_SkipsLiteralsAndComments(t *testing.T) {
 			if got != c.want {
 				t.Fatalf("query = %q, want %q", got, c.want)
 			}
-			if !reflect.DeepEqual(args, c.args) {
+			if !slices.Equal(args, c.args) {
 				t.Fatalf("args = %#v, want %#v", args, c.args)
 			}
 		})
@@ -99,7 +100,7 @@ func TestBindQuery_NilArg(t *testing.T) {
 func TestBindQuery_BindError(t *testing.T) {
 	_, _, err := bindQuery(postgresDriver, `SELECT :missing`, map[string]any{"other": 1})
 	if err == nil {
-		t.Fatal("expected bind error")
+		t.Fatal("bindQuery() err = nil, want bind error")
 	}
 }
 
@@ -119,5 +120,22 @@ func TestRebind(t *testing.T) {
 		if got := rebind(c.in, c.spec); got != c.want {
 			t.Errorf("%s: rebind = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// money is a driver.Valuer with a value receiver, so *money also implements
+// driver.Valuer, but calling Value on a nil *money would dereference nil.
+type money struct{ cents int64 }
+
+func (m money) Value() (driver.Value, error) { return m.cents, nil }
+
+func TestBindQuery_TypedNilValuer(t *testing.T) {
+	var m *money
+	_, args, err := bindQuery(postgresDriver, `SELECT :amount`, map[string]any{"amount": m})
+	if err != nil {
+		t.Fatalf("bindQuery: %v", err)
+	}
+	if len(args) != 1 || args[0] != nil {
+		t.Fatalf("args = %#v, want [nil]", args)
 	}
 }

@@ -8,7 +8,7 @@ client with standard AWS SDK types and automatic OpenTelemetry tracing + metrics
 - **Standard AWS SDK Types** — operates directly on standard AWS SDK types (`*s3.PutObjectInput`, `*s3.GetObjectInput`, `*transfermanager.UploadObjectInput`, etc.) with zero custom struct wrappers or mapping layers.
 - **Standard AWS SDK Methods** — standard S3 operations (`PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `CopyObject`, `ListObjectsV2`, `CreateBucket`, `DeleteBucket`, `HeadBucket`, `ListBuckets`) are natively available on `Client`.
 - **IsNotFound** — ergonomic helper for checking 404 / NoSuchKey / NoSuchBucket errors reliably.
-- **Smithy Middleware Telemetry** — automatic OpenTelemetry spans and `s3.client.operation.{count,duration}` metrics for all operations without manual method overrides.
+- **Smithy Middleware Telemetry** — automatic OpenTelemetry spans and the `rpc.client.call.duration` histogram for all operations without manual method overrides.
 - **Injectable Telemetry** — optionally override package-level metrics/tracer defaults via `WithMetrics` and `WithTracer`.
 
 ## Installation
@@ -45,9 +45,11 @@ cfg := s3.Config{
 ### 2. Connect
 
 ```go
-cli, err := s3.New(cfg)
+cli, err := s3.New(ctx, cfg)
 if err != nil { /* handle */ }
 ```
+
+`ctx` bounds the AWS configuration load. A canceled context makes `New` return an error that wraps `context.Canceled`.
 
 ### 3. Upload an object (Transfer Manager Multipart Upload)
 
@@ -149,6 +151,49 @@ if err == nil {
 }
 ```
 
+## Telemetry attributes
+
+Every operation records one client span named after the operation (for example
+`PutObject`) and one `rpc.client.call.duration` histogram sample (seconds).
+Presigning records an internal span and the same metric. Both carry
+`rpc.system.name` (`aws-api`), `rpc.method` (`S3/<Operation>`, for example
+`S3/PutObject`), `aws.s3.bucket`, `cloud.region` (when known), and
+`server.address`/`server.port` (when a self-hosted `Endpoint` is configured).
+On failure they also carry `error.type`: the AWS API error code (for example
+`NoSuchKey`), `network_error`, `timeout`, `canceled`, or `_OTHER`.
+
+## Testing your code
+
+Test code that uses this package against a fake S3 server, with no AWS account and no changes to your production code. Run [gofakes3](https://github.com/johannesboyne/gofakes3) in-process behind `httptest`, then point `Config.Endpoint` at it:
+
+```go
+import (
+    "net/http/httptest"
+
+    "github.com/aws/aws-sdk-go-v2/aws"
+    "github.com/johannesboyne/gofakes3"
+    "github.com/johannesboyne/gofakes3/backend/s3mem"
+
+    "github.com/fikrimohammad/go-dev-sdk/s3"
+)
+
+backend := s3mem.New()
+faker := gofakes3.New(backend)
+ts := httptest.NewServer(faker.Server())
+defer ts.Close()
+
+cli, err := s3.New(ctx, s3.Config{
+    Region:          "us-east-1",
+    Endpoint:        ts.URL,
+    UsePathStyle:    aws.Bool(true),
+    AccessKeyID:     "x",
+    SecretAccessKey: "x",
+})
+if err != nil { /* handle */ }
+```
+
+The gofakes3 dependency belongs to your test code, not to this package. To stub the `Client` interface without any server, generate a gomock mock of it and pass the mock wherever your code takes a `Client`.
+
 ## Config reference
 
 | Field | Default | Notes |
@@ -168,7 +213,7 @@ if err == nil {
 | Symbol | Description |
 | --- | --- |
 | `Config` | Connection + transfer settings; `SetDefaults()`, `Validate()` |
-| `New(cfg, opts...)` | Build an instrumented `Client` |
+| `New(ctx, cfg, opts...)` | Build an instrumented `Client`; `ctx` bounds the AWS config load |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
 | `Client` | Unified S3 client interface providing standard AWS SDK methods, Transfer Manager methods, Presign methods, and helpers |
 | `IsNotFound(err)` | Helper returns `true` for 404 / `NoSuchKey` / `NoSuchBucket` errors |

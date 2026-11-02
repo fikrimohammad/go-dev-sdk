@@ -67,7 +67,7 @@ func TestConfig_Validate_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.cfg.SetDefaults().Validate()
 			if err == nil {
-				t.Fatal("Validate: expected error")
+				t.Fatal("Validate() error = nil, want non-nil")
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Validate() = %q, want it to contain %q", err.Error(), tc.want)
@@ -79,7 +79,7 @@ func TestConfig_Validate_Errors(t *testing.T) {
 func TestConfig_Validate_Aggregates(t *testing.T) {
 	err := Config{AccessKeyID: "k"}.SetDefaults().Validate()
 	if err == nil {
-		t.Fatal("Validate: expected error")
+		t.Fatal("Validate() error = nil, want non-nil")
 	}
 	if !strings.Contains(err.Error(), "region is required") {
 		t.Fatalf("Validate() = %q, want missing region error", err.Error())

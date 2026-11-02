@@ -6,15 +6,18 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jmoiron/sqlx"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -67,15 +70,6 @@ func (f *fakeMetrics) Provider() metric.MeterProvider { return nil }
 
 func (f *fakeMetrics) Stop(context.Context) error { return nil }
 
-func (f *fakeMetrics) lastCount() (metricRec, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.counts) == 0 {
-		return metricRec{}, false
-	}
-	return f.counts[len(f.counts)-1], true
-}
-
 func (f *fakeMetrics) lastHist() (metricRec, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -85,7 +79,7 @@ func (f *fakeMetrics) lastHist() (metricRec, bool) {
 	return f.hists[len(f.hists)-1], true
 }
 
-func (f *fakeMetrics) nums() (int, int) {
+func (f *fakeMetrics) nums() (counts, hists int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.counts), len(f.hists)
@@ -337,7 +331,7 @@ func normalizeAttrs(attrs map[string]any) map[string]any {
 // --- tests ----------------------------------------------------------------------------
 
 func TestConnect(t *testing.T) {
-	db, err := Connect(Config{
+	db, err := Connect(context.Background(), Config{
 		Driver:       "dbstub",
 		DSN:          "test",
 		Host:         "localhost",
@@ -368,6 +362,30 @@ func TestConnect(t *testing.T) {
 	}
 }
 
+// TestConnect_ContextDeadline checks that an expired ctx bounds the initial ping:
+// Connect fails with the context error instead of waiting on an unreachable host.
+func TestConnect_ContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	start := time.Now()
+	// 10.255.255.1 is non-routable, so only ctx can end the dial quickly; the
+	// DSN's 2s timeout keeps a regression from hanging until the OS gives up.
+	db, err := Connect(ctx, Config{
+		Driver: "mysql",
+		DSN:    "user:pass@tcp(10.255.255.1:3306)/report_db?timeout=2s",
+	})
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("Connect took %v with an expired ctx, want < 1s", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Connect error = %v, want errors.Is(err, context.DeadlineExceeded)", err)
+	}
+	if db != nil {
+		t.Fatalf("Connect returned DB %v with an error, want nil", db)
+	}
+}
+
 func TestConnect_InjectedClients(t *testing.T) {
 	testBackend.mu.Lock()
 	testBackend.queries = nil
@@ -391,7 +409,7 @@ func TestConnect_InjectedClients(t *testing.T) {
 	t.Cleanup(func() { _ = injTp.Shutdown(context.Background()) })
 	injFm := &fakeMetrics{}
 
-	db, err := Connect(Config{Driver: "dbstub", DSN: "test", Host: "localhost", Port: 3306, Database: "report_db", Username: "user"},
+	db, err := Connect(context.Background(), Config{Driver: "dbstub", DSN: "test", Host: "localhost", Port: 3306, Database: "report_db", Username: "user"},
 		WithMetrics(injFm), WithTracer(tracer.Wrap(injTp)))
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -409,8 +427,8 @@ func TestConnect_InjectedClients(t *testing.T) {
 	if n := injEx.count(); n != 1 {
 		t.Fatalf("injected tracer spans = %d, want 1", n)
 	}
-	if _, ok := injFm.lastCount(); !ok {
-		t.Fatal("injected metrics client received no count")
+	if _, ok := injFm.lastHist(); !ok {
+		t.Fatal("injected metrics client received no duration")
 	}
 
 	if n := defEx.count(); n != 0 {
@@ -446,14 +464,11 @@ func TestInstrument_FallsBackToOTelGlobal(t *testing.T) {
 		t.Fatalf("OTel global tracer spans = %d, want 1", n)
 	}
 	sp, _ := ex.last()
-	if sp.Name() != tracerScope {
-		t.Fatalf("span name = %q, want %q", sp.Name(), tracerScope)
+	if sp.Name() != "INSERT" {
+		t.Fatalf("span name = %q, want INSERT", sp.Name())
 	}
-	names := collectedMetrics(t, reader)
-	for _, want := range []string{metricCount, metricDuration} {
-		if !slices.Contains(names, want) {
-			t.Errorf("OTel global meter provider collected %v, want %q among them", names, want)
-		}
+	if names := collectedMetrics(t, reader); !slices.Equal(names, []string{metricDuration}) {
+		t.Errorf("OTel global meter provider collected %v, want [%q]", names, metricDuration)
 	}
 }
 
@@ -478,44 +493,41 @@ func TestNamedExecContext_Success(t *testing.T) {
 		t.Fatalf("args = %v, want [1 a]", q.args)
 	}
 
-	count, ok := fm.lastCount()
+	hist, ok := fm.lastHist()
 	if !ok {
-		t.Fatal("no count recorded")
+		t.Fatal("no duration recorded")
 	}
-	if count.name != metricCount || count.value != 1 {
-		t.Fatalf("count = %+v", count)
-	}
-	if count.attrs["db.system.name"] != "mysql" || count.attrs["db.operation.name"] != "INSERT" {
-		t.Fatalf("count attrs = %v", count.attrs)
-	}
-	if count.attrs["db.namespace"] != "report_db" {
-		t.Fatalf("count db.namespace = %v, want report_db", count.attrs["db.namespace"])
-	}
-	if count.attrs["server.address"] != "db.example.com" {
-		t.Fatalf("count server.address = %v, want db.example.com", count.attrs["server.address"])
-	}
-	if count.attrs["server.port"] != 3306 {
-		t.Fatalf("count server.port = %v, want 3306", count.attrs["server.port"])
-	}
-	if count.attrs["db.query.text"] == "" {
-		t.Fatalf("db.query.text missing on count: %v", count.attrs)
-	}
-	if count.attrs["db.response.status_code"] != "" {
-		t.Fatalf("status_code should be empty on success, got %v", count.attrs["db.response.status_code"])
-	}
-	if count.attrs["error.type"] != "" {
-		t.Fatalf("error.type should be empty on success, got %v", count.attrs["error.type"])
-	}
-	if hist, ok := fm.lastHist(); !ok || hist.name != metricDuration {
+	if hist.name != metricDuration {
 		t.Fatalf("hist = %+v", hist)
+	}
+	if hist.attrs["db.system.name"] != "mysql" || hist.attrs["db.operation.name"] != "INSERT" {
+		t.Fatalf("hist attrs = %v", hist.attrs)
+	}
+	if hist.attrs["db.namespace"] != "report_db" {
+		t.Fatalf("hist db.namespace = %v, want report_db", hist.attrs["db.namespace"])
+	}
+	if hist.attrs["server.address"] != "db.example.com" {
+		t.Fatalf("hist server.address = %v, want db.example.com", hist.attrs["server.address"])
+	}
+	if hist.attrs["server.port"] != 3306 {
+		t.Fatalf("hist server.port = %v, want 3306", hist.attrs["server.port"])
+	}
+	if _, ok := hist.attrs["db.query.text"]; ok {
+		t.Fatalf("db.query.text must not be on the metric: %v", hist.attrs)
+	}
+	if _, ok := hist.attrs["db.response.status_code"]; ok {
+		t.Fatalf("db.response.status_code must be absent on success: %v", hist.attrs)
+	}
+	if _, ok := hist.attrs["error.type"]; ok {
+		t.Fatalf("error.type must be absent on success: %v", hist.attrs)
 	}
 
 	sp, ok := ex.last()
 	if !ok {
 		t.Fatal("no span recorded")
 	}
-	if sp.Name() != tracerScope || sp.SpanKind() != trace.SpanKindClient {
-		t.Fatalf("span name=%q kind=%v", sp.Name(), sp.SpanKind())
+	if sp.Name() != "INSERT" || sp.SpanKind() != trace.SpanKindClient {
+		t.Fatalf("span name=%q kind=%v, want INSERT, client", sp.Name(), sp.SpanKind())
 	}
 	attrs := spanAttrs(sp)
 	if attrs["db.system.name"] != "mysql" || attrs["db.operation.name"] != "INSERT" {
@@ -527,15 +539,121 @@ func TestNamedExecContext_Success(t *testing.T) {
 	if attrs["db.query.text"] == "" {
 		t.Fatal("db.query.text missing on span")
 	}
-	if attrs["db.response.status_code"] != "" {
-		t.Fatalf("span status_code should be empty on success, got %v", attrs["db.response.status_code"])
+	if _, ok := attrs["db.response.status_code"]; ok {
+		t.Fatalf("span db.response.status_code must be absent on success: %v", attrs)
 	}
-	if attrs["error.type"] != "" {
-		t.Fatalf("span error.type should be empty on success, got %v", attrs["error.type"])
+	if _, ok := attrs["error.type"]; ok {
+		t.Fatalf("span error.type must be absent on success: %v", attrs)
 	}
 	if sp.Status().Code != codes.Unset {
 		t.Fatalf("status = %v, want unset", sp.Status().Code)
 	}
+}
+
+// TestInstrument_MetricAttributes checks the exact duration metric attribute set
+// and the span for a successful and a failing statement, using a real manual
+// reader so the collected metrics are what an exporter would see.
+func TestInstrument_MetricAttributes(t *testing.T) {
+	const query = "INSERT INTO t (id, name) VALUES (:id, :name)"
+	base := map[string]string{
+		"db.system.name":    "mysql",
+		"db.namespace":      "report_db",
+		"db.operation.name": "INSERT",
+		"server.address":    "db.example.com",
+		"server.port":       "3306",
+	}
+	withErr := func(code string) map[string]string {
+		m := maps.Clone(base)
+		m["error.type"] = code
+		m["db.response.status_code"] = code
+		return m
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want map[string]string
+	}{
+		{name: "success", want: base},
+		// sql.ErrNoRows is a normal "not found" result, like redis.Nil.
+		{name: "no rows", err: sql.ErrNoRows, want: base},
+		{name: "mysql error", err: &mysql.MySQLError{Number: 1062, Message: "duplicate entry"}, want: withErr("1062")},
+		{name: "unknown error", err: errors.New("boom"), want: func() map[string]string {
+			m := maps.Clone(base)
+			m["error.type"] = "_OTHER"
+			return m
+		}()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbx, _, ex := setupTest(t, &stubDB{})
+			c := dbx.(*dbConn)
+			reader := sdkmetric.NewManualReader()
+			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+			c.meta.metrics = metrics.Wrap(mp)
+
+			if tc.err != nil {
+				stubExecErr(t, tc.err)
+			}
+			_, _ = dbx.NamedExecContext(context.Background(), query, map[string]any{"id": int64(1), "name": "a"})
+
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &rm); err != nil {
+				t.Fatalf("collect: %v", err)
+			}
+			var names []string
+			var points []map[string]string
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					names = append(names, m.Name)
+					if m.Name != metricDuration {
+						continue
+					}
+					h, ok := m.Data.(metricdata.Histogram[float64])
+					if !ok || m.Unit != "s" {
+						t.Fatalf("%s: data %T unit %q, want histogram in s", m.Name, m.Data, m.Unit)
+					}
+					for _, dp := range h.DataPoints {
+						points = append(points, attrSetMap(dp.Attributes))
+					}
+				}
+			}
+			if !slices.Equal(names, []string{metricDuration}) {
+				t.Fatalf("metrics = %v, want only %q", names, metricDuration)
+			}
+			if len(points) != 1 {
+				t.Fatalf("duration data points = %d, want 1", len(points))
+			}
+			if !maps.Equal(points[0], tc.want) {
+				t.Fatalf("metric attributes = %v, want %v", points[0], tc.want)
+			}
+
+			sp, ok := ex.last()
+			if !ok {
+				t.Fatal("no span recorded")
+			}
+			if sp.Name() != "INSERT" || sp.SpanKind() != trace.SpanKindClient {
+				t.Fatalf("span name = %q, kind = %v, want INSERT, client", sp.Name(), sp.SpanKind())
+			}
+			_, failed := tc.want["error.type"]
+			if gotErr := sp.Status().Code == codes.Error; gotErr != failed {
+				t.Fatalf("span status = %v, want error status %t", sp.Status().Code, failed)
+			}
+			if got := spanAttrs(sp)["db.query.text"]; got != "INSERT INTO t (id, name) VALUES (?, ?)" {
+				t.Fatalf("span db.query.text = %v, want bound query", got)
+			}
+		})
+	}
+}
+
+// attrSetMap converts an OTel attribute set to string values for comparison.
+func attrSetMap(set attribute.Set) map[string]string {
+	out := make(map[string]string)
+	for _, kv := range set.ToSlice() {
+		out[string(kv.Key)] = kv.Value.String()
+	}
+	return out
 }
 
 func TestNamedExecContext_StructArg(t *testing.T) {
@@ -564,18 +682,18 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 		"UPDATE t SET name = :name WHERE id = :id",
 		map[string]any{"id": int64(1), "name": "a"})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("NamedExecContext() err = nil, want error")
 	}
 
-	count, ok := fm.lastCount()
+	hist, ok := fm.lastHist()
 	if !ok {
-		t.Fatal("no count recorded")
+		t.Fatal("no duration recorded")
 	}
-	if count.attrs["error.type"] != "duplicate entry" {
-		t.Fatalf("error.type = %v, want the error message", count.attrs["error.type"])
+	if hist.attrs["error.type"] != "1066" {
+		t.Fatalf("error.type = %v, want 1066", hist.attrs["error.type"])
 	}
-	if count.attrs["db.response.status_code"] != "1066" {
-		t.Fatalf("status_code = %v, want 1066", count.attrs["db.response.status_code"])
+	if hist.attrs["db.response.status_code"] != "1066" {
+		t.Fatalf("status_code = %v, want 1066", hist.attrs["db.response.status_code"])
 	}
 
 	sp, ok := ex.last()
@@ -586,8 +704,8 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 		t.Fatalf("status = %v, want error", sp.Status().Code)
 	}
 	attrs := spanAttrs(sp)
-	if attrs["error.type"] != "duplicate entry" {
-		t.Fatalf("span error.type = %v, want the error message", attrs["error.type"])
+	if attrs["error.type"] != "1066" {
+		t.Fatalf("span error.type = %v, want 1066", attrs["error.type"])
 	}
 	if attrs["db.response.status_code"] != "1066" {
 		t.Fatalf("span status_code = %v, want 1066", attrs["db.response.status_code"])
@@ -600,18 +718,18 @@ func TestBindFailure_EmitsNoTelemetry(t *testing.T) {
 	_, err := dbx.NamedExecContext(context.Background(),
 		"UPDATE t SET a = :missing WHERE id = :id", map[string]any{"id": int64(1)})
 	if err == nil {
-		t.Fatal("expected bind error for missing key")
+		t.Fatal("NamedExecContext() err = nil, want bind error for missing key")
 	}
 
 	if got := numRecordedQueries(t); got != 0 {
 		t.Fatalf("query executed on bind failure: %d", got)
 	}
 	if n := ex.count(); n != 0 {
-		t.Fatalf("expected no spans, got %d", n)
+		t.Fatalf("spans = %d, want 0", n)
 	}
 	nc, nh := fm.nums()
 	if nc != 0 || nh != 0 {
-		t.Fatalf("expected no metrics, got counts=%d hists=%d", nc, nh)
+		t.Fatalf("counts = %d, hists = %d, want 0, 0", nc, nh)
 	}
 }
 
@@ -662,8 +780,8 @@ func TestNamedSelectContext_NilArg(t *testing.T) {
 	if n := ex.count(); n != 1 {
 		t.Fatalf("spans = %d, want 1", n)
 	}
-	if _, ok := fm.lastCount(); !ok {
-		t.Fatal("no count metric recorded")
+	if _, ok := fm.lastHist(); !ok {
+		t.Fatal("no duration recorded")
 	}
 }
 
@@ -708,8 +826,8 @@ func TestBeginTx_Commit(t *testing.T) {
 	if got := numRecordedQueries(t); got != 1 {
 		t.Fatalf("executed %d queries, want 1", got)
 	}
-	if count, ok := fm.lastCount(); !ok || count.attrs["db.operation.name"] != "INSERT" {
-		t.Fatalf("count = %+v", count)
+	if hist, ok := fm.lastHist(); !ok || hist.attrs["db.operation.name"] != "INSERT" {
+		t.Fatalf("hist = %+v", hist)
 	}
 }
 
@@ -732,8 +850,8 @@ func TestBeginTx_Rollback(t *testing.T) {
 	if got := numRecordedQueries(t); got != 1 {
 		t.Fatalf("executed %d queries, want 1", got)
 	}
-	if count, ok := fm.lastCount(); !ok || count.attrs["db.operation.name"] != "DELETE" {
-		t.Fatalf("count = %+v", count)
+	if hist, ok := fm.lastHist(); !ok || hist.attrs["db.operation.name"] != "DELETE" {
+		t.Fatalf("hist = %+v", hist)
 	}
 }
 
@@ -743,8 +861,13 @@ func TestOperationName(t *testing.T) {
 	}{
 		{"select", "SELECT id FROM t", "SELECT"},
 		{"select", "  insert into t (a) values (:a)", "INSERT"},
-		{"exec", ":named", "exec"},
-		{"get", "", "get"},
+		// sqlcommenter-style and line comments, and a parenthesised query.
+		{"get", "/* app=report */ SELECT id FROM t", "SELECT"},
+		{"exec", "-- purge\n  DELETE FROM t", "DELETE"},
+		{"select", "(SELECT 1) UNION (SELECT 2)", "SELECT"},
+		// No recognised verb: the method name, upper-cased like the verbs.
+		{"exec", ":named", "EXEC"},
+		{"get", "", "GET"},
 	}
 	for _, c := range cases {
 		if got := operationName(c.op, c.query); got != c.want {
@@ -868,21 +991,21 @@ func TestPostgresErrorTelemetry(t *testing.T) {
 	_, err := dbx.NamedExecContext(context.Background(),
 		"INSERT INTO t (id) VALUES (:id)", map[string]any{"id": int64(1)})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("NamedExecContext() err = nil, want error")
 	}
 
-	count, ok := fm.lastCount()
+	hist, ok := fm.lastHist()
 	if !ok {
-		t.Fatal("no count recorded")
+		t.Fatal("no duration recorded")
 	}
-	if count.attrs["db.system.name"] != "postgresql" {
-		t.Fatalf("db.system.name = %v, want postgresql", count.attrs["db.system.name"])
+	if hist.attrs["db.system.name"] != "postgresql" {
+		t.Fatalf("db.system.name = %v, want postgresql", hist.attrs["db.system.name"])
 	}
-	if count.attrs["db.response.status_code"] != "23505" {
-		t.Fatalf("status_code = %v, want 23505", count.attrs["db.response.status_code"])
+	if hist.attrs["db.response.status_code"] != "23505" {
+		t.Fatalf("status_code = %v, want 23505", hist.attrs["db.response.status_code"])
 	}
-	if count.attrs["error.type"] != "duplicate key value violates unique constraint" {
-		t.Fatalf("error.type = %v", count.attrs["error.type"])
+	if hist.attrs["error.type"] != "23505" {
+		t.Fatalf("error.type = %v, want 23505", hist.attrs["error.type"])
 	}
 
 	sp, ok := ex.last()
@@ -945,7 +1068,7 @@ func TestINExpansionErrors(t *testing.T) {
 	dbx, fm, ex := setupTest(t, &stubDB{})
 
 	_, err := dbx.NamedExecContext(context.Background(),
-		"DELETE FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64{}})
+		"DELETE FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64(nil)})
 	if err == nil || !strings.Contains(err.Error(), "empty slice") {
 		t.Fatalf("error = %v, want empty slice error", err)
 	}

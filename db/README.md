@@ -21,8 +21,9 @@ per executed statement, for **MySQL and PostgreSQL**.
   interfaces describe the contracts; implementations are unexported.
 - **Transactions** — `Begin(ctx)` returns a `Tx` with the same query methods
   plus `Commit` / `Rollback`.
-- **Telemetry** — every executed statement records a client span (`db.query`)
-  and `db.client.operation.{count,duration}` metrics with OTel DB attributes.
+- **Telemetry** — every executed statement records a client span named after
+  its operation (for example `SELECT`) and a `db.client.operation.duration`
+  histogram sample with OTel DB attributes.
   Binding failures return without any telemetry.
 - **Sane pool defaults** for both engines, applied by `Config.SetDefaults`.
 - **Injectable telemetry** — `WithMetrics` / `WithTracer` override the
@@ -92,7 +93,7 @@ mysqlCfg := db.Config{
 ### 2. Connect
 
 ```go
-pool, err := db.Connect(cfg) // applies SetDefaults, opens, pings
+pool, err := db.Connect(ctx, cfg) // applies SetDefaults, opens, pings; ctx bounds the ping
 if err != nil { /* handle */ }
 defer pool.Close()
 ```
@@ -162,7 +163,7 @@ if err := tx.Commit(); err != nil { /* handle */ }
 ### 5. (Optional) Inject telemetry clients
 
 ```go
-pool, err := db.Connect(cfg, db.WithMetrics(mc), db.WithTracer(tc))
+pool, err := db.Connect(ctx, cfg, db.WithMetrics(mc), db.WithTracer(tc))
 ```
 
 When not injected, statements are instrumented through the package-level
@@ -197,7 +198,7 @@ When not injected, statements are instrumented through the package-level
   such as `default_query_exec_mode` (useful behind PgBouncer) are not exposed as
   `Config` fields — set them through `DSN`.
 - **Errors.** `db.response.status_code` is the five-character SQLSTATE (for
-  example `23505`); `error.type` is the server message. `errors.As` with
+  example `23505`), and `error.type` carries the same code. `errors.As` with
   `*pgconn.PgError` still works because the original error is returned.
 
 ## TLS / SSL
@@ -221,13 +222,18 @@ config name, set the `tls` parameter through `DSN`.
 
 ## Telemetry attributes
 
-Per executed statement: `db.system.name` (`mysql` or `postgresql`),
-`db.namespace` (the database name), `server.address` and `server.port` (from
-`Config` or parsed from `DSN`, when known), `db.operation.name` (leading SQL
-verb, e.g. `SELECT`), `db.query.text`, `db.response.status_code` (MySQL error
-number or PostgreSQL SQLSTATE, empty on success), and `error.type` (error
-message, empty on success). Transaction begin/commit/rollback are lifecycle
-operations and are not instrumented.
+Per executed statement, the span (named after `db.operation.name`) and the
+`db.client.operation.duration` histogram (seconds) carry `db.system.name`
+(`mysql` or `postgresql`), `db.namespace` (the database name), `server.address`
+and `server.port` (from `Config` or parsed from `DSN`, when known), and
+`db.operation.name` (leading SQL verb, e.g. `SELECT`). On failure they also
+carry `error.type` (the MySQL error number, the PostgreSQL SQLSTATE, `timeout`
+for a context deadline or network timeout, `canceled`, or `_OTHER`) and, when
+the driver reports a code, `db.response.status_code`. `sql.ErrNoRows` is a
+normal "not found" result, not a failure: it is still returned to the caller,
+but the span and metric record it as a success. Only the span carries `db.query.text`; it stays off
+the metric to keep cardinality bounded. Transaction begin/commit/rollback are
+lifecycle operations and are not instrumented.
 
 ## Config reference
 
@@ -250,12 +256,62 @@ operations and are not instrumented.
 | Symbol | Description |
 | --- | --- |
 | `Config` | Connection + pool settings; `SetDefaults()`, `Validate()` |
-| `Connect(cfg, opts...)` | Open + ping an instrumented `DB` |
+| `Connect(ctx, cfg, opts...)` | Open + ping an instrumented `DB` |
 | `WithMetrics` / `WithTracer` | Telemetry injection options |
 | `Queryer` | `NamedSelectContext`, `NamedGetContext` |
 | `Execer` | `NamedExecContext` |
 | `DB` | `Begin`, `Close` + `Queryer` + `Execer` |
 | `Tx` | `Commit`, `Rollback` + `Queryer` + `Execer` |
+
+## Testing your code
+
+Code that uses this package can be unit-tested without a server by pointing
+`Config` at [go-sqlmock](https://github.com/DATA-DOG/go-sqlmock). Importing
+sqlmock registers a `sqlmock` driver, and `sqlmock.NewWithDSN` creates a named
+mock database. `Config{Driver: "sqlmock", DSN: ...}` uses it as-is, because the
+package accepts any driver name when `DSN` is set.
+
+```go
+package mydao_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/fikrimohammad/go-dev-sdk/db"
+)
+
+func TestInsert(t *testing.T) {
+	ctx := context.Background()
+
+	// MonitorPingsOption(true) makes ExpectPing effective. Connect pings, so the
+	// ping must be expected before Connect runs.
+	_, mock, err := sqlmock.NewWithDSN("sqlmock_db_0", sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectPing()
+	mock.ExpectExec("INSERT INTO t").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	conn, err := db.Connect(ctx, db.Config{Driver: "sqlmock", DSN: "sqlmock_db_0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Unknown drivers use "?" placeholders, so the mock sees "INSERT INTO t (id) VALUES (?)".
+	if _, err := conn.NamedExecContext(ctx, "INSERT INTO t (id) VALUES (:id)", map[string]any{"id": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+The `DB`, `Tx`, `Queryer`, and `Execer` interfaces can also be mocked with
+gomock, if a test needs to control return values rather than SQL text.
 
 ## Testing against real databases
 
