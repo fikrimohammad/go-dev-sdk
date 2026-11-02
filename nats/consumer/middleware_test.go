@@ -209,7 +209,7 @@ func TestHandle_Success(t *testing.T) {
 		t.Fatalf("HandleMsg: %v", err)
 	}
 	if !msg.acked {
-		t.Fatal("expected message to be acked")
+		t.Fatal("acked = false, want true")
 	}
 	if msg.nacked {
 		t.Fatal("message was unexpectedly nacked")
@@ -280,10 +280,10 @@ func TestHandle_Error(t *testing.T) {
 	msg := testMsg("hello")
 	err := a.HandleMsg(context.Background(), msg)
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("error = nil, want non-nil")
 	}
 	if !msg.nacked {
-		t.Fatal("expected message to be nacked")
+		t.Fatal("nacked = false, want true")
 	}
 	if msg.acked {
 		t.Fatal("message was unexpectedly acked")
@@ -308,10 +308,10 @@ func TestHandle_RetryBackoff(t *testing.T) {
 	msg := testMsg("hello")
 	err := a.HandleMsg(context.Background(), msg)
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("error = nil, want non-nil")
 	}
 	if !msg.nacked {
-		t.Fatal("expected message to be nacked")
+		t.Fatal("nacked = false, want true")
 	}
 	if msg.nakDelay != delay {
 		t.Fatalf("nakDelay = %v, want %v", msg.nakDelay, delay)
@@ -326,10 +326,10 @@ func TestHandle_PanicRecovery(t *testing.T) {
 	msg := testMsg("hello")
 	err := a.HandleMsg(context.Background(), msg)
 	if err == nil {
-		t.Fatal("expected error from recovered panic")
+		t.Fatal("error = nil after panic, want non-nil")
 	}
 	if !msg.nacked {
-		t.Fatal("expected message to be nacked after panic")
+		t.Fatal("nacked = false after panic, want true")
 	}
 }
 

@@ -62,6 +62,10 @@ type meta struct {
 	serverAddr string // server.address, from the first endpoint
 	serverPort int    // server.port
 
+	// base holds the baseAttrs of the topic and group. It is built once by
+	// newHandlerAdapter and shared read-only by the middleware.
+	base map[string]any
+
 	// retryBackoff is the NakWithDelay used for a failed message, or zero for Nak.
 	retryBackoff time.Duration
 
@@ -176,7 +180,7 @@ func (m meta) tracerMW(next consumeHandler) consumeHandler {
 
 		ctx, span := m.tracerClient().Tracer(tracerScope).Start(ctx, m.processSpanName(),
 			trace.WithSpanKind(trace.SpanKindConsumer),
-			trace.WithAttributes(tracer.Attrs(withAttrs(m.baseAttrs(), messageAttrs(msg)))...),
+			trace.WithAttributes(tracer.Attrs(withAttrs(m.base, messageAttrs(msg)))...),
 		)
 		defer span.End()
 
@@ -232,14 +236,13 @@ func (m meta) metricsMW(next consumeHandler) consumeHandler {
 		start := time.Now()
 		err := next(ctx, msg)
 
-		base := m.baseAttrs()
-		duration := base
+		duration := m.base
 		if err != nil {
-			duration = withAttrs(base, map[string]any{string(otelsemconv.ErrorTypeKey): wire.ErrorType(err)})
+			duration = withAttrs(m.base, map[string]any{string(otelsemconv.ErrorTypeKey): wire.ErrorType(err)})
 		}
 		c := m.metricsClient()
 		_ = c.Record(ctx, processDurationInstrument, time.Since(start).Seconds(), duration)
-		_ = c.Add(ctx, consumedInstrument, 1, base)
+		_ = c.Add(ctx, consumedInstrument, 1, m.base)
 		return err
 	}
 }

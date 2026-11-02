@@ -1,3 +1,6 @@
+// Package producer publishes messages to NATS JetStream streams. A [Producer]
+// owns the stream of each registered topic and sends messages synchronously,
+// delayed through message schedules, or asynchronously.
 package producer
 
 import (
@@ -183,7 +186,6 @@ type Client interface {
 //  4. Use PublishSync/PublishAsync to send messages
 //  5. Call Shutdown(ctx) when done
 type Producer struct {
-	appName         string
 	producerFactory producerFactory
 
 	metrics metrics.Client
@@ -228,7 +230,6 @@ func New(info identity.Info, opts ...Option) (*Producer, error) {
 	}
 
 	return &Producer{
-		appName:         info.Name,
 		producerFactory: defaultProducerFactory,
 		metrics:         o.metrics,
 		tracer:          o.tracer,
@@ -243,7 +244,7 @@ func (p *Producer) Register(cfg Config) error {
 	defer p.mu.Unlock()
 
 	if p.run != nil {
-		return errors.New("producer: cannot register after Start")
+		return ErrAlreadyStarted
 	}
 
 	cfg = cfg.SetDefaults()

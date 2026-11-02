@@ -239,7 +239,7 @@ func TestPublishSync_Error(t *testing.T) {
 
 	err := p.PublishSync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("error = nil, want non-nil")
 	}
 
 	sp, ok := ex.last()
@@ -305,7 +305,7 @@ func TestPublishAsync_SendError(t *testing.T) {
 
 	err := p.PublishAsync(context.Background(), Message{Topic: "reporting", Tag: "tag", Key: "", Body: []byte("hello")}, nil)
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("error = nil, want non-nil")
 	}
 
 	sp, ok := ex.last()
@@ -448,5 +448,19 @@ func TestPublish_MetricAttributes(t *testing.T) {
 	assertAttrs(t, spanAttrs(badSpan), map[string]any{"error.type": "10071"})
 	if _, ok := spanAttrs(badSpan)["messaging.message.id"]; ok {
 		t.Error("failed span has messaging.message.id, want none without an ack")
+	}
+}
+
+func TestNatsHeaderCarrier(t *testing.T) {
+	t.Parallel()
+
+	c := natsHeaderCarrier{header: nats.Header{}}
+	c.Set("traceparent", "00-abc")
+
+	if got := c.Get("traceparent"); got != "00-abc" {
+		t.Errorf("Get(traceparent) = %q, want %q", got, "00-abc")
+	}
+	if got, want := c.Keys(), []string{"traceparent"}; !slices.Equal(got, want) {
+		t.Errorf("Keys() = %v, want %v", got, want)
 	}
 }

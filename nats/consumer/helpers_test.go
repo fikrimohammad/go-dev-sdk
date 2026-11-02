@@ -1,3 +1,5 @@
+// This file holds the shared test helpers for package consumer: an in-process
+// JetStream server, a recording logger, and metric collection.
 package consumer
 
 import (

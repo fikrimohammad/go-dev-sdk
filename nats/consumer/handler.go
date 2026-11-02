@@ -112,6 +112,7 @@ func newHandlerAdapter(m meta, cfg Config, handlerFunc HandlerFunc) (*handlerAda
 	}
 
 	m.retryBackoff = cfg.RetryBackoff
+	m.base = m.baseAttrs()
 	h := &handlerAdapter{
 		meta:           m,
 		handlerFunc:    handlerFunc,

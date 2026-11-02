@@ -1,3 +1,5 @@
+// This file holds the transport mocks for package consumer tests: a consumer, and
+// a JetStream message that records its settlement.
 package consumer
 
 import (

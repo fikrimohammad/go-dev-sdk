@@ -129,7 +129,7 @@ func TestConfig_Validate_Errors(t *testing.T) {
 			t.Parallel()
 			err := tc.cfg.SetDefaults().Validate()
 			if err == nil {
-				t.Fatal("Validate: expected error")
+				t.Fatal("Validate() = nil, want error")
 			}
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Validate() = %v, want it to wrap %v", err, tc.want)
@@ -143,7 +143,7 @@ func TestConfig_Validate_Aggregates(t *testing.T) {
 
 	err := Config{ConsumeFromWhere: "weird"}.SetDefaults().Validate()
 	if err == nil {
-		t.Fatal("Validate: expected error")
+		t.Fatal("Validate() = nil, want error")
 	}
 	if !errors.Is(err, ErrEndpointsRequired) {
 		t.Fatalf("Validate() = %v, want endpoints error", err)
@@ -268,11 +268,11 @@ func TestConfig_BuildConsumerConfig(t *testing.T) {
 		ConsumeFromWhere: ConsumeFromTimestamp,
 		ConsumeTimestamp: "2026-01-01T00:00:00Z",
 	}.SetDefaults()
-	jsCfgTs := tsCfg.buildConsumerConfig("durable")
-	if jsCfgTs.DeliverPolicy != jetstream.DeliverByStartTimePolicy {
-		t.Errorf("DeliverPolicy = %v, want DeliverByStartTimePolicy", jsCfgTs.DeliverPolicy)
+	jsCfgTS := tsCfg.buildConsumerConfig("durable")
+	if jsCfgTS.DeliverPolicy != jetstream.DeliverByStartTimePolicy {
+		t.Errorf("DeliverPolicy = %v, want DeliverByStartTimePolicy", jsCfgTS.DeliverPolicy)
 	}
-	if jsCfgTs.OptStartTime == nil {
+	if jsCfgTS.OptStartTime == nil {
 		t.Error("OptStartTime is nil")
 	}
 }

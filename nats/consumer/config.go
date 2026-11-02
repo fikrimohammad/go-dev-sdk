@@ -10,11 +10,18 @@ import (
 	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
 )
 
+// Defaults applied by Config.SetDefaults when the corresponding field is unset.
 const (
-	DefaultTimeout          = 60 * time.Second
+	// DefaultTimeout is the AckWait used when Config.Timeout is unset.
+	DefaultTimeout = 60 * time.Second
+	// DefaultMaxRetryAttempts is the MaxDeliver used when Config.MaxRetryAttempts
+	// is unset.
 	DefaultMaxRetryAttempts = 5
-	DefaultMaxConcurrent    = 10
-	DefaultTags             = "*"
+	// DefaultMaxConcurrent is the number of messages handled at once when
+	// Config.MaxConcurrent is unset.
+	DefaultMaxConcurrent = 10
+	// DefaultTags is the tag that selects every message of the topic.
+	DefaultTags = "*"
 )
 
 // ConsumeFromWhere values for Config.ConsumeFromWhere.
@@ -30,19 +37,30 @@ const (
 
 // Config describes a single NATS JetStream consumer instance.
 type Config struct {
+	// Endpoints is the list of NATS server addresses (e.g. "nats://127.0.0.1:4222" or "127.0.0.1:4222").
 	Endpoints []string `yaml:"endpoints" json:"endpoints"`
-	Topic     string   `yaml:"topic" json:"topic"`
-	Group     string   `yaml:"group" json:"group"`
-	Tags      []string `yaml:"consumption_tags" json:"consumption_tags"`
+	// Topic is the JetStream stream name the consumer reads from.
+	Topic string `yaml:"topic" json:"topic"`
+	// Group names the durable consumer, which is {appName}_{Topic}_{Group}. Each
+	// group gets its own copy of every message.
+	Group string `yaml:"group" json:"group"`
+	// Tags selects the messages to deliver: each tag is a sub-subject of Topic,
+	// and "*" selects every message of the topic. Defaults to ["*"].
+	Tags []string `yaml:"consumption_tags" json:"consumption_tags"`
 	// Timeout is the JetStream AckWait: how long the server waits for an ack
 	// before it redelivers. While a handler runs, the consumer sends an InProgress
 	// heartbeat every Timeout/2.
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
 	// HandlerTimeout bounds each handler call. Its context is canceled when the
 	// deadline passes or when Shutdown starts. Zero uses Timeout.
-	HandlerTimeout   time.Duration `yaml:"handler_timeout" json:"handler_timeout"`
-	MaxRetryAttempts int           `yaml:"max_retry_attempts" json:"max_retry_attempts"`
-	MaxConcurrent    int           `yaml:"max_concurrent" json:"max_concurrent"`
+	HandlerTimeout time.Duration `yaml:"handler_timeout" json:"handler_timeout"`
+	// MaxRetryAttempts is the JetStream MaxDeliver: the number of deliveries
+	// before the server stops redelivering a message. Defaults to
+	// DefaultMaxRetryAttempts. There is no dead-letter queue.
+	MaxRetryAttempts int `yaml:"max_retry_attempts" json:"max_retry_attempts"`
+	// MaxConcurrent is the number of messages handled at once. Defaults to
+	// DefaultMaxConcurrent.
+	MaxConcurrent int `yaml:"max_concurrent" json:"max_concurrent"`
 
 	// ConsumeFromWhere is "last" (default), "first", or "timestamp".
 	ConsumeFromWhere string `yaml:"consume_from_where" json:"consume_from_where"`
@@ -53,11 +71,15 @@ type Config struct {
 	// Zero uses the SDK default (immediate NAK).
 	RetryBackoff time.Duration `yaml:"retry_backoff" json:"retry_backoff"`
 
-	// Optional authentication parameters.
-	Token           string `yaml:"token" json:"token"`
-	Username        string `yaml:"username" json:"username"`
-	Password        string `yaml:"password" json:"password"`
-	NKey            string `yaml:"nkey" json:"nkey"`
+	// Token is the access token for token authentication.
+	Token string `yaml:"token" json:"token"`
+	// Username is the user for userinfo authentication, used with Password.
+	Username string `yaml:"username" json:"username"`
+	// Password is the password for userinfo authentication, used with Username.
+	Password string `yaml:"password" json:"password"`
+	// NKey is the path to an NKey user seed file.
+	NKey string `yaml:"nkey" json:"nkey"`
+	// CredentialsFile is the path to a NATS credentials file.
 	CredentialsFile string `yaml:"credentials_file" json:"credentials_file"`
 }
 

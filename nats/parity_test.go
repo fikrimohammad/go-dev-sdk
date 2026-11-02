@@ -1,3 +1,6 @@
+// This file holds the parity tests for the producer and consumer packages. They
+// run both against an in-process JetStream server: dot rejection, delivery to
+// several groups, redelivery after a failure, and concurrent handlers.
 package nats_test
 
 import (
@@ -165,10 +168,9 @@ func TestMultiConsumerParity(t *testing.T) {
 	}
 
 	err = p.Register(producer.Config{
-		Endpoints:        []string{serverURL},
-		Topic:            topicName,
-		Timeout:          10 * time.Second,
-		MaxRetryAttempts: 3,
+		Endpoints: []string{serverURL},
+		Topic:     topicName,
+		Timeout:   10 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("p.Register: %v", err)
@@ -410,7 +412,7 @@ func TestConsumerRetryRedelivery(t *testing.T) {
 	select {
 	case <-delivered:
 		if attempts.Load() != 2 {
-			t.Errorf("expected 2 attempts (1 failure + 1 redelivery), got %d", attempts.Load())
+			t.Errorf("attempts = %d, want 2 (1 failure + 1 redelivery)", attempts.Load())
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timeout waiting for redelivery, attempts = %d", attempts.Load())
@@ -505,6 +507,6 @@ func TestConsumerConcurrentExecution(t *testing.T) {
 	wg.Wait()
 
 	if maxObserved.Load() < 2 {
-		t.Errorf("expected concurrent execution (maxObserved > 1), got %d", maxObserved.Load())
+		t.Errorf("maxObserved = %d, want more than 1", maxObserved.Load())
 	}
 }

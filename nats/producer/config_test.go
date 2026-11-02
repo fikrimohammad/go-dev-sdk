@@ -13,32 +13,23 @@ func TestConfig_SetDefaults(t *testing.T) {
 	if c.Timeout != DefaultTimeout {
 		t.Fatalf("Timeout = %v, want %v", c.Timeout, DefaultTimeout)
 	}
-	if c.MaxRetryAttempts != DefaultMaxRetryAttempts {
-		t.Fatalf("MaxRetryAttempts = %d, want %d", c.MaxRetryAttempts, DefaultMaxRetryAttempts)
-	}
 }
 
 func TestConfig_SetDefaults_NegativeGetsDefault(t *testing.T) {
 	t.Parallel()
 
-	c := Config{Timeout: -time.Second, MaxRetryAttempts: -1}.SetDefaults()
+	c := Config{Timeout: -time.Second}.SetDefaults()
 	if c.Timeout != DefaultTimeout {
 		t.Fatalf("Timeout = %v, want %v", c.Timeout, DefaultTimeout)
-	}
-	if c.MaxRetryAttempts != DefaultMaxRetryAttempts {
-		t.Fatalf("MaxRetryAttempts = %d, want %d", c.MaxRetryAttempts, DefaultMaxRetryAttempts)
 	}
 }
 
 func TestConfig_SetDefaults_Explicit(t *testing.T) {
 	t.Parallel()
 
-	c := Config{Timeout: 5 * time.Second, MaxRetryAttempts: 5}.SetDefaults()
+	c := Config{Timeout: 5 * time.Second}.SetDefaults()
 	if c.Timeout != 5*time.Second {
 		t.Fatalf("Timeout = %v, want 5s", c.Timeout)
-	}
-	if c.MaxRetryAttempts != 5 {
-		t.Fatalf("MaxRetryAttempts = %d, want 5", c.MaxRetryAttempts)
 	}
 }
 
@@ -69,7 +60,7 @@ func TestConfig_Validate_Errors(t *testing.T) {
 			t.Parallel()
 			err := tc.cfg.SetDefaults().Validate()
 			if err == nil {
-				t.Fatal("Validate: expected error")
+				t.Fatal("Validate() = nil, want error")
 			}
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Validate() = %v, want it to wrap %v", err, tc.want)
@@ -83,7 +74,7 @@ func TestConfig_Validate_Aggregates(t *testing.T) {
 
 	err := Config{}.SetDefaults().Validate()
 	if err == nil {
-		t.Fatal("Validate: expected error")
+		t.Fatal("Validate() = nil, want error")
 	}
 	if !errors.Is(err, ErrEndpointsRequired) {
 		t.Fatalf("Validate() = %v, want endpoints error", err)

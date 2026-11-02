@@ -66,9 +66,6 @@ func TestNew(t *testing.T) {
 			if !tt.wantErr && p == nil {
 				t.Error("New() returned nil producer without error")
 			}
-			if !tt.wantErr && p.appName != tt.appName {
-				t.Errorf("New() appName = %q, want %q", p.appName, tt.appName)
-			}
 		})
 	}
 }
@@ -524,7 +521,7 @@ func TestProducerPublishSyncWithDelay_Error(t *testing.T) {
 
 	err = p.PublishSyncWithDelay(context.Background(), Message{Topic: "test-topic", Tag: "tag", Key: "key", Body: []byte("hello")}, 5*time.Second)
 	if err == nil {
-		t.Error("PublishSyncWithDelay() expected error, got nil")
+		t.Error("PublishSyncWithDelay() = nil, want error")
 	}
 }
 
@@ -686,12 +683,12 @@ func TestProducerRegisterAfterStart(t *testing.T) {
 	startStubbed(t, p, map[string]jsProducer{"topic1": &mockProducer{}})
 
 	err = p.Register(Config{Endpoints: []string{"localhost:4222"}, Topic: "new-topic"})
-	if err == nil {
-		t.Error("Register() after Start() should fail")
+	if !errors.Is(err, ErrAlreadyStarted) {
+		t.Errorf("Register() after Start() = %v, want ErrAlreadyStarted", err)
 	}
 }
 
-func TestProducerGetProducer(t *testing.T) {
+func TestProducerFor(t *testing.T) {
 	t.Parallel()
 
 	p, err := New(testAppInfo)
@@ -738,7 +735,7 @@ func TestProducerStartError(t *testing.T) {
 	}
 
 	if err := p.Start(context.Background()); err == nil {
-		t.Error("Start() expected error, got nil")
+		t.Error("Start() = nil, want error")
 	}
 }
 

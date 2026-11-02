@@ -425,8 +425,8 @@ func TestConsumerRegisterAfterStart(t *testing.T) {
 	handler := func(ctx context.Context, msg Message) error { return nil }
 
 	err = c.Register(cfg, handler)
-	if err == nil {
-		t.Error("Register() after Start() should fail")
+	if !errors.Is(err, ErrAlreadyStarted) {
+		t.Errorf("Register() after Start() = %v, want ErrAlreadyStarted", err)
 	}
 }
 
@@ -445,7 +445,7 @@ func TestConsumerRegisterNilHandler(t *testing.T) {
 	}
 	err = c.Register(cfg, nil)
 	if err == nil {
-		t.Fatal("Register(nil handler) expected error, got nil")
+		t.Fatal("Register(nil handler) = nil, want error")
 	}
 }
 

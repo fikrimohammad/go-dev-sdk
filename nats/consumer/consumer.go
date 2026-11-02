@@ -1,3 +1,6 @@
+// Package consumer runs durable NATS JetStream consumers. A [Consumer] passes each
+// delivered message to a [HandlerFunc] and settles the message from the handler's
+// error.
 package consumer
 
 import (
@@ -239,7 +242,7 @@ func (c *Consumer) Register(cfg Config, handlerFunc HandlerFunc) error {
 	defer c.mu.Unlock()
 
 	if c.started {
-		return errors.New("consumer: cannot register after Start")
+		return ErrAlreadyStarted
 	}
 
 	if handlerFunc == nil {

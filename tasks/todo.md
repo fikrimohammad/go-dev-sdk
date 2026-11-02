@@ -323,11 +323,11 @@ and the connection setup:
 - Add `nats` to `STRICT_LINT_MODULES`.
 
 **Acceptance criteria:**
-- [ ] Full-tree lint 0 and gostyle 0 in nats; `nats` is in the strict list; no stale `//nolint`.
-- [ ] README snippets compile; the orchestrator checks them in a scratch module.
+- [x] Full-tree lint 0 and gostyle 0 in nats; `nats` is in the strict list; no stale `//nolint`.
+- [x] README snippets compile; the orchestrator checks them in a scratch module.
 
 **Verification:**
-- [ ] nats module checks (strict).
+- [x] nats module checks (strict).
 
 **Dependencies:** T9 · **Files:** `nats/**/*.go` (docs and renames), `nats/README.md` or the package READMEs, `.github/workflows/ci.yml` · **Scope:** M
 

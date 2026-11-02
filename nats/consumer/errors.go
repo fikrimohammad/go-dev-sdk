@@ -5,6 +5,9 @@ import "errors"
 // Consumer-related sentinel errors. Callers can match them with errors.Is.
 var (
 	ErrConsumerExists = errors.New("consumer: already registered for this topic and group")
+	// ErrAlreadyStarted is returned by Register after Start. Register first, then
+	// Start.
+	ErrAlreadyStarted = errors.New("consumer: cannot register after Start")
 	ErrInvalidAppName = errors.New("consumer: service name must not contain dots")
 
 	// ErrNoRetry marks a handler error that must not be retried. Wrap it, e.g.
