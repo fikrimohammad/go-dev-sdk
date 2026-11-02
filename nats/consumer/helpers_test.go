@@ -5,6 +5,7 @@ package consumer
 
 import (
 	"context"
+	"net"
 	"net/url"
 	"slices"
 	"strconv"
@@ -40,16 +41,16 @@ func startTestNATSServer(t *testing.T) *natsserver.Server {
 		t.Fatalf("natsserver.NewServer() error = %v", err)
 	}
 
+	t.Cleanup(func() {
+		ns.Shutdown()
+		ns.WaitForShutdown()
+	})
+
 	go ns.Start()
 
 	if !ns.ReadyForConnections(10 * time.Second) {
 		t.Fatal("NATS test server not ready for connections")
 	}
-
-	t.Cleanup(func() {
-		ns.Shutdown()
-		ns.WaitForShutdown()
-	})
 
 	return ns
 }
@@ -71,8 +72,21 @@ func connectTestClient(t *testing.T, ns *natsserver.Server) *nats.Conn {
 // testAppInfo is the service identity used across the consumer tests.
 var testAppInfo = identity.Info{Name: "test-app"}
 
-// deadEndpoint is an address nothing listens on, so a dial to it never connects.
-const deadEndpoint = "nats://127.0.0.1:1"
+// deadEndpoint returns a NATS URL on a loopback port that nothing listens on. The
+// port is taken from a listener that is closed again, so a dial to it is refused.
+func deadEndpoint(t *testing.T) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() error = %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	return "nats://" + addr
+}
 
 // pullFixture is a stream for one topic on a server, with a durable pull consumer
 // on it, so handler tests run on real deliveries. Its connection closes when the
@@ -228,10 +242,11 @@ func serverAttrs(t *testing.T, ns *natsserver.Server) (string, int) {
 	return u.Hostname(), port
 }
 
-// unmetaMsg is a jetstream.Msg whose metadata cannot be read. A delivered message
-// always has metadata, and the jetstream package offers no way to build a message
-// without it, so the no-metadata path of the adapter is driven by this fake. It
-// embeds a nil jetstream.Msg, so only the methods the adapter calls are defined.
+// unmetaMsg is a jetstream.Msg whose metadata cannot be read. The metadata-error
+// branch is reachable only with a malformed ACK reply subject, which the server
+// never produces, so the adapter's no-metadata path is driven by this fake. It
+// embeds a nil jetstream.Msg, so any method not overridden here panics; only the
+// methods the adapter calls on the skip path are defined.
 type unmetaMsg struct {
 	jetstream.Msg
 	metaErr error

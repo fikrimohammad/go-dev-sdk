@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,16 +98,16 @@ func startJetStreamServerOn(t *testing.T, port int) *natsserver.Server {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	t.Cleanup(func() {
+		ns.Shutdown()
+		ns.WaitForShutdown()
+	})
+
 	go ns.Start()
 
 	if !ns.ReadyForConnections(10 * time.Second) {
 		t.Fatal("NATS test server not ready for connections")
 	}
-
-	t.Cleanup(func() {
-		ns.Shutdown()
-		ns.WaitForShutdown()
-	})
 
 	return ns
 }
@@ -124,8 +125,13 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// deadEndpoint is an address nothing listens on, so a dial to it never connects.
-const deadEndpoint = "nats://127.0.0.1:1"
+// deadEndpoint returns a NATS URL on a loopback port that nothing listens on, so a
+// dial to it is refused.
+func deadEndpoint(t *testing.T) string {
+	t.Helper()
+
+	return "nats://127.0.0.1:" + strconv.Itoa(freePort(t))
+}
 
 // createStream creates the stream cfg on ns, through a connection of its own, and
 // returns the JetStream context for later reads.

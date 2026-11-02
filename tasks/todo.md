@@ -200,7 +200,7 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 **Dependencies:** Checkpoint A · **Files:** `nats/producer/*`, `nats/consumer/*` (tests and seam removal) · **Scope:** L
 
 ### Checkpoint A2
-- [ ] Haiku review of T7–T8, with its fixes applied; CI is green.
+- [x] Haiku review of T7–T8, with its fixes applied; CI is green.
 
 ## Task 9: CI
 

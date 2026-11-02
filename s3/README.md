@@ -159,8 +159,15 @@ Presigning records an internal span and the same metric. Both carry
 `rpc.system.name` (`aws-api`), `rpc.method` (`S3/<Operation>`, for example
 `S3/PutObject`), `aws.s3.bucket`, `cloud.region` (when known), and
 `server.address`/`server.port` (when a self-hosted `Endpoint` is configured).
-On failure they also carry `error.type`: the AWS API error code (for example
-`NoSuchKey`), `network_error`, `timeout`, `canceled`, or `_OTHER`.
+On failure they also carry `error.type`. Its value is the AWS API error code
+(for example `NoSuchKey`) when the error carries one. Otherwise it is one of:
+
+- `connection_refused` and `connection_reset`: the TCP connection was refused or reset.
+- `dns_error`: the endpoint host did not resolve.
+- `timeout`: a deadline was exceeded or a network operation timed out.
+- `canceled`: the context was canceled.
+- `network_error`: any other network error.
+- `_OTHER`: anything else, including SDK validation errors such as a missing bucket.
 
 ## Testing your code
 

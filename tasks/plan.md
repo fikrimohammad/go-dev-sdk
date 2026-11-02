@@ -78,7 +78,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T7: s3 tests on gofakes3; delete the API stubs and seams
 - [x] T8: nats tests on the embedded server; delete the jsProducer/jsConsumer seams and mocks, except justified stubs
 
-### Checkpoint A2: Haiku review of T7–T8
+### Checkpoint A2: Haiku review of T7–T8 (done)
 ### Wave 3
 - [x] T9: CI: `LAX_MODULES`, a gostyle step plus a self-test job, MySQL and PostgreSQL services, the release dry run
 - [ ] T10: Docs: AGENTS.md, both skills, READMEs, backlog ticks

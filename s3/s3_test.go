@@ -409,6 +409,8 @@ func TestListBuckets(t *testing.T) {
 	for _, b := range res.Buckets {
 		names = append(names, *b.Name)
 	}
+	// The fake returns buckets in no fixed order, so compare them sorted.
+	slices.Sort(names)
 	if !slices.Equal(names, []string{"bucket-a", "bucket-b"}) {
 		t.Fatalf("ListBuckets names = %v, want [bucket-a bucket-b]", names)
 	}
@@ -716,6 +718,11 @@ func TestErrorType(t *testing.T) {
 			want: "connection_reset",
 		},
 		{
+			name: "connection timed out",
+			err:  &smithy.OperationError{Err: &net.OpError{Op: "dial", Err: syscall.ETIMEDOUT}},
+			want: "timeout",
+		},
+		{
 			name: "dns error",
 			err:  &smithy.OperationError{Err: &net.DNSError{Err: "no such host", Name: "minio.local"}},
 			want: "dns_error",
@@ -728,6 +735,16 @@ func TestErrorType(t *testing.T) {
 		{
 			name: "operation error with a non-timeout net.Error",
 			err:  &smithy.OperationError{Err: &net.AddrError{Err: "missing port", Addr: "minio.local"}},
+			want: "network_error",
+		},
+		{
+			name: "operation error with a nil cause",
+			err:  &smithy.OperationError{},
+			want: "_OTHER",
+		},
+		{
+			name: "bare non-timeout net.Error",
+			err:  &url.Error{Op: "Get", URL: "http://x", Err: &net.AddrError{Err: "missing port", Addr: "x"}},
 			want: "network_error",
 		},
 		{

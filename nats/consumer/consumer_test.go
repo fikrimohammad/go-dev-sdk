@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -255,7 +256,7 @@ func TestConsumerStartError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	cfg := Config{Endpoints: []string{deadEndpoint}, Topic: "orders", Group: "billing"}
+	cfg := Config{Endpoints: []string{deadEndpoint(t)}, Topic: "orders", Group: "billing"}
 	if err := c.Register(cfg, func(context.Context, Message) error { return nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -367,9 +368,9 @@ func TestConsumerRegisterWithHandler(t *testing.T) {
 }
 
 // TestConsumerStartRollbackOnFailure checks that a failed Start leaves no connection
-// open. One consumer's server is reachable and the other's is not. Start visits the
-// consumers in map order, so the reachable one is connected only when it comes
-// first; either way its connection must be closed when Start fails.
+// open and that Start runs in name order: every healthy consumer, sorted before
+// the unreachable one, connects before the failure, and the rollback closes them
+// all.
 func TestConsumerStartRollbackOnFailure(t *testing.T) {
 	t.Parallel()
 
@@ -378,20 +379,33 @@ func TestConsumerStartRollbackOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	// Nine reachable consumers sort before one unreachable consumer (t99).
+	// Start runs in name order, so all nine connect before t99 fails, and
+	// the rollback must close every one of them. In any other order, t99 is
+	// rarely last, so fewer than nine connect and the count check fails.
+	const healthy = 9
 	handler := func(ctx context.Context, msg Message) error { return nil }
-	if err := c.Register(Config{Endpoints: []string{ns.ClientURL()}, Topic: "topic1", Group: "group1"}, handler); err != nil {
-		t.Fatalf("Register(topic1) error = %v", err)
+	for i := range healthy {
+		topic := fmt.Sprintf("t%02d", i)
+		if err := c.Register(Config{Endpoints: []string{ns.ClientURL()}, Topic: topic, Group: "g"}, handler); err != nil {
+			t.Fatalf("Register(%s) error = %v", topic, err)
+		}
 	}
-	if err := c.Register(Config{Endpoints: []string{deadEndpoint}, Topic: "topic2", Group: "group2"}, handler); err != nil {
-		t.Fatalf("Register(topic2) error = %v", err)
+	if err := c.Register(Config{Endpoints: []string{deadEndpoint(t)}, Topic: "t99", Group: "g"}, handler); err != nil {
+		t.Fatalf("Register(t99) error = %v", err)
 	}
 
-	// Start runs in name order, so topic1 connects before topic2 fails, and
-	// the rollback must close topic1's connection.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := c.Start(ctx); err == nil {
 		t.Fatal("Start() error = nil, want error")
+	}
+	varz, err := ns.Varz(nil)
+	if err != nil {
+		t.Fatalf("Varz() error = %v", err)
+	}
+	if varz.TotalConnections != healthy {
+		t.Fatalf("TotalConnections = %d, want %d (every healthy consumer connects before t99 fails)", varz.TotalConnections, healthy)
 	}
 	waitClients(t, ns, 0)
 	if c.started {

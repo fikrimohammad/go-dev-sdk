@@ -704,7 +704,7 @@ func TestProducerStartError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if err := p.Register(Config{Endpoints: []string{deadEndpoint}, Topic: "test-topic"}); err != nil {
+	if err := p.Register(Config{Endpoints: []string{deadEndpoint(t)}, Topic: "test-topic"}); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
 
@@ -968,8 +968,8 @@ func TestPublishSyncWithDelay_DeliversOnceAtDelay(t *testing.T) {
 		at                             time.Time
 	}
 	var got []delivery
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
-		batch, err := cons.Fetch(10, jetstream.FetchMaxWait(200*time.Millisecond))
+	fetch := func(wait time.Duration) {
+		batch, err := cons.Fetch(10, jetstream.FetchMaxWait(wait))
 		if err != nil {
 			t.Fatalf("Fetch() error = %v", err)
 		}
@@ -980,6 +980,14 @@ func TestPublishSyncWithDelay_DeliversOnceAtDelay(t *testing.T) {
 		if err := batch.Error(); err != nil {
 			t.Fatalf("batch error = %v", err)
 		}
+	}
+	// Fetch until both deliveries have arrived, then keep fetching briefly so a
+	// duplicate or third message would still be seen.
+	for deadline := time.Now().Add(10 * time.Second); len(got) < len(cases) && time.Now().Before(deadline); {
+		fetch(200 * time.Millisecond)
+	}
+	for quiet := time.Now().Add(500 * time.Millisecond); time.Now().Before(quiet); {
+		fetch(100 * time.Millisecond)
 	}
 
 	if len(got) != len(cases) {
