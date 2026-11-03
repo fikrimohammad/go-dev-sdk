@@ -44,6 +44,12 @@ has_remote_tag() {
   awk -v ref="refs/tags/$1" '$2 == ref { found = 1 } END { exit !found }' <<<"$2"
 }
 
+# has_listed_version <version> <file>: succeeds when <file> has a line equal
+# to <version> (stripping optional CR in CRLF responses).
+has_listed_version() {
+  awk -v ver="$1" '{ sub(/\r$/, ""); if ($0 == ver) found = 1 } END { exit !found }' "$2"
+}
+
 # require_lines prints "path version" for each require in a go.mod. It skips
 # replace, exclude, and other blocks.
 require_lines() {
@@ -130,6 +136,11 @@ if [[ $check_only == true ]]; then
 fi
 
 # 3. No tag and no proxy version for the release yet.
+# Query /@v/list (max-age=60) rather than /@v/<version>.info: requesting .info
+# for an unreleased version causes proxy.golang.org to negative-cache the 404
+# for 30 minutes, blocking verify-install.sh right after the tags are pushed.
+list_file=$(mktemp)
+trap 'rm -f "$list_file"' EXIT
 remote_tags=$(git ls-remote --tags origin) || die "cannot list tags on origin"
 for dir in "${modules[@]}"; do
   path=${module_path[$dir]:-}
@@ -143,9 +154,14 @@ for dir in "${modules[@]}"; do
     fail "tag $tag already exists on origin"
   fi
 
-  code=$(curl -s --max-time 10 --retry 2 -o /dev/null -w '%{http_code}' "$GOPROXY_URL/$path/@v/$version.info") || code=000
+  : >"$list_file"
+  code=$(curl -s --max-time 10 --retry 2 -o "$list_file" -w '%{http_code}' "$GOPROXY_URL/$path/@v/list") || code=000
   case $code in
-    200) fail "$path@$version is already in $GOPROXY_URL; pick a new version" ;;
+    200)
+      if has_listed_version "$version" "$list_file"; then
+        fail "$path@$version is already in $GOPROXY_URL; pick a new version"
+      fi
+      ;;
     404 | 410) ;;
     *) fail "cannot check $path@$version on $GOPROXY_URL (HTTP $code)" ;;
   esac
