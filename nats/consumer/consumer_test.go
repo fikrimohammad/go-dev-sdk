@@ -493,11 +493,13 @@ func TestShutdown_RespectsDeadline(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	entered := make(chan struct{}, 1)
 	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "orders", Group: "billing"}
 	err = c.Register(cfg, func(ctx context.Context, msg Message) error {
 		entered <- struct{}{}
-		time.Sleep(5 * time.Second) // ignores ctx on purpose
+		<-release // ignores ctx on purpose until the test cleans up
 		return nil
 	})
 	if err != nil {

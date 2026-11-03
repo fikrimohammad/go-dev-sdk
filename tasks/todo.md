@@ -240,10 +240,10 @@ MySQL and PostgreSQL if available. Otherwise they run in T9's CI.
 **Dependencies:** T9 · **Files:** `AGENTS.md`, `.agents/skills/*/SKILL.md`, `*/README.md`, `docs/ideas/sdk-fix-backlog.md` · **Scope:** S
 
 ### Checkpoint B: complete
-- [ ] SPEC-guardrails success criteria 1–8 are verified with evidence, including the rule's
+- [x] SPEC-guardrails success criteria 1–8 are verified with evidence, including the rule's
       recall and precision.
-- [ ] Haiku review of T9–T10, then one Opus review of the whole PR (all tasks), with its fixes
+- [x] Haiku review of T9–T10, then one Opus review of the whole PR (all tasks), with its fixes
       applied.
-- [ ] The PR body (prepared by the orchestrator) lists the path change, v0.1.0 and the release
+- [x] The PR body (prepared by the orchestrator) lists the path change, v0.1.0 and the release
       runbook, the rules and their validation, and the kept stubs. The owner marks the PR
       ready, or tells the orchestrator to.

@@ -830,7 +830,7 @@ func TestPublishAsync_AcrossRuns(t *testing.T) {
 	}
 }
 
-// TestDefaultDrain_Deadline checks that the default producer drain closes the
+// TestStreamProducer_Drain_Deadline checks that the producer drain closes the
 // connection and returns the context error when a delivery handler blocks the
 // drain past its deadline.
 func TestStreamProducer_Drain_Deadline(t *testing.T) {
@@ -841,6 +841,7 @@ func TestStreamProducer_Drain_Deadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nats.Connect() error = %v", err)
 	}
+	t.Cleanup(nc.Close)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New() error = %v", err)

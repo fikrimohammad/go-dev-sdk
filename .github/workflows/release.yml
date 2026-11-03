@@ -20,8 +20,8 @@ name: Release
 # Recovery: a pushed tag is permanent. Deleted tags stay in proxy.golang.org and
 # the checksum database, so a reused version gives consumers a checksum mismatch.
 # A failed or bad release is fixed forward: bump the patch version (for example
-# v0.1.1), update VERSION in a commit on main, and release that version. Never
-# reuse a version.
+# v0.1.1), update VERSION and every sibling require in a commit on main, and
+# release that version. Never reuse a version.
 
 on:
   workflow_dispatch:

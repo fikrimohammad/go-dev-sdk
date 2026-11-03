@@ -83,7 +83,7 @@ Details, acceptance criteria, and verification are in [todo.md](todo.md).
 - [x] T9: CI: `LAX_MODULES`, a gostyle step plus a self-test job, MySQL and PostgreSQL services, the release dry run
 - [x] T10: Docs: AGENTS.md, both skills, READMEs, backlog ticks
 
-### Checkpoint B: Haiku review of T9–T10, then the Opus review of all tasks; PR description; owner review
+### Checkpoint B: Haiku review of T9–T10, then the Opus review of all tasks; PR description; owner review (done; awaiting owner review)
 
 ## Risks and Mitigations
 

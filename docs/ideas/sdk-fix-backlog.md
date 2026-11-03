@@ -236,7 +236,8 @@ Tags: [B] bug, [T] telemetry/semconv, [A] API/design, [C] cleanup/lint.
 - [x] A gostyle AST rule can catch message-valued error.type and per-event metric attributes
       with an acceptable false-positive rate. Validated in PR 4 (#19): recall at 411bb72 and
       216b2aa is db 2, redis 6, nats 6, and cron 2. Precision is 0 findings on s3 at 411bb72
-      and on every module in the branch. Redis has one gostyle:ignore, with a reason.
+      and on every module in the branch. Redis has one `error-type-message` gostyle:ignore,
+      with a reason.
 - [x] PR 3 stays reviewable. Shipped as #18.
 
 ## Not Doing (and Why)

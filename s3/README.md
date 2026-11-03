@@ -199,7 +199,7 @@ cli, err := s3.New(ctx, s3.Config{
 if err != nil { /* handle */ }
 ```
 
-The gofakes3 dependency belongs to your test code, not to this package. To stub the `Client` interface without any server, generate a gomock mock of it and pass the mock wherever your code takes a `Client`.
+Add `github.com/johannesboyne/gofakes3` to your own module to use it in your tests. To stub the `Client` interface without any server, generate a gomock mock of it and pass the mock wherever your code takes a `Client`.
 
 ## Config reference
 

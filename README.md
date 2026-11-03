@@ -49,6 +49,9 @@ GitHub Actions workflows live in `.github/workflows/`:
   posts a per-module coverage table as a PR comment.
 - **`db-integration`** job in `ci.yml` runs the MySQL and PostgreSQL integration
   tests against service containers.
+- **`release-dry-run`** job in `ci.yml` runs the release script's unit tests,
+  checks that every sibling `require` matches `VERSION`, and dry-runs the
+  release while `VERSION` is unreleased.
 - **`release.yml`** — manual only (`workflow_dispatch`); nothing is tagged on
   push. Run `gh workflow run release.yml` on main. It releases the version in
   `VERSION`, tags every module at that version in one atomic push, and then

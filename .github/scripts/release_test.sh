@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests release.sh --dry-run against throwaway repos, without network access.
+# Tests release.sh against throwaway repos, without network access.
 # Each case builds a repo with modules a and b (b requires a), points
 # MODULE_PREFIX at a fake prefix, and serves a fake proxy from a local HTTP
 # server. Usage: bash .github/scripts/release_test.sh

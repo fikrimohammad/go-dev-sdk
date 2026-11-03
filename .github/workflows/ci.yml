@@ -154,11 +154,15 @@ jobs:
       - name: Run MySQL and PostgreSQL integration tests
         run: |
           set -o pipefail
-          go test -count=1 -run 'TestMySQLIntegration|TestPostgresIntegration' -v ./... \
+          go test -count=1 -run '^(TestMySQLIntegration|TestPostgresIntegration)$' -v ./... \
             | tee "$RUNNER_TEMP/db-integration.log"
 
       - name: Assert integration tests passed, not skipped
         run: |
+          if grep -qE '^[[:space:]]*--- SKIP:' "$RUNNER_TEMP/db-integration.log"; then
+            echo "::error::an integration test or subtest was skipped"
+            exit 1
+          fi
           for test in TestMySQLIntegration TestPostgresIntegration; do
             if ! grep -qE "^--- PASS: ${test} \(" "$RUNNER_TEMP/db-integration.log"; then
               echo "::error::${test} did not pass; it may have been skipped"
@@ -175,23 +179,19 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
       - name: Test release script
         run: bash .github/scripts/release_test.sh
 
       - name: Check sibling requires match VERSION
-        run: .github/scripts/release.sh "$(cat VERSION)" --check
+        run: .github/scripts/release.sh "$(tr -d '[:space:]' < VERSION)" --check
 
       # The full dry run also checks that VERSION is not yet tagged or in the
       # proxy, so it runs only until VERSION is released. After a release,
       # bump VERSION (and every sibling require) before the next one.
       - name: Dry-run release of VERSION
         run: |
-          version=$(cat VERSION)
-          if git ls-remote --exit-code --tags origin "refs/tags/errs/$version" >/dev/null; then
+          version=$(tr -d '[:space:]' < VERSION)
+          if git ls-remote --exit-code --tags origin "refs/tags/*/$version" >/dev/null; then
             echo "VERSION $version is already released; bump it before the next release."
           else
             .github/scripts/release.sh "$version" --dry-run

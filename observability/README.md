@@ -152,8 +152,8 @@ defer tc.Stop(ctx)
 | `Format` | `"text"` | `"text"` or `"json"` |
 | `Level` | `"debug"` | Minimum severity |
 | `GlobalKV` | — | Fields attached to every record |
-| `Writer` | package stdout | Destination for debug/info records |
-| `ErrorWriter` | package stderr | Destination for warn/error records |
+| `Writer` | `os.Stdout` | Destination for debug/info records |
+| `ErrorWriter` | `os.Stderr` | Destination for warn/error records |
 
 ### metrics.Config
 

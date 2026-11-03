@@ -143,7 +143,7 @@ for dir in "${modules[@]}"; do
     fail "tag $tag already exists on origin"
   fi
 
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$GOPROXY_URL/$path/@v/$version.info") || code=000
+  code=$(curl -s --max-time 10 --retry 2 -o /dev/null -w '%{http_code}' "$GOPROXY_URL/$path/@v/$version.info") || code=000
   case $code in
     200) fail "$path@$version is already in $GOPROXY_URL; pick a new version" ;;
     404 | 410) ;;

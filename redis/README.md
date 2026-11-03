@@ -252,7 +252,7 @@ returns to zero.
 ## Testing your code
 
 Run your tests against an in-process [miniredis](https://github.com/alicebob/miniredis)
-server. Add `github.com/alicebob/miniredis/v2` to your own module; this package does not depend on it.
+server. Add `github.com/alicebob/miniredis/v2` to your own module to use it in your tests.
 
 ```go
 import (

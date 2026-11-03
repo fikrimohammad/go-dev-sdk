@@ -161,6 +161,48 @@ func f(ctx context.Context, m M, q string) {
 	// gostyle:ignore metric-high-cardinality reviewed: bounded in practice
 	m.Record(ctx, i, 1, map[string]string{"db.query.text": q})
 }`, 0},
+		{"gostyle:ignore on metric call with builder map", metricRule, `package p
+func attrs(q string) map[string]string { return map[string]string{"db.query.text": q} }
+func f(ctx context.Context, m M, q string) {
+	a := attrs(q)
+	// gostyle:ignore metric-high-cardinality reviewed: bounded query enum
+	m.Record(ctx, i, 1, a)
+}`, 0},
+		{"gostyle:ignore on one metric call does not hide an un-ignored call", metricRule, `package p
+func attrs(q string) map[string]string { return map[string]string{"db.query.text": q} }
+func f(ctx context.Context, m M, q string) {
+	a := attrs(q)
+	// gostyle:ignore metric-high-cardinality reviewed: bounded query enum
+	m.Record(ctx, i, 1, a)
+	m.Add(ctx, i, 1, a)
+}`, 1},
+		{"gostyle:ignore on multi-line WithAttributes", metricRule, `package p
+func f(c C, q string) {
+	// gostyle:ignore metric-high-cardinality reviewed: bounded query enum
+	c.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("db.query.text", q),
+	))
+}`, 0},
+		{"bare gostyle:ignore does not suppress", metricRule, `package p
+func f(ctx context.Context, m M, q string) {
+	// gostyle:ignore
+	m.Record(ctx, i, 1, map[string]string{"db.query.text": q})
+}`, 1},
+		{"gostyle:ignore without reason does not suppress", metricRule, `package p
+func f(ctx context.Context, m M, q string) {
+	// gostyle:ignore metric-high-cardinality
+	m.Record(ctx, i, 1, map[string]string{"db.query.text": q})
+}`, 1},
+		{"gostyle:ignore all does not suppress", metricRule, `package p
+func f(ctx context.Context, m M, q string) {
+	// gostyle:ignore all reviewed
+	m.Record(ctx, i, 1, map[string]string{"db.query.text": q})
+}`, 1},
+		{"prose mentioning gostyle:ignore does not suppress", metricRule, `package p
+func f(ctx context.Context, m M, q string) {
+	// Do not add gostyle:ignore metric-high-cardinality without a reason.
+	m.Record(ctx, i, 1, map[string]string{"db.query.text": q})
+}`, 1},
 
 		// error.type from error text: each key form.
 		{"error literal key", errorRule, `package p
@@ -186,6 +228,14 @@ func f(err error) {
 func f(err error) {
 	_ = semconv.ErrorTypeKey.String(err.Error())
 }`, 1},
+		{"gostyle:ignore on multi-line attribute.String", errorRule, `package p
+func f(err error) {
+	// gostyle:ignore error-type-message err is a bounded enum error type
+	_ = attribute.String(
+		string(semconv.ErrorTypeKey),
+		err.Error(),
+	)
+}`, 0},
 
 		// error.type from error text: each flow shape.
 		{"error identifier from err.Error", errorRule, `package p

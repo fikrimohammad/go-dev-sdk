@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -167,12 +168,11 @@ func (c *checker) checkFile(path string) error {
 	ignores := map[int][]string{}
 	for _, cg := range f.Comments {
 		for _, cm := range cg.List {
-			_, rest, ok := strings.Cut(cm.Text, "gostyle:ignore")
-			if !ok {
+			rules := parseIgnore(cm.Text)
+			if len(rules) == 0 {
 				continue
 			}
 			line := c.fset.Position(cm.Pos()).Line
-			rules := strings.Split(strings.Fields(rest + " all")[0], ",")
 			ignores[line] = append(ignores[line], rules...)
 			ignores[line+1] = append(ignores[line+1], rules...)
 		}
@@ -194,19 +194,49 @@ func (c *checker) checkFile(path string) error {
 	return nil
 }
 
+// parseIgnore returns the suppressed rule names when text is a line comment of
+// the form "// gostyle:ignore <rule>[,<rule>...] <reason>". Directives without
+// known rule names or a reason, and prose comments that merely mention
+// gostyle:ignore, return nil.
+func parseIgnore(text string) []string {
+	if !strings.HasPrefix(text, "//") {
+		return nil
+	}
+	body := strings.TrimSpace(strings.TrimPrefix(text, "//"))
+	if !strings.HasPrefix(body, "gostyle:ignore ") && !strings.HasPrefix(body, "gostyle:ignore\t") {
+		return nil
+	}
+	fields := strings.Fields(strings.TrimPrefix(body, "gostyle:ignore"))
+	if len(fields) < 2 {
+		return nil
+	}
+	var rules []string
+	for _, r := range strings.Split(fields[0], ",") {
+		if r == "" || ruleDocs[r] == "" {
+			return nil
+		}
+		rules = append(rules, r)
+	}
+	return rules
+}
+
 func (fc *fileCtx) report(n ast.Node, rule, format string, args ...any) {
 	fc.reportAt(n.Pos(), rule, format, args...)
+}
+
+// isIgnored reports whether a gostyle:ignore comment suppresses rule at p.
+func (c *checker) isIgnored(p token.Pos, rule string) bool {
+	pos := c.fset.Position(p)
+	return slices.Contains(c.ignores[pos.Filename][pos.Line], rule)
 }
 
 // reportAt records a finding at p unless a gostyle:ignore comment for rule is
 // on its line or the line above.
 func (c *checker) reportAt(p token.Pos, rule, format string, args ...any) {
-	pos := c.fset.Position(p)
-	for _, r := range c.ignores[pos.Filename][pos.Line] {
-		if r == rule || r == "all" {
-			return
-		}
+	if c.isIgnored(p, rule) {
+		return
 	}
+	pos := c.fset.Position(p)
 	c.findings = append(c.findings, finding{pos, rule, fmt.Sprintf(format, args...)})
 }
 
@@ -499,23 +529,23 @@ func (c *checker) checkTelemetry(files []*ast.File) {
 			case *ast.CompositeLit:
 				for _, elt := range n.Elts {
 					if kv, ok := elt.(*ast.KeyValueExpr); ok {
-						idx.checkErrorType(kv.Key, kv.Value, fi)
+						idx.checkErrorType(kv.Pos(), kv.Key, kv.Value, fi)
 					}
 				}
 			case *ast.AssignStmt:
 				if len(n.Lhs) == len(n.Rhs) {
 					for i, lhs := range n.Lhs {
 						if ix, ok := lhs.(*ast.IndexExpr); ok {
-							idx.checkErrorType(ix.Index, n.Rhs[i], fi)
+							idx.checkErrorType(ix.Pos(), ix.Index, n.Rhs[i], fi)
 						}
 					}
 				}
 			case *ast.CallExpr:
 				idx.checkErrorTypeCall(n, fi)
-				if isMetricCall(n) {
+				if isMetricCall(n) && !idx.c.isIgnored(n.Pos(), "metric-high-cardinality") {
 					idx.traceAttrs(n.Args[3], fi)
 				}
-				if isWithAttributes(n) {
+				if isWithAttributes(n) && !idx.c.isIgnored(n.Pos(), "metric-high-cardinality") {
 					for _, arg := range n.Args {
 						idx.traceAttrs(arg, fi)
 					}
@@ -824,7 +854,7 @@ func (idx *pkgIndex) traceAttrs(e ast.Expr, fi *funcInfo) {
 // checkKey reports key when it is a per-event key that reaches a metric.
 func (idx *pkgIndex) checkKey(key ast.Expr) {
 	name, ok := perEventKey(key)
-	if !ok || idx.reported[key.Pos()] {
+	if !ok || idx.reported[key.Pos()] || idx.c.isIgnored(key.Pos(), "metric-high-cardinality") {
 		return
 	}
 	idx.reported[key.Pos()] = true
@@ -840,15 +870,18 @@ func (idx *pkgIndex) checkErrorTypeCall(call *ast.CallExpr, fi *funcInfo) {
 	}
 	switch {
 	case isIdent(sel.X, "attribute") && len(call.Args) == 2:
-		idx.checkErrorType(call.Args[0], call.Args[1], fi)
+		idx.checkErrorType(call.Pos(), call.Args[0], call.Args[1], fi)
 	case len(call.Args) == 1:
-		idx.checkErrorType(sel.X, call.Args[0], fi)
+		idx.checkErrorType(call.Pos(), sel.X, call.Args[0], fi)
 	}
 }
 
 // checkErrorType reports value when key is error.type and value comes from an
 // error's text.
-func (idx *pkgIndex) checkErrorType(key, value ast.Expr, fi *funcInfo) {
+func (idx *pkgIndex) checkErrorType(site token.Pos, key, value ast.Expr, fi *funcInfo) {
+	if idx.c.isIgnored(site, "error-type-message") || idx.c.isIgnored(key.Pos(), "error-type-message") || idx.c.isIgnored(value.Pos(), "error-type-message") {
+		return
+	}
 	if !isErrorTypeKey(key) || !idx.fromErrorText(value, fi, map[ast.Node]bool{}) {
 		return
 	}

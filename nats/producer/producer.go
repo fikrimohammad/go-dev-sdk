@@ -201,12 +201,12 @@ type run struct {
 
 var _ Client = (*Producer)(nil)
 
-// New returns an empty, ready-to-use Producer. The service identity is taken
-// from info (its Name seeds the producer group names). A missing service name
-// is rejected with identity.ErrName; a name containing dots is rejected with
-// ErrInvalidAppName because NATS uses dots as subject separators. Metrics and
-// tracing go through the OTel global providers (via metrics.Default and tracer.Default)
-// unless overridden via WithMetrics/WithTracer.
+// New returns an empty, ready-to-use Producer. The service identity in info is
+// validated: a missing Name is rejected with identity.ErrName, and a Name
+// containing dots is rejected with ErrInvalidAppName because NATS uses dots as
+// subject separators. Metrics and tracing go through the OTel global providers
+// (via metrics.Default and tracer.Default) unless overridden via
+// WithMetrics/WithTracer.
 func New(info identity.Info, opts ...Option) (*Producer, error) {
 	if err := info.Validate(); err != nil {
 		return nil, fmt.Errorf("producer: %w", err)
