@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs"
+	"github.com/fikrimohammad/go-servicekit/errs"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"

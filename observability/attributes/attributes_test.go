@@ -9,7 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-servicekit/identity"
 )
 
 type myStringer string

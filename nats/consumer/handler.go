@@ -13,8 +13,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/nats/internal/wire"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
 )
 
 // settleErrorEvent is the span event added when an ack, nak, term, or InProgress

@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/fikrimohammad/go-dev-sdk/errs"
-	"github.com/fikrimohammad/go-dev-sdk/rest/internal/semconv"
+	"github.com/fikrimohammad/go-servicekit/errs"
+	"github.com/fikrimohammad/go-servicekit/rest/internal/semconv"
 )
 
 // problemContentType is the media type of an RFC 9457 problem details body.

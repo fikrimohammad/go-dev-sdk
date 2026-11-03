@@ -10,7 +10,7 @@ const (
 	// DefaultInstrumentationScope is the instrumentation scope used when
 	// Config.Scope is empty. It identifies this package as the instrumentation
 	// library rather than the service being instrumented.
-	DefaultInstrumentationScope = "github.com/fikrimohammad/go-dev-sdk/observability/metrics"
+	DefaultInstrumentationScope = "github.com/fikrimohammad/go-servicekit/observability/metrics"
 
 	defaultEndpoint            = "localhost:4317"
 	defaultMetricsTimeout      = 10 * time.Second

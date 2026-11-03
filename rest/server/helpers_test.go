@@ -21,10 +21,10 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/common/ut"
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )

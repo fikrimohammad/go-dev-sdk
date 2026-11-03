@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/rest/internal/semconv"
+	"github.com/fikrimohammad/go-servicekit/rest/internal/semconv"
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"

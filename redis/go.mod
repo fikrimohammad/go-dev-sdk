@@ -1,9 +1,10 @@
-module github.com/fikrimohammad/go-dev-sdk/redis
+module github.com/fikrimohammad/go-servicekit/redis
 
 go 1.26.5
 
 require (
-	github.com/fikrimohammad/go-dev-sdk/observability v1.0.0
+	github.com/alicebob/miniredis/v2 v2.40.0
+	github.com/fikrimohammad/go-servicekit/observability v0.1.0
 	github.com/redis/go-redis/v9 v9.22.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/metric v1.45.0
@@ -15,11 +16,12 @@ require (
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0 // indirect
+	github.com/fikrimohammad/go-servicekit/identity v0.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.45.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
@@ -35,8 +37,8 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
+replace github.com/fikrimohammad/go-servicekit/observability => ../observability
 
-replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
+replace github.com/fikrimohammad/go-servicekit/identity => ../identity
 
-replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
+replace github.com/fikrimohammad/go-servicekit/errs => ../errs

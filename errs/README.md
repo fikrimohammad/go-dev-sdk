@@ -22,7 +22,7 @@ eagerly captured **stack trace**.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/errs
+go get github.com/fikrimohammad/go-servicekit/errs@v0.1.0
 ```
 
 ## Step-by-step

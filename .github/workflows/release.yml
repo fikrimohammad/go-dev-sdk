@@ -1,81 +1,98 @@
 name: Release
 
-# Tags one module by hand. Nothing is tagged on push to main: every module is
-# still in development, so each release is a deliberate decision.
+# Releases every module at one version: each module gets a <module>/<version>
+# tag on the same commit of main. The version comes from the `version` input,
+# or from the VERSION file when the input is empty.
 #
-#   gh workflow run release.yml -f module=observability -f version=v0.2.0
+#   gh workflow run release.yml                 # uses VERSION
+#   gh workflow run release.yml -f version=v0.2.0
 #
-# The tag is <module dir>/<version> on the current main. The run fails when:
-#   - the directory has no go.mod, or the version is not vMAJOR.MINOR.PATCH
-#     (an optional -prerelease suffix is allowed);
-#   - the major does not match the module path (v2+ needs a /vN path, and a
-#     /vN path needs vN.x.y), because Go cannot resolve such a tag;
-#   - the tag exists, or proxy.golang.org already has the version. Deleted
-#     tags stay in the proxy and the checksum database, so a reused version
-#     gives every consumer a checksum mismatch.
+# Flow:
+#   1. release: .github/scripts/release.sh checks the version shape, each
+#      module's major against its module path, that every sibling require is
+#      the version, and that no tag or proxy.golang.org version exists yet. Only
+#      then does it tag HEAD for every module and push all tags in one atomic
+#      push. A failed check pushes nothing.
+#   2. verify-install: .github/scripts/verify-install.sh runs go get on every
+#      module at the version from a fresh module outside the repo, then builds an
+#      import of each. It retries while the proxy catches up after the tag push.
+#
+# Recovery: a pushed tag is permanent. Deleted tags stay in proxy.golang.org and
+# the checksum database, so a reused version gives consumers a checksum mismatch.
+# A failed or bad release is fixed forward: bump the patch version (for example
+# v0.1.1), update VERSION and every sibling require in a commit on main, and
+# release that version. Never reuse a version.
 
 on:
   workflow_dispatch:
     inputs:
-      module:
-        description: Module directory, for example observability
-        required: true
-        type: string
       version:
-        description: Version to tag, for example v0.2.0
-        required: true
+        description: Version to release, for example v0.2.0. Leave empty to use the VERSION file.
+        required: false
         type: string
 
 concurrency:
   group: release-${{ github.workflow }}
   cancel-in-progress: false
 
+env:
+  GO_VERSION: "1.26.5"
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
-    name: Tag ${{ inputs.module }}/${{ inputs.version }}
+    name: Release ${{ inputs.version || 'VERSION file' }}
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version=$INPUT_VERSION
+          if [ -z "$version" ]; then
+            version=$(tr -d '[:space:]' < VERSION)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Validate and push tag
+      - name: Check, tag, and push
         env:
-          MODULE: ${{ inputs.module }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          fail() { echo "::error::$1"; exit 1; }
+          VERSION: ${{ steps.version.outputs.version }}
+        run: .github/scripts/release.sh "$VERSION"
 
-          [[ "$MODULE" =~ ^[a-z0-9_-]+$ && -f "$MODULE/go.mod" ]] || fail "$MODULE is not a module directory"
-          [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] \
-            || fail "$VERSION is not vMAJOR.MINOR.PATCH"
-          major="${BASH_REMATCH[1]}"
+  verify-install:
+    name: Verify ${{ needs.release.outputs.version }} installs
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
 
-          path=$(awk '/^module /{print $2; exit}' "$MODULE/go.mod")
-          if [[ "$path" =~ /v([0-9]+)$ ]]; then
-            [ "$major" = "${BASH_REMATCH[1]}" ] || fail "$path needs a v${BASH_REMATCH[1]}.x.y version"
-          elif [ "$major" -ge 2 ]; then
-            fail "v$major needs the module path to end in /v$major (it is $path)"
-          fi
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
-          tag="$MODULE/$VERSION"
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            fail "$tag already exists"
-          fi
-          code=$(curl -s -o /dev/null -w '%{http_code}' "https://proxy.golang.org/$path/@v/$VERSION.info")
-          [ "$code" != 200 ] || fail "$path@$VERSION is already in proxy.golang.org; pick a new version"
-
-          git tag -a "$tag" -m "Release $MODULE $VERSION"
-          git push origin "$tag"
-          echo "tagged $tag at $(git rev-parse --short HEAD)"
+      - name: Install every module from the proxy and build
+        run: .github/scripts/verify-install.sh "$VERSION"

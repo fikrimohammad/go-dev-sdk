@@ -1,17 +1,17 @@
-module github.com/fikrimohammad/go-dev-sdk/nats
+module github.com/fikrimohammad/go-servicekit/nats
 
 go 1.26.5
 
-replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
+replace github.com/fikrimohammad/go-servicekit/identity => ../identity
 
-replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
+replace github.com/fikrimohammad/go-servicekit/errs => ../errs
 
-replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
+replace github.com/fikrimohammad/go-servicekit/observability => ../observability
 
 require (
-	github.com/fikrimohammad/go-dev-sdk/errs v0.0.0-00010101000000-000000000000
-	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0
-	github.com/fikrimohammad/go-dev-sdk/observability v0.0.0-00010101000000-000000000000
+	github.com/fikrimohammad/go-servicekit/errs v0.1.0
+	github.com/fikrimohammad/go-servicekit/identity v0.1.0
+	github.com/fikrimohammad/go-servicekit/observability v0.1.0
 	github.com/nats-io/nats-server/v2 v2.15.0
 	github.com/nats-io/nats.go v1.54.0
 	github.com/nats-io/nuid v1.0.1

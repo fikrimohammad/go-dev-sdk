@@ -12,8 +12,10 @@
 // rpc.client.call.duration histogram with OTel attributes:
 // rpc.system.name ("aws-api"), rpc.method ("S3/<Operation>"), aws.s3.bucket,
 // cloud.region (when known), server.address and server.port (when a
-// self-hosted endpoint is configured), and error.type (the AWS API error code,
-// a short transport label, "timeout", "canceled", or "_OTHER"; set only on failure).
+// self-hosted endpoint is configured), and error.type (set only on failure). Its
+// value is the AWS API error code when the error carries one; otherwise it is one
+// of connection_refused, connection_reset, dns_error, timeout, canceled,
+// network_error (any other net.Error), or _OTHER (including SDK validation errors).
 package s3
 
 import (
@@ -39,8 +41,8 @@ import (
 	"go.opentelemetry.io/otel/semconv/v1.43.0/rpcconv"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 // tracerScope is the OTel instrumentation scope name.
@@ -94,33 +96,6 @@ type Client interface { //nolint:interfacebloat // caller-facing S3 surface kept
 	DownloadObject(ctx context.Context, input *transfermanager.DownloadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error)
 
 	// Presign operations
-	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
-	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
-}
-
-// s3API abstracts the raw s3.Client operations needed by our Client implementation for unit tests.
-type s3API interface {
-	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
-	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
-	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
-	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
-	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
-	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
-	CreateBucket(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error)
-	DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error)
-	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
-	ListBuckets(ctx context.Context, params *s3.ListBucketsInput, optFns ...func(*s3.Options)) (*s3.ListBucketsOutput, error)
-}
-
-// transferManager is the transfer-manager contract, letting tests stub the SDK.
-type transferManager interface {
-	GetObject(ctx context.Context, input *transfermanager.GetObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error)
-	UploadObject(ctx context.Context, input *transfermanager.UploadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error)
-	DownloadObject(ctx context.Context, input *transfermanager.DownloadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error)
-}
-
-// presigner is the presign-client contract, letting tests stub the SDK.
-type presigner interface {
 	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
 	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*signerv4.PresignedHTTPRequest, error)
 }
@@ -210,10 +185,10 @@ func New(ctx context.Context, cfg Config, opts ...Option) (Client, error) {
 	tmPresigner := s3.NewPresignClient(uninstrumentedClient)
 
 	return &client{
-		s3API:     s3Client,
-		tmAPI:     tm,
-		presigner: tmPresigner,
-		meta:      m,
+		api:     s3Client,
+		tm:      tm,
+		presign: tmPresigner,
+		meta:    m,
 	}, nil
 }
 
@@ -298,9 +273,9 @@ func endpointAddress(endpoint string) (string, int) {
 
 // client implements Client.
 type client struct {
-	s3API     s3API
-	tmAPI     transferManager
-	presigner presigner
+	api     *s3.Client
+	tm      *transfermanager.Client
+	presign *s3.PresignClient
 	meta
 }
 
@@ -308,68 +283,68 @@ var _ Client = (*client)(nil)
 
 // PutObject uploads an object to S3.
 func (c *client) PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	return c.s3API.PutObject(ctx, params, optFns...)
+	return c.api.PutObject(ctx, params, optFns...)
 }
 
 // GetObject retrieves an object as a stream using the S3 Transfer Manager.
 // gostyle:ignore getter-prefix S3's API names the operation GetObject.
 func (c *client) GetObject(ctx context.Context, input *transfermanager.GetObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.GetObjectOutput, error) {
-	return c.tmAPI.GetObject(ctx, input, opts...)
+	return c.tm.GetObject(ctx, input, opts...)
 }
 
 // HeadObject retrieves metadata for an object from S3 without returning the object itself.
 func (c *client) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	return c.s3API.HeadObject(ctx, params, optFns...)
+	return c.api.HeadObject(ctx, params, optFns...)
 }
 
 // DeleteObject deletes an object from S3.
 func (c *client) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	return c.s3API.DeleteObject(ctx, params, optFns...)
+	return c.api.DeleteObject(ctx, params, optFns...)
 }
 
 // DeleteObjects deletes multiple objects from S3 in a single batch request.
 func (c *client) DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
-	return c.s3API.DeleteObjects(ctx, params, optFns...)
+	return c.api.DeleteObjects(ctx, params, optFns...)
 }
 
 // CopyObject creates a copy of an object already stored in S3.
 func (c *client) CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	return c.s3API.CopyObject(ctx, params, optFns...)
+	return c.api.CopyObject(ctx, params, optFns...)
 }
 
 // ListObjectsV2 lists objects in an S3 bucket with prefix and pagination support.
 func (c *client) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	return c.s3API.ListObjectsV2(ctx, params, optFns...)
+	return c.api.ListObjectsV2(ctx, params, optFns...)
 }
 
 // CreateBucket creates a new S3 bucket.
 func (c *client) CreateBucket(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
-	return c.s3API.CreateBucket(ctx, params, optFns...)
+	return c.api.CreateBucket(ctx, params, optFns...)
 }
 
 // DeleteBucket deletes an empty S3 bucket.
 func (c *client) DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error) {
-	return c.s3API.DeleteBucket(ctx, params, optFns...)
+	return c.api.DeleteBucket(ctx, params, optFns...)
 }
 
 // HeadBucket checks if a bucket exists and you have permission to access it.
 func (c *client) HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
-	return c.s3API.HeadBucket(ctx, params, optFns...)
+	return c.api.HeadBucket(ctx, params, optFns...)
 }
 
 // ListBuckets lists all buckets owned by the authenticated sender of the request.
 func (c *client) ListBuckets(ctx context.Context, params *s3.ListBucketsInput, optFns ...func(*s3.Options)) (*s3.ListBucketsOutput, error) {
-	return c.s3API.ListBuckets(ctx, params, optFns...)
+	return c.api.ListBuckets(ctx, params, optFns...)
 }
 
 // UploadObject uploads an object through the transfer manager (multipart upload for large bodies).
 func (c *client) UploadObject(ctx context.Context, input *transfermanager.UploadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error) {
-	return c.tmAPI.UploadObject(ctx, input, opts...)
+	return c.tm.UploadObject(ctx, input, opts...)
 }
 
 // DownloadObject downloads an object directly into an io.WriterAt concurrently through the transfer manager.
 func (c *client) DownloadObject(ctx context.Context, input *transfermanager.DownloadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.DownloadObjectOutput, error) {
-	return c.tmAPI.DownloadObject(ctx, input, opts...)
+	return c.tm.DownloadObject(ctx, input, opts...)
 }
 
 // PresignGetObject returns a presigned URL for GET requests on an object.
@@ -397,7 +372,7 @@ func (c *client) PresignGetObject(ctx context.Context, params *s3.GetObjectInput
 		}, optFns...)
 	}
 
-	req, err := c.presigner.PresignGetObject(ctx, params, optFns...)
+	req, err := c.presign.PresignGetObject(ctx, params, optFns...)
 	c.finish(ctx, span, attrs, start, err)
 	return req, err
 }
@@ -427,7 +402,7 @@ func (c *client) PresignPutObject(ctx context.Context, params *s3.PutObjectInput
 		}, optFns...)
 	}
 
-	req, err := c.presigner.PresignPutObject(ctx, params, optFns...)
+	req, err := c.presign.PresignPutObject(ctx, params, optFns...)
 	c.finish(ctx, span, attrs, start, err)
 	return req, err
 }
@@ -491,7 +466,9 @@ func (m meta) finish(ctx context.Context, span trace.Span, attrs map[string]any,
 }
 
 // errorType returns the error.type value for a non-nil err: the AWS API error
-// code, a transport label, "timeout", "canceled", or "_OTHER".
+// code when present; otherwise connection_refused, connection_reset, dns_error,
+// timeout, canceled, network_error (any other net.Error), or _OTHER, which also
+// covers SDK validation errors.
 func errorType(err error) string {
 	if aerr, ok := errors.AsType[smithy.APIError](err); ok {
 		if code := aerr.ErrorCode(); code != "" {
@@ -499,13 +476,11 @@ func errorType(err error) string {
 		}
 	}
 
-	if operr, ok := errors.AsType[*smithy.OperationError](err); ok {
-		if operr.Err != nil {
-			if code := errorType(operr.Err); code != "_OTHER" {
-				return code
-			}
-		}
-		return "network_error"
+	// An OperationError takes the class of the error it wraps: a transport
+	// failure is classified below, while an SDK validation error (for example
+	// a nil Bucket) is _OTHER, not a network error.
+	if operr, ok := errors.AsType[*smithy.OperationError](err); ok && operr.Err != nil {
+		return errorType(operr.Err)
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -527,8 +502,6 @@ func errorType(err error) string {
 					return "connection_refused"
 				case syscall.ECONNRESET:
 					return "connection_reset"
-				case syscall.ETIMEDOUT:
-					return "timeout"
 				}
 			}
 		}
@@ -540,6 +513,9 @@ func errorType(err error) string {
 
 	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return "dns_error"
+	}
+	if _, ok := errors.AsType[net.Error](err); ok {
+		return "network_error"
 	}
 
 	msg := err.Error()

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/rest/internal/semconv"
+	"github.com/fikrimohammad/go-servicekit/rest/internal/semconv"
 	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 

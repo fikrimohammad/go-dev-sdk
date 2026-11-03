@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fikrimohammad/go-dev-sdk/errgroup"
+	"github.com/fikrimohammad/go-servicekit/errgroup"
 )
 
 func ExampleGroup() {

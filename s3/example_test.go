@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/fikrimohammad/go-dev-sdk/s3"
+	"github.com/fikrimohammad/go-servicekit/s3"
 )
 
 // ExampleNew uploads a report when it is missing and prints a presigned

@@ -32,7 +32,7 @@ per executed statement, for **MySQL and PostgreSQL**.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/db
+go get github.com/fikrimohammad/go-servicekit/db@v0.1.0
 ```
 
 The PostgreSQL driver is a regular module dependency, so `Driver: "pgx"` (or
@@ -279,7 +279,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/fikrimohammad/go-dev-sdk/db"
+	"github.com/fikrimohammad/go-servicekit/db"
 )
 
 func TestInsert(t *testing.T) {
@@ -315,7 +315,7 @@ gomock, if a test needs to control return values rather than SQL text.
 
 ## Testing against real databases
 
-Unit tests use a stub driver and need no server. Env-gated integration tests
+Unit tests run on go-sqlmock and need no server. Env-gated integration tests
 exercise the real drivers against MySQL and PostgreSQL:
 
 ```bash

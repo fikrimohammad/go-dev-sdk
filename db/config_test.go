@@ -33,13 +33,13 @@ func TestSetDefaults_KeepsNegativePoolValues(t *testing.T) {
 
 func TestSetDefaults_KeepsExplicit(t *testing.T) {
 	in := Config{
-		Driver:          "dbstub",
+		Driver:          "sqlmock",
 		MaxOpenConns:    5,
 		ConnMaxLifetime: time.Minute,
 	}
 	got := in.SetDefaults()
-	if got.Driver != "dbstub" {
-		t.Fatalf("Driver = %q, want dbstub", got.Driver)
+	if got.Driver != "sqlmock" {
+		t.Fatalf("Driver = %q, want sqlmock", got.Driver)
 	}
 	if got.MaxOpenConns != 5 {
 		t.Fatalf("MaxOpenConns = %d, want 5", got.MaxOpenConns)

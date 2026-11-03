@@ -1,4 +1,4 @@
-# go-dev-sdk
+# go-servicekit
 
 Personal go-to SDK for building Go applications.
 
@@ -8,17 +8,17 @@ Each package is an independent Go module, importable directly:
 
 | Module | Import path | Purpose |
 | --- | --- | --- |
-| `errs` | `github.com/fikrimohammad/go-dev-sdk/errs` | Structured errors carrying an integer code, cause, metadata, and stack |
-| `errgroup` | `github.com/fikrimohammad/go-dev-sdk/errgroup` | Concurrency-limited, panic-safe errgroup wrapper |
-| `identity` | `github.com/fikrimohammad/go-dev-sdk/identity` | Standardized service identity (name/version/env) |
-| `observability` | `github.com/fikrimohammad/go-dev-sdk/observability` | OpenTelemetry logs, metrics, and traces |
-| `confloader` | `github.com/fikrimohammad/go-dev-sdk/confloader` | Layered config: file + dynamic (etcd) + secrets (Infisical) |
-| `rest` | `github.com/fikrimohammad/go-dev-sdk/rest` | Hertz HTTP server and client for gateway services: fixed telemetry, edge-safe defaults, RFC 9457 errors |
-| `cron` | `github.com/fikrimohammad/go-dev-sdk/cron` | Recurring job scheduler with robfig/cron and middleware pipeline |
-| `db` | `github.com/fikrimohammad/go-dev-sdk/db` | sqlx-based MySQL/PostgreSQL pool with named queries and telemetry |
-| `nats` | `github.com/fikrimohammad/go-dev-sdk/nats` | NATS JetStream producer/consumer with middleware and telemetry |
-| `redis` | `github.com/fikrimohammad/go-dev-sdk/redis` | Redis client with metrics/tracing |
-| `s3` | `github.com/fikrimohammad/go-dev-sdk/s3` | AWS S3 client with multipart upload and presigned URLs |
+| `errs` | `github.com/fikrimohammad/go-servicekit/errs` | Structured errors carrying an integer code, cause, metadata, and stack |
+| `errgroup` | `github.com/fikrimohammad/go-servicekit/errgroup` | Concurrency-limited, panic-safe errgroup wrapper |
+| `identity` | `github.com/fikrimohammad/go-servicekit/identity` | Standardized service identity (name/version/env) |
+| `observability` | `github.com/fikrimohammad/go-servicekit/observability` | OpenTelemetry logs, metrics, and traces |
+| `confloader` | `github.com/fikrimohammad/go-servicekit/confloader` | Layered config: file + dynamic (etcd) + secrets (Infisical) |
+| `rest` | `github.com/fikrimohammad/go-servicekit/rest` | Hertz HTTP server and client for gateway services: fixed telemetry, edge-safe defaults, RFC 9457 errors |
+| `cron` | `github.com/fikrimohammad/go-servicekit/cron` | Recurring job scheduler with robfig/cron and middleware pipeline |
+| `db` | `github.com/fikrimohammad/go-servicekit/db` | sqlx-based MySQL/PostgreSQL pool with named queries and telemetry |
+| `nats` | `github.com/fikrimohammad/go-servicekit/nats` | NATS JetStream producer/consumer with middleware and telemetry |
+| `redis` | `github.com/fikrimohammad/go-servicekit/redis` | Redis client with metrics/tracing |
+| `s3` | `github.com/fikrimohammad/go-servicekit/s3` | AWS S3 client with multipart upload and presigned URLs |
 
 ## Development
 
@@ -42,19 +42,29 @@ GitHub Actions workflows live in `.github/workflows/`:
 - **`ci.yml`** — on PR + push to main. Discovers every Go module and runs a
   matrix job per module: `gofmt`, `golangci-lint` (config at repo root,
   `.golangci.yml`), `go vet`, `go test` (plus `-race`), and a
-  `go mod tidy -diff` check. Modules in `STRICT_LINT_MODULES` are linted on the
-  full tree.
+  `go mod tidy -diff` check. Every module except those in `LAX_MODULES` (today
+  only `confloader`) is linted on the full tree and checked by gostyle.
+  gostyle also has its own test job.
 - **`coverage-report.yml`** — on PR. Runs tests with coverage per module and
   posts a per-module coverage table as a PR comment.
+- **`db-integration`** job in `ci.yml` runs the MySQL and PostgreSQL integration
+  tests against service containers.
+- **`release-dry-run`** job in `ci.yml` runs the release script's unit tests,
+  checks that every sibling `require` matches `VERSION`, and dry-runs the
+  release while `VERSION` is unreleased.
 - **`release.yml`** — manual only (`workflow_dispatch`); nothing is tagged on
-  push. Tags one module on main with the version you give:
-  `gh workflow run release.yml -f module=observability -f version=v0.2.0`. It
-  refuses a major that doesn't match the module path and any version that
-  already exists as a tag or in proxy.golang.org.
+  push. Run `gh workflow run release.yml` on main. It releases the version in
+  `VERSION`, tags every module at that version in one atomic push, and then
+  checks that each module installs from proxy.golang.org. It refuses a version
+  that already exists as a tag or in proxy.golang.org.
 
 CI does not rely on `go.work` (it is gitignored); each module builds standalone
 via its `replace` directives.
 
 ## Versioning
 
-Modules are tagged independently (`observability/v0.2.0`, ...), by hand, with `release.yml`. All modules are in development (v0), so any release may break the API. Cross-module dependencies use `require` + `replace` directives pointing at sibling directories during development.
+All modules share one version, set in `VERSION` (currently `v0.1.0`). Every
+sibling `require` must equal it, and CI checks this. Each release tags every
+module as `<module>/<version>`. All modules are in development (v0), so any
+release may break the API. Never reuse a version: fix a bad release forward
+with a new patch version. See `AGENTS.md` for the full release steps.

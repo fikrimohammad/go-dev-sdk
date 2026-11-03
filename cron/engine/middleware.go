@@ -15,10 +15,10 @@ import (
 	otelsemconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/cron"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/cron"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 const (

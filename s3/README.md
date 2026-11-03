@@ -14,7 +14,7 @@ client with standard AWS SDK types and automatic OpenTelemetry tracing + metrics
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/s3
+go get github.com/fikrimohammad/go-servicekit/s3@v0.1.0
 ```
 
 ## Step-by-step
@@ -159,8 +159,15 @@ Presigning records an internal span and the same metric. Both carry
 `rpc.system.name` (`aws-api`), `rpc.method` (`S3/<Operation>`, for example
 `S3/PutObject`), `aws.s3.bucket`, `cloud.region` (when known), and
 `server.address`/`server.port` (when a self-hosted `Endpoint` is configured).
-On failure they also carry `error.type`: the AWS API error code (for example
-`NoSuchKey`), `network_error`, `timeout`, `canceled`, or `_OTHER`.
+On failure they also carry `error.type`. Its value is the AWS API error code
+(for example `NoSuchKey`) when the error carries one. Otherwise it is one of:
+
+- `connection_refused` and `connection_reset`: the TCP connection was refused or reset.
+- `dns_error`: the endpoint host did not resolve.
+- `timeout`: a deadline was exceeded or a network operation timed out.
+- `canceled`: the context was canceled.
+- `network_error`: any other network error.
+- `_OTHER`: anything else, including SDK validation errors such as a missing bucket.
 
 ## Testing your code
 
@@ -174,7 +181,7 @@ import (
     "github.com/johannesboyne/gofakes3"
     "github.com/johannesboyne/gofakes3/backend/s3mem"
 
-    "github.com/fikrimohammad/go-dev-sdk/s3"
+    "github.com/fikrimohammad/go-servicekit/s3"
 )
 
 backend := s3mem.New()
@@ -192,7 +199,7 @@ cli, err := s3.New(ctx, s3.Config{
 if err != nil { /* handle */ }
 ```
 
-The gofakes3 dependency belongs to your test code, not to this package. To stub the `Client` interface without any server, generate a gomock mock of it and pass the mock wherever your code takes a `Client`.
+Add `github.com/johannesboyne/gofakes3` to your own module to use it in your tests. To stub the `Client` interface without any server, generate a gomock mock of it and pass the mock wherever your code takes a `Client`.
 
 ## Config reference
 

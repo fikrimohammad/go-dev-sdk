@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client"
+	"github.com/fikrimohammad/go-servicekit/confloader/client"
 )
 
 // mockClient is an in-memory client used to exercise the loader without a

@@ -7,7 +7,7 @@ import (
 	"context"
 	"log"
 
-	"github.com/fikrimohammad/go-dev-sdk/db"
+	"github.com/fikrimohammad/go-servicekit/db"
 )
 
 // ExampleConnect opens a PostgreSQL pool and loads one row into a struct

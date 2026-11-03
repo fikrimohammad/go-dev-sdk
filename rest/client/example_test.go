@@ -15,10 +15,10 @@ import (
 
 	hclient "github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
-	"github.com/fikrimohammad/go-dev-sdk/rest/client"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/rest/client"
 )
 
 // Build the client once at startup and share it. Without options it reads

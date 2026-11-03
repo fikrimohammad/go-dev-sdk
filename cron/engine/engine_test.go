@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/cron"
+	"github.com/fikrimohammad/go-servicekit/cron"
 )
 
 func TestRegister_InvalidSchedule(t *testing.T) {

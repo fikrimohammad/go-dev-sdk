@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-servicekit/identity"
 )
 
 func TestEnvironmentParity(t *testing.T) {

@@ -3,7 +3,7 @@ package confloader
 import (
 	"errors"
 
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client"
+	"github.com/fikrimohammad/go-servicekit/confloader/client"
 )
 
 var (

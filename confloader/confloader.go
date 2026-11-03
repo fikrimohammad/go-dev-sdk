@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client"
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client/etcd"
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client/infisical"
+	"github.com/fikrimohammad/go-servicekit/confloader/client"
+	"github.com/fikrimohammad/go-servicekit/confloader/client/etcd"
+	"github.com/fikrimohammad/go-servicekit/confloader/client/infisical"
 )
 
 // Getter is the typed accessor for a single config value. It is created by the

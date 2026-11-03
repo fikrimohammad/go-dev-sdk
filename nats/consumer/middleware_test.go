@@ -3,8 +3,10 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -20,10 +22,10 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
-	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/nats/internal/wire"
+	"github.com/fikrimohammad/go-servicekit/observability/attributes"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 var errHandler = errors.New("process failed")
@@ -178,42 +180,24 @@ func setupAdapter(t *testing.T, retryBackoff time.Duration, handler HandlerFunc)
 	return a, fm, ex
 }
 
-// testMsg builds a message on the "reporting" topic with a tag and an ID.
-func testMsg(body string) *mockMsg {
-	h := make(nats.Header)
-	h.Set(wire.HeaderTag, "export_report_process")
-	return &mockMsg{
-		subject: "reporting.export_report_process",
-		data:    []byte(body),
-		headers: h,
-		meta: &jetstream.MsgMetadata{
-			Sequence:     jetstream.SequencePair{Stream: 1},
-			NumDelivered: 1,
-			Timestamp:    time.Unix(1_700_000_000, 0),
-		},
-	}
-}
-
 // --- tests -------------------------------------------------------------------------
 
 func TestHandle_Success(t *testing.T) {
+	t.Parallel()
+
 	var gotBody []byte
 	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		gotBody = msg.Body()
 		return nil
 	})
 
-	msg := testMsg("hello")
+	msg, f := deliveredReport(t, "hello")
+	f.awaitPending(t, 1)
 	err := a.HandleMsg(context.Background(), msg)
 	if err != nil {
 		t.Fatalf("HandleMsg: %v", err)
 	}
-	if !msg.acked {
-		t.Fatal("acked = false, want true")
-	}
-	if msg.nacked {
-		t.Fatal("message was unexpectedly nacked")
-	}
+	f.awaitPending(t, 0)
 	if string(gotBody) != "hello" {
 		t.Fatalf("handler body = %q, want hello", gotBody)
 	}
@@ -273,20 +257,25 @@ func TestHandle_Success(t *testing.T) {
 }
 
 func TestHandle_Error(t *testing.T) {
+	t.Parallel()
+
 	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		return errHandler
 	})
 
-	msg := testMsg("hello")
+	msg, f := deliveredReport(t, "hello")
 	err := a.HandleMsg(context.Background(), msg)
 	if err == nil {
 		t.Fatal("error = nil, want non-nil")
 	}
-	if !msg.nacked {
-		t.Fatal("nacked = false, want true")
+
+	// The nak brings the message back at once, with a second delivery.
+	again, ok := f.next(t, 5*time.Second)
+	if !ok {
+		t.Fatal("message was not redelivered after the nak")
 	}
-	if msg.acked {
-		t.Fatal("message was unexpectedly acked")
+	if got := deliveries(t, again); got != 2 {
+		t.Fatalf("deliveries = %d, want 2", got)
 	}
 
 	sp, ok := ex.last()
@@ -300,52 +289,72 @@ func TestHandle_Error(t *testing.T) {
 }
 
 func TestHandle_RetryBackoff(t *testing.T) {
-	delay := 3 * time.Second
+	t.Parallel()
+
+	delay := 1500 * time.Millisecond
 	a, _, _ := setupAdapter(t, delay, func(ctx context.Context, msg Message) error {
 		return errHandler
 	})
 
-	msg := testMsg("hello")
-	err := a.HandleMsg(context.Background(), msg)
-	if err == nil {
+	msg, f := deliveredReport(t, "hello")
+	start := time.Now()
+	if err := a.HandleMsg(context.Background(), msg); err == nil {
 		t.Fatal("error = nil, want non-nil")
 	}
-	if !msg.nacked {
-		t.Fatal("nacked = false, want true")
+
+	// The nak carries the backoff, so the message is not back before it passes.
+	if _, ok := f.next(t, 300*time.Millisecond); ok {
+		t.Fatal("message redelivered before RetryBackoff passed")
 	}
-	if msg.nakDelay != delay {
-		t.Fatalf("nakDelay = %v, want %v", msg.nakDelay, delay)
+	again, ok := f.next(t, 5*time.Second)
+	if !ok {
+		t.Fatal("message was not redelivered after RetryBackoff")
+	}
+	if elapsed := time.Since(start); elapsed < delay {
+		t.Fatalf("redelivered after %v, want at least %v", elapsed, delay)
+	}
+	if got := deliveries(t, again); got != 2 {
+		t.Fatalf("deliveries = %d, want 2", got)
 	}
 }
 
 func TestHandle_PanicRecovery(t *testing.T) {
+	t.Parallel()
+
 	a, _, _ := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		panic("boom")
 	})
 
-	msg := testMsg("hello")
-	err := a.HandleMsg(context.Background(), msg)
-	if err == nil {
+	msg, f := deliveredReport(t, "hello")
+	if err := a.HandleMsg(context.Background(), msg); err == nil {
 		t.Fatal("error = nil after panic, want non-nil")
 	}
-	if !msg.nacked {
-		t.Fatal("nacked = false after panic, want true")
+
+	// The recovered panic is an error, so the message is nak'd and comes back.
+	again, ok := f.next(t, 5*time.Second)
+	if !ok {
+		t.Fatal("message was not redelivered after the panic")
+	}
+	if got := deliveries(t, again); got != 2 {
+		t.Fatalf("deliveries = %d, want 2", got)
 	}
 }
 
 // regression: a panicking handler is recovered inside the metrics middleware, so
 // metrics record an error, the span has error status, and the message is nak'd.
 func TestHandler_PanicIsMeasured(t *testing.T) {
+	t.Parallel()
+
 	a, fm, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error {
 		panic("boom")
 	})
 
-	msg := testMsg("hello")
+	msg, f := deliveredReport(t, "hello")
 	if err := a.HandleMsg(context.Background(), msg); err == nil {
 		t.Fatal("HandleMsg() error = nil, want error from recovered panic")
 	}
-	if !msg.nacked {
-		t.Fatal("message was not nacked")
+	if again, ok := f.next(t, 5*time.Second); !ok || deliveries(t, again) != 2 {
+		t.Fatal("message was not nak'd and redelivered after the panic")
 	}
 
 	hist, ok := fm.lastHist()
@@ -366,14 +375,20 @@ func TestHandler_PanicIsMeasured(t *testing.T) {
 }
 
 func TestHandle_ExtractsParentTrace(t *testing.T) {
+	t.Parallel()
+
 	parentEx := &recordingExporter{}
 	parentTP := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(parentEx)))
 	t.Cleanup(func() { _ = parentTP.Shutdown(context.Background()) })
 
 	parentCtx, parentSpan := parentTP.Tracer("test").Start(context.Background(), "parent")
-	msg := testMsg("hello")
-	testPropagator.Inject(parentCtx, natsHeaderCarrier{header: msg.headers})
+	header := nats.Header{wire.HeaderTag: []string{"export_report_process"}}
+	testPropagator.Inject(parentCtx, natsHeaderCarrier{header: header})
 	parentSpan.End()
+
+	f := newPullFixture(t, startTestNATSServer(t), "reporting")
+	f.publish(t, "reporting.export_report_process", "hello", header)
+	msg := f.fetch(t)
 
 	a, _, ex := setupAdapter(t, 0, func(ctx context.Context, msg Message) error { return nil })
 	if err := a.HandleMsg(context.Background(), msg); err != nil {
@@ -398,7 +413,8 @@ func (e codedError) Code() int     { return e.code }
 // TestProcess_MetricAttributes is a regression test. The process histogram
 // carries the metric attribute set (with the group, and error.type on failure),
 // the consumed counter counts every delivery, and no message detail reaches a
-// metric.
+// metric. It runs through the public Consumer: the failing message is termed with
+// ErrNoRetry, so its single delivery is the one measured.
 func TestProcess_MetricAttributes(t *testing.T) {
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
@@ -408,35 +424,48 @@ func TestProcess_MetricAttributes(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
 	t.Cleanup(func() { _ = tp.Shutdown(ctx) })
 
-	a, err := newHandlerAdapter(meta{
-		topic:      "reporting",
-		group:      "export_consumer",
-		serverAddr: "localhost",
-		serverPort: 4222,
-		propagator: testPropagator,
-		metrics:    metrics.Wrap(mp),
-		tracer:     tracer.Wrap(tp),
-	}, Config{}.SetDefaults(), func(ctx context.Context, msg Message) error {
-		if msg.Key() == "k2" {
-			return codedError{code: 4001}
-		}
-		return nil
-	})
+	ns := startTestNATSServer(t)
+	c, err := New(testAppInfo, WithMetrics(metrics.Wrap(mp)), WithTracer(tracer.Wrap(tp)))
 	if err != nil {
-		t.Fatalf("newHandlerAdapter: %v", err)
+		t.Fatalf("New() error = %v", err)
 	}
 
-	okMsg := testMsg("hello")
-	okMsg.headers.Set(wire.HeaderKey, "k1")
-	if err := a.HandleMsg(ctx, okMsg); err != nil {
-		t.Fatalf("HandleMsg(k1) error = %v, want nil", err)
+	// MaxConcurrent 1 runs one message at a time, so the spans end in publish order.
+	handled := make(chan struct{}, 2)
+	cfg := Config{Endpoints: []string{ns.ClientURL()}, Topic: "reporting", Group: "export_consumer", MaxConcurrent: 1}
+	if err := c.Register(cfg, func(ctx context.Context, msg Message) error {
+		handled <- struct{}{}
+		if msg.Key() == "k2" {
+			return fmt.Errorf("%w: %w", ErrNoRetry, codedError{code: 4001})
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
 	}
-	badMsg := testMsg("hello")
-	badMsg.headers.Set(wire.HeaderKey, "k2")
-	badMsg.meta.Sequence.Stream = 2
-	badMsg.meta.NumDelivered = 3
-	if err := a.HandleMsg(ctx, badMsg); err == nil {
-		t.Fatal("HandleMsg(k2) error = nil, want error")
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	js, err := jetstream.New(connectTestClient(t, ns))
+	if err != nil {
+		t.Fatalf("jetstream.New() error = %v", err)
+	}
+	for _, key := range []string{"k1", "k2"} {
+		msg := nats.NewMsg("reporting.created")
+		msg.Data = []byte("hello")
+		msg.Header.Set(wire.HeaderKey, key)
+		msg.Header.Set(wire.HeaderTag, "created")
+		if _, err := js.PublishMsg(ctx, msg); err != nil {
+			t.Fatalf("PublishMsg(%s) error = %v", key, err)
+		}
+		select {
+		case <-handled:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("handler of %s was not called", key)
+		}
+	}
+	if err := c.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 
 	got := collectMetrics(t, reader)
@@ -453,14 +482,15 @@ func TestProcess_MetricAttributes(t *testing.T) {
 	if !ok {
 		t.Fatalf("duration data = %T, want metricdata.Histogram[float64]", dur.Data)
 	}
+	host, port := serverAttrs(t, ns)
 	base := map[string]string{
 		"messaging.system":              "nats",
 		"messaging.operation.name":      "process",
 		"messaging.operation.type":      "process",
 		"messaging.destination.name":    "reporting",
 		"messaging.consumer.group.name": "export_consumer",
-		"server.address":                "localhost",
-		"server.port":                   "4222",
+		"server.address":                host,
+		"server.port":                   strconv.Itoa(port),
 	}
 	failed := maps.Clone(base)
 	failed["error.type"] = "4001"
@@ -497,14 +527,14 @@ func TestProcess_MetricAttributes(t *testing.T) {
 	assertAttrs(t, spanAttrs(okSpan), map[string]any{
 		"messaging.message.id":                  "1",
 		"messaging.nats.message.key":            "k1",
-		"messaging.nats.message.tag":            "export_report_process",
-		"messaging.nats.subject":                "reporting.export_report_process",
+		"messaging.nats.message.tag":            "created",
+		"messaging.nats.subject":                "reporting.created",
 		"messaging.message.body.size":           "5",
 		"messaging.nats.message.delivery_count": "1",
 	})
 	assertAttrs(t, spanAttrs(badSpan), map[string]any{
 		"messaging.message.id":                  "2",
-		"messaging.nats.message.delivery_count": "3",
+		"messaging.nats.message.delivery_count": "1",
 		"error.type":                            "4001",
 	})
 	if badSpan.Status().Code != codes.Error {

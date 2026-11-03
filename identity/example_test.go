@@ -3,7 +3,7 @@ package identity_test
 import (
 	"fmt"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
+	"github.com/fikrimohammad/go-servicekit/identity"
 )
 
 func ExampleResolve() {

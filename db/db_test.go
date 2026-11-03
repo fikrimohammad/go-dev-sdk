@@ -3,16 +3,17 @@ package db
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
-	"io"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jmoiron/sqlx"
@@ -25,9 +26,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/observability/attributes"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 // --- fake metrics client -----------------------------------------------------------
@@ -124,140 +125,113 @@ func spanAttrs(s sdktrace.ReadOnlySpan) map[string]any {
 	return out
 }
 
-// --- fake: sql stub driver ---------------------------------------------------------
-
-var testBackend = &stubDB{}
-
-type stubCall struct {
-	query string
-	args  []driver.Value
-}
-
-type stubDB struct {
-	mu      sync.Mutex
-	queries []stubCall
-	err     error
-	cols    []string
-	rows    [][]driver.Value
-}
-
-type stubDriver struct{}
-
-func init() { sql.Register("dbstub", stubDriver{}) }
-
-func (stubDriver) Open(string) (driver.Conn, error) {
-	return &stubConn{backend: testBackend}, nil
-}
-
-type stubConn struct{ backend *stubDB }
-
-func (c *stubConn) Prepare(string) (driver.Stmt, error) {
-	return nil, errors.New("prepare unsupported")
-}
-func (c *stubConn) Close() error              { return nil }
-func (c *stubConn) Begin() (driver.Tx, error) { return stubTx{}, nil }
-
-type stubTx struct{}
-
-func (stubTx) Commit() error   { return nil }
-func (stubTx) Rollback() error { return nil }
-
-func (c *stubConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	return c.backend.exec(query, args)
-}
-
-func (c *stubConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	return c.backend.query(query, args)
-}
-
-func (b *stubDB) exec(query string, args []driver.NamedValue) (driver.Result, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.queries = append(b.queries, stubCall{query, namedValuesToValues(args)})
-	if b.err != nil {
-		err := b.err
-		b.err = nil
-		return nil, err
-	}
-	return stubResult{}, nil
-}
-
-func (b *stubDB) query(query string, args []driver.NamedValue) (driver.Rows, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.queries = append(b.queries, stubCall{query, namedValuesToValues(args)})
-	return &stubRows{cols: b.cols, rows: b.rows}, nil
-}
-
-func namedValuesToValues(args []driver.NamedValue) []driver.Value {
-	out := make([]driver.Value, len(args))
-	for i, a := range args {
-		out[i] = a.Value
-	}
-	return out
-}
-
-type stubResult struct{}
-
-func (stubResult) LastInsertId() (int64, error) { return 42, nil }
-func (stubResult) RowsAffected() (int64, error) { return 1, nil }
-
-type stubRows struct {
-	cols  []string
-	rows  [][]driver.Value
-	index int
-}
-
-func (r *stubRows) Columns() []string { return r.cols }
-func (r *stubRows) Close() error      { return nil }
-func (r *stubRows) Next(dest []driver.Value) error {
-	if r.index >= len(r.rows) {
-		return io.EOF
-	}
-	copy(dest, r.rows[r.index])
-	r.index++
-	return nil
-}
-
-// setupTest installs a fresh stub DB plus a capturing tracer and metrics client,
-// and returns the instrumented DB alongside assertion handles. It runs against
-// the MySQL driver by default; see setupTestWithDriver for other dialects.
-func setupTest(t *testing.T, d *stubDB) (DB, *fakeMetrics, *recordingExporter) {
+// newCapture returns a tracer provider that exports every span to the returned
+// recordingExporter.
+func newCapture(t *testing.T) (*recordingExporter, *sdktrace.TracerProvider) {
 	t.Helper()
-	return setupTestWithDriver(t, d, mysqlDriver, "mysql", "report_db")
-}
-
-func setupTestWithDriver(t *testing.T, d *stubDB, spec driverSpec, systemName, namespace string) (DB, *fakeMetrics, *recordingExporter) {
-	t.Helper()
-
-	testBackend.mu.Lock()
-	testBackend.queries = nil
-	testBackend.err = nil
-	testBackend.cols = d.cols
-	testBackend.rows = d.rows
-	testBackend.mu.Unlock()
-
-	sqlDB, err := sql.Open("dbstub", "test")
-	if err != nil {
-		t.Fatalf("open sql: %v", err)
-	}
-	sqlDB.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-
 	ex := &recordingExporter{}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	return ex, tp
+}
 
+// --- sqlmock setup -----------------------------------------------------------------
+
+// mockSeq numbers the sqlmock databases so every test gets a DSN no other test
+// registered, even under -count=N.
+var mockSeq atomic.Int64
+
+// mockDB is a registered sqlmock database: its DSN, the *sql.DB, and the
+// expectations embedded so tests call mock.ExpectQuery and friends directly.
+type mockDB struct {
+	dsn string
+	db  *sql.DB
+	sqlmock.Sqlmock
+}
+
+// newMock registers a uniquely named sqlmock database with exact query matching
+// and monitored pings.
+func newMock(t *testing.T) mockDB {
+	t.Helper()
+	dsn := fmt.Sprintf("sqlmock_db_%d", mockSeq.Add(1))
+	sqlDB, mock, err := sqlmock.NewWithDSN(dsn,
+		sqlmock.MonitorPingsOption(true),
+		sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.NewWithDSN: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return mockDB{dsn: dsn, db: sqlDB, Sqlmock: mock}
+}
+
+// connectMock calls Connect with the sqlmock driver, expecting the initial ping.
+// The config sets the discrete connection fields so the telemetry attributes
+// (db.namespace, server.address, server.port) are known. Its system name is
+// "sqlmock" because the driver is not a built-in one.
+func connectMock(t *testing.T, opts ...Option) (DB, mockDB) {
+	t.Helper()
+	m := newMock(t)
+	m.ExpectPing()
+	db, err := Connect(context.Background(), Config{
+		Driver:   "sqlmock",
+		DSN:      m.dsn,
+		Host:     "db.example.com",
+		Port:     3306,
+		Database: "report_db",
+		Username: "app",
+	}, opts...)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db, m
+}
+
+// harness is a DB whose statements run on sqlmock, with its telemetry captured.
+type harness struct {
+	db   DB
+	mock mockDB
+	fm   *fakeMetrics
+	ex   *recordingExporter
+}
+
+// setupTest connects through Connect with injected telemetry clients. The
+// statements use the generic dialect ("?" placeholders, system name "sqlmock").
+func setupTest(t *testing.T) harness {
+	t.Helper()
 	fm := &fakeMetrics{}
+	ex, tp := newCapture(t)
+	db, mock := connectMock(t, WithMetrics(fm), WithTracer(tracer.Wrap(tp)))
+	return harness{db: db, mock: mock, fm: fm, ex: ex}
+}
 
-	return &dbConn{DB: sqlx.NewDb(sqlDB, spec.name), driver: spec, meta: meta{
-		systemName: systemName,
-		namespace:  namespace,
-		serverAddr: "db.example.com",
-		serverPort: spec.port,
-		metrics:    fm,
-		tracer:     tracer.Wrap(tp),
-	}}, fm, ex
+// setupDialect builds the DB directly around a sqlmock database so the bind
+// rules and system name of spec apply. Connect picks a built-in spec only for a
+// built-in driver name, and sqlmock is registered under "sqlmock", so the
+// mysql and postgres dialects cannot be reached through Connect in a unit test.
+// sqlmock records the bound text verbatim, so $1 and ? are both observable.
+func setupDialect(t *testing.T, spec driverSpec, systemName string) harness {
+	t.Helper()
+	m := newMock(t)
+	fm := &fakeMetrics{}
+	ex, tp := newCapture(t)
+	return harness{
+		db: &dbConn{
+			DB:     sqlx.NewDb(m.db, "sqlmock"),
+			driver: spec,
+			meta: meta{
+				systemName: systemName,
+				namespace:  "report_db",
+				serverAddr: "db.example.com",
+				serverPort: spec.port,
+				metrics:    fm,
+				tracer:     tracer.Wrap(tp),
+			},
+		},
+		mock: m,
+		fm:   fm,
+		ex:   ex,
+	}
 }
 
 // setOTelProviders installs tp and mp as the OTel global providers for the
@@ -293,30 +267,6 @@ func collectedMetrics(t *testing.T, r *sdkmetric.ManualReader) []string {
 	return names
 }
 
-func stubExecErr(t *testing.T, err error) {
-	t.Helper()
-	testBackend.mu.Lock()
-	defer testBackend.mu.Unlock()
-	testBackend.err = err
-}
-
-func recordedQuery(t *testing.T) stubCall {
-	t.Helper()
-	testBackend.mu.Lock()
-	defer testBackend.mu.Unlock()
-	if len(testBackend.queries) == 0 {
-		t.Fatal("no query recorded")
-	}
-	return testBackend.queries[0]
-}
-
-func numRecordedQueries(t *testing.T) int {
-	t.Helper()
-	testBackend.mu.Lock()
-	defer testBackend.mu.Unlock()
-	return len(testBackend.queries)
-}
-
 // normalizeAttrs mirrors the OTel key normalization applied by the real metrics
 // and tracer clients (attributes.NormalizeKey: order_id -> order.id), so the
 // fake records the keys as they are emitted.
@@ -331,9 +281,13 @@ func normalizeAttrs(attrs map[string]any) map[string]any {
 // --- tests ----------------------------------------------------------------------------
 
 func TestConnect(t *testing.T) {
+	m := newMock(t)
+	m.ExpectPing()
+	m.ExpectClose()
+
 	db, err := Connect(context.Background(), Config{
-		Driver:       "dbstub",
-		DSN:          "test",
+		Driver:       "sqlmock",
+		DSN:          m.dsn,
 		Host:         "localhost",
 		Port:         3306,
 		Database:     "report_db",
@@ -345,8 +299,8 @@ func TestConnect(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 	c := db.(*dbConn)
-	if c.systemName != "dbstub" {
-		t.Fatalf("systemName = %q, want dbstub", c.systemName)
+	if c.systemName != "sqlmock" {
+		t.Fatalf("systemName = %q, want sqlmock", c.systemName)
 	}
 	if c.namespace != "report_db" {
 		t.Fatalf("namespace = %q, want report_db", c.namespace)
@@ -359,6 +313,9 @@ func TestConnect(t *testing.T) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	if err := m.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
 	}
 }
 
@@ -387,33 +344,21 @@ func TestConnect_ContextDeadline(t *testing.T) {
 }
 
 func TestConnect_InjectedClients(t *testing.T) {
-	testBackend.mu.Lock()
-	testBackend.queries = nil
-	testBackend.err = nil
-	testBackend.cols = []string{"id", "name"}
-	testBackend.rows = [][]driver.Value{{int64(1), "a"}}
-	testBackend.mu.Unlock()
-
 	// OTel global providers are the fallback defaults: fresh, must receive nothing.
-	defEx := &recordingExporter{}
-	defTp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(defEx)))
-	t.Cleanup(func() { _ = defTp.Shutdown(context.Background()) })
+	defEx, defTp := newCapture(t)
 	defReader := sdkmetric.NewManualReader()
 	defMp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(defReader))
 	t.Cleanup(func() { _ = defMp.Shutdown(context.Background()) })
 	setOTelProviders(t, defTp, defMp)
 
 	// Injected clients: must receive the events.
-	injEx := &recordingExporter{}
-	injTp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(injEx)))
-	t.Cleanup(func() { _ = injTp.Shutdown(context.Background()) })
+	injEx, injTp := newCapture(t)
 	injFm := &fakeMetrics{}
 
-	db, err := Connect(context.Background(), Config{Driver: "dbstub", DSN: "test", Host: "localhost", Port: 3306, Database: "report_db", Username: "user"},
-		WithMetrics(injFm), WithTracer(tracer.Wrap(injTp)))
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	db, mock := connectMock(t, WithMetrics(injFm), WithTracer(tracer.Wrap(injTp)))
+	mock.ExpectQuery("SELECT id, name FROM t WHERE id = ?").
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(int64(1), "a"))
 
 	var items []report
 	if err := db.NamedSelectContext(context.Background(), &items,
@@ -440,19 +385,17 @@ func TestConnect_InjectedClients(t *testing.T) {
 }
 
 func TestInstrument_FallsBackToOTelGlobal(t *testing.T) {
-	ex := &recordingExporter{}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(ex)))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	ex, tp := newCapture(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	setOTelProviders(t, tp, mp)
 
-	dbx, _, _ := setupTest(t, &stubDB{})
-	c := dbx.(*dbConn)
 	// No injected clients: the execution must fall back to the OTel globals.
-	c.meta.metrics = nil
-	c.meta.tracer = nil
+	dbx, mock := connectMock(t)
+	mock.ExpectExec("INSERT INTO t (id, name) VALUES (?, ?)").
+		WithArgs(int64(1), "a").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if _, err := dbx.NamedExecContext(context.Background(),
 		"INSERT INTO t (id, name) VALUES (:id, :name)",
@@ -473,9 +416,12 @@ func TestInstrument_FallsBackToOTelGlobal(t *testing.T) {
 }
 
 func TestNamedExecContext_Success(t *testing.T) {
-	dbx, fm, ex := setupTest(t, &stubDB{})
+	h := setupDialect(t, mysqlDriver, "mysql")
+	h.mock.ExpectExec("INSERT INTO t (id, name) VALUES (?, ?)").
+		WithArgs(int64(1), "a").
+		WillReturnResult(sqlmock.NewResult(42, 1))
 
-	res, err := dbx.NamedExecContext(context.Background(),
+	res, err := h.db.NamedExecContext(context.Background(),
 		"INSERT INTO t (id, name) VALUES (:id, :name)",
 		map[string]any{"id": int64(1), "name": "a"})
 	if err != nil {
@@ -484,16 +430,11 @@ func TestNamedExecContext_Success(t *testing.T) {
 	if id, _ := res.LastInsertId(); id != 42 {
 		t.Fatalf("LastInsertId = %d, want 42", id)
 	}
-
-	q := recordedQuery(t)
-	if q.query != "INSERT INTO t (id, name) VALUES (?, ?)" {
-		t.Fatalf("query = %q, want bound query", q.query)
-	}
-	if len(q.args) != 2 || q.args[0] != int64(1) || q.args[1] != "a" {
-		t.Fatalf("args = %v, want [1 a]", q.args)
+	if err := h.mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
 	}
 
-	hist, ok := fm.lastHist()
+	hist, ok := h.fm.lastHist()
 	if !ok {
 		t.Fatal("no duration recorded")
 	}
@@ -522,7 +463,7 @@ func TestNamedExecContext_Success(t *testing.T) {
 		t.Fatalf("error.type must be absent on success: %v", hist.attrs)
 	}
 
-	sp, ok := ex.last()
+	sp, ok := h.ex.last()
 	if !ok {
 		t.Fatal("no span recorded")
 	}
@@ -554,7 +495,7 @@ func TestNamedExecContext_Success(t *testing.T) {
 // and the span for a successful and a failing statement, using a real manual
 // reader so the collected metrics are what an exporter would see.
 func TestInstrument_MetricAttributes(t *testing.T) {
-	const query = "INSERT INTO t (id, name) VALUES (:id, :name)"
+	const bound = "INSERT INTO t (id, name) VALUES (?, ?)"
 	base := map[string]string{
 		"db.system.name":    "mysql",
 		"db.namespace":      "report_db",
@@ -586,17 +527,22 @@ func TestInstrument_MetricAttributes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dbx, _, ex := setupTest(t, &stubDB{})
-			c := dbx.(*dbConn)
+			h := setupDialect(t, mysqlDriver, "mysql")
+			c := h.db.(*dbConn)
 			reader := sdkmetric.NewManualReader()
 			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 			t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 			c.meta.metrics = metrics.Wrap(mp)
 
+			e := h.mock.ExpectExec(bound).WithArgs(int64(1), "a")
 			if tc.err != nil {
-				stubExecErr(t, tc.err)
+				e.WillReturnError(tc.err)
+			} else {
+				e.WillReturnResult(sqlmock.NewResult(1, 1))
 			}
-			_, _ = dbx.NamedExecContext(context.Background(), query, map[string]any{"id": int64(1), "name": "a"})
+			_, _ = h.db.NamedExecContext(context.Background(),
+				"INSERT INTO t (id, name) VALUES (:id, :name)",
+				map[string]any{"id": int64(1), "name": "a"})
 
 			var rm metricdata.ResourceMetrics
 			if err := reader.Collect(context.Background(), &rm); err != nil {
@@ -610,11 +556,11 @@ func TestInstrument_MetricAttributes(t *testing.T) {
 					if m.Name != metricDuration {
 						continue
 					}
-					h, ok := m.Data.(metricdata.Histogram[float64])
+					hist, ok := m.Data.(metricdata.Histogram[float64])
 					if !ok || m.Unit != "s" {
 						t.Fatalf("%s: data %T unit %q, want histogram in s", m.Name, m.Data, m.Unit)
 					}
-					for _, dp := range h.DataPoints {
+					for _, dp := range hist.DataPoints {
 						points = append(points, attrSetMap(dp.Attributes))
 					}
 				}
@@ -629,7 +575,7 @@ func TestInstrument_MetricAttributes(t *testing.T) {
 				t.Fatalf("metric attributes = %v, want %v", points[0], tc.want)
 			}
 
-			sp, ok := ex.last()
+			sp, ok := h.ex.last()
 			if !ok {
 				t.Fatal("no span recorded")
 			}
@@ -640,7 +586,7 @@ func TestInstrument_MetricAttributes(t *testing.T) {
 			if gotErr := sp.Status().Code == codes.Error; gotErr != failed {
 				t.Fatalf("span status = %v, want error status %t", sp.Status().Code, failed)
 			}
-			if got := spanAttrs(sp)["db.query.text"]; got != "INSERT INTO t (id, name) VALUES (?, ?)" {
+			if got := spanAttrs(sp)["db.query.text"]; got != bound {
 				t.Fatalf("span db.query.text = %v, want bound query", got)
 			}
 		})
@@ -657,35 +603,35 @@ func attrSetMap(set attribute.Set) map[string]string {
 }
 
 func TestNamedExecContext_StructArg(t *testing.T) {
-	dbx, _, _ := setupTest(t, &stubDB{})
+	h := setupTest(t)
+	h.mock.ExpectExec("INSERT INTO t (id, name) VALUES (?, ?)").
+		WithArgs(int64(3), "c").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if _, err := dbx.NamedExecContext(context.Background(),
+	if _, err := h.db.NamedExecContext(context.Background(),
 		"INSERT INTO t (id, name) VALUES (:id, :name)",
 		report{ID: 3, Name: "c"}); err != nil {
 		t.Fatalf("NamedExecContext: %v", err)
 	}
-
-	q := recordedQuery(t)
-	if q.query != "INSERT INTO t (id, name) VALUES (?, ?)" {
-		t.Fatalf("query = %q, want struct binding", q.query)
-	}
-	if len(q.args) != 2 || q.args[0] != int64(3) || q.args[1] != "c" {
-		t.Fatalf("args = %v, want [3 c]", q.args)
+	if err := h.mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
 	}
 }
 
 func TestNamedExecContext_MySQLError(t *testing.T) {
-	dbx, fm, ex := setupTest(t, &stubDB{})
-	stubExecErr(t, &mysql.MySQLError{Number: 1066, Message: "duplicate entry"})
+	h := setupTest(t)
+	h.mock.ExpectExec("UPDATE t SET name = ? WHERE id = ?").
+		WithArgs("a", int64(1)).
+		WillReturnError(&mysql.MySQLError{Number: 1066, Message: "duplicate entry"})
 
-	_, err := dbx.NamedExecContext(context.Background(),
+	_, err := h.db.NamedExecContext(context.Background(),
 		"UPDATE t SET name = :name WHERE id = :id",
 		map[string]any{"id": int64(1), "name": "a"})
 	if err == nil {
 		t.Fatal("NamedExecContext() err = nil, want error")
 	}
 
-	hist, ok := fm.lastHist()
+	hist, ok := h.fm.lastHist()
 	if !ok {
 		t.Fatal("no duration recorded")
 	}
@@ -696,7 +642,7 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 		t.Fatalf("status_code = %v, want 1066", hist.attrs["db.response.status_code"])
 	}
 
-	sp, ok := ex.last()
+	sp, ok := h.ex.last()
 	if !ok {
 		t.Fatal("no span recorded")
 	}
@@ -713,58 +659,52 @@ func TestNamedExecContext_MySQLError(t *testing.T) {
 }
 
 func TestBindFailure_EmitsNoTelemetry(t *testing.T) {
-	dbx, fm, ex := setupTest(t, &stubDB{})
+	// No expectation is set: a statement that reached sqlmock would fail and
+	// emit telemetry, so the zero counts below prove binding stopped first.
+	h := setupTest(t)
 
-	_, err := dbx.NamedExecContext(context.Background(),
+	_, err := h.db.NamedExecContext(context.Background(),
 		"UPDATE t SET a = :missing WHERE id = :id", map[string]any{"id": int64(1)})
 	if err == nil {
 		t.Fatal("NamedExecContext() err = nil, want bind error for missing key")
 	}
 
-	if got := numRecordedQueries(t); got != 0 {
-		t.Fatalf("query executed on bind failure: %d", got)
-	}
-	if n := ex.count(); n != 0 {
+	if n := h.ex.count(); n != 0 {
 		t.Fatalf("spans = %d, want 0", n)
 	}
-	nc, nh := fm.nums()
+	nc, nh := h.fm.nums()
 	if nc != 0 || nh != 0 {
 		t.Fatalf("counts = %d, hists = %d, want 0, 0", nc, nh)
 	}
 }
 
 func TestNamedSelectContext_INExpansion(t *testing.T) {
-	dbx, _, _ := setupTest(t, &stubDB{
-		cols: []string{"id", "name"},
-		rows: [][]driver.Value{{int64(1), "a"}, {int64(2), "b"}, {int64(3), "c"}},
-	})
+	h := setupTest(t)
+	h.mock.ExpectQuery("SELECT id, name FROM t WHERE id IN (?, ?, ?)").
+		WithArgs(int64(1), int64(2), int64(3)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow(int64(1), "a").AddRow(int64(2), "b").AddRow(int64(3), "c"))
 
 	var items []report
-	if err := dbx.NamedSelectContext(context.Background(), &items,
+	if err := h.db.NamedSelectContext(context.Background(), &items,
 		"SELECT id, name FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64{1, 2, 3}}); err != nil {
 		t.Fatalf("NamedSelectContext: %v", err)
 	}
 	if len(items) != 3 || items[0].ID != 1 || items[2].Name != "c" {
 		t.Fatalf("items = %+v", items)
 	}
-
-	q := recordedQuery(t)
-	if q.query != "SELECT id, name FROM t WHERE id IN (?, ?, ?)" {
-		t.Fatalf("query = %q, want IN expansion", q.query)
-	}
-	if len(q.args) != 3 {
-		t.Fatalf("args len = %d, want 3", len(q.args))
+	if err := h.mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
 	}
 }
 
 func TestNamedSelectContext_NilArg(t *testing.T) {
-	dbx, fm, ex := setupTest(t, &stubDB{
-		cols: []string{"id", "name"},
-		rows: [][]driver.Value{{int64(1), "a"}},
-	})
+	h := setupTest(t)
+	h.mock.ExpectQuery("SELECT id, name FROM t").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(int64(1), "a"))
 
 	var items []report
-	if err := dbx.NamedSelectContext(context.Background(), &items,
+	if err := h.db.NamedSelectContext(context.Background(), &items,
 		"SELECT id, name FROM t", nil); err != nil {
 		t.Fatalf("NamedSelectContext: %v", err)
 	}
@@ -772,27 +712,22 @@ func TestNamedSelectContext_NilArg(t *testing.T) {
 		t.Fatalf("items = %+v", items)
 	}
 
-	q := recordedQuery(t)
-	if q.query != "SELECT id, name FROM t" || len(q.args) != 0 {
-		t.Fatalf("query = %q args = %v", q.query, q.args)
-	}
-
-	if n := ex.count(); n != 1 {
+	if n := h.ex.count(); n != 1 {
 		t.Fatalf("spans = %d, want 1", n)
 	}
-	if _, ok := fm.lastHist(); !ok {
+	if _, ok := h.fm.lastHist(); !ok {
 		t.Fatal("no duration recorded")
 	}
 }
 
 func TestNamedGetContext(t *testing.T) {
-	dbx, _, _ := setupTest(t, &stubDB{
-		cols: []string{"id", "name"},
-		rows: [][]driver.Value{{int64(7), "seven"}},
-	})
+	h := setupTest(t)
+	h.mock.ExpectQuery("SELECT id, name FROM t WHERE id = ?").
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(int64(7), "seven"))
 
 	var row report
-	if err := dbx.NamedGetContext(context.Background(), &row,
+	if err := h.db.NamedGetContext(context.Background(), &row,
 		"SELECT id, name FROM t WHERE id = :id", map[string]any{"id": int64(7)}); err != nil {
 		t.Fatalf("NamedGetContext: %v", err)
 	}
@@ -801,10 +736,32 @@ func TestNamedGetContext(t *testing.T) {
 	}
 }
 
-func TestBeginTx_Commit(t *testing.T) {
-	dbx, fm, _ := setupTest(t, &stubDB{})
+func TestNamedGetContext_NoRows(t *testing.T) {
+	h := setupTest(t)
+	h.mock.ExpectQuery("SELECT id, name FROM t WHERE id = ?").
+		WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
-	tx, err := dbx.Begin(context.Background())
+	var row report
+	err := h.db.NamedGetContext(context.Background(), &row,
+		"SELECT id, name FROM t WHERE id = :id", map[string]any{"id": int64(9)})
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("NamedGetContext error = %v, want sql.ErrNoRows", err)
+	}
+	if sp, ok := h.ex.last(); !ok || sp.Status().Code != codes.Unset {
+		t.Fatalf("no rows must not set error status: span = %v", sp)
+	}
+}
+
+func TestBeginTx_Commit(t *testing.T) {
+	h := setupTest(t)
+	h.mock.ExpectBegin()
+	h.mock.ExpectExec("INSERT INTO t (id, name) VALUES (?, ?)").
+		WithArgs(int64(2), "b").
+		WillReturnResult(sqlmock.NewResult(42, 1))
+	h.mock.ExpectCommit()
+
+	tx, err := h.db.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -822,19 +779,23 @@ func TestBeginTx_Commit(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-
-	if got := numRecordedQueries(t); got != 1 {
-		t.Fatalf("executed %d queries, want 1", got)
+	if err := h.mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
 	}
-	if hist, ok := fm.lastHist(); !ok || hist.attrs["db.operation.name"] != "INSERT" {
+	if hist, ok := h.fm.lastHist(); !ok || hist.attrs["db.operation.name"] != "INSERT" {
 		t.Fatalf("hist = %+v", hist)
 	}
 }
 
 func TestBeginTx_Rollback(t *testing.T) {
-	dbx, fm, _ := setupTest(t, &stubDB{})
+	h := setupTest(t)
+	h.mock.ExpectBegin()
+	h.mock.ExpectExec("DELETE FROM t WHERE id = ?").
+		WithArgs(int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	h.mock.ExpectRollback()
 
-	tx, err := dbx.Begin(context.Background())
+	tx, err := h.db.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -846,11 +807,10 @@ func TestBeginTx_Rollback(t *testing.T) {
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-
-	if got := numRecordedQueries(t); got != 1 {
-		t.Fatalf("executed %d queries, want 1", got)
+	if err := h.mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
 	}
-	if hist, ok := fm.lastHist(); !ok || hist.attrs["db.operation.name"] != "DELETE" {
+	if hist, ok := h.fm.lastHist(); !ok || hist.attrs["db.operation.name"] != "DELETE" {
 		t.Fatalf("hist = %+v", hist)
 	}
 }
@@ -882,119 +842,96 @@ type report struct {
 }
 
 // --- PostgreSQL execution paths -------------------------------------------
+//
+// These run on sqlmock with the postgres spec, so the $n placeholders and the
+// postgresql system name are the ones Connect would produce for pgx. Only the
+// real pgx driver is absent; the integration tests cover it.
 
 func TestPostgresNamedBind(t *testing.T) {
-	dbx, _, _ := setupTestWithDriver(t, &stubDB{
-		cols: []string{"id", "name"},
-		rows: [][]driver.Value{{int64(1), "a"}},
-	}, postgresDriver, "postgresql", "report_db")
+	h := setupDialect(t, postgresDriver, "postgresql")
+	h.mock.ExpectQuery("SELECT id, name FROM t WHERE id = $1").
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(int64(1), "a"))
 
 	var items []report
-	if err := dbx.NamedSelectContext(context.Background(), &items,
+	if err := h.db.NamedSelectContext(context.Background(), &items,
 		"SELECT id, name FROM t WHERE id = :id", map[string]any{"id": int64(1)}); err != nil {
 		t.Fatalf("NamedSelectContext: %v", err)
 	}
 	if len(items) != 1 || items[0].ID != 1 {
 		t.Fatalf("items = %+v", items)
 	}
-
-	q := recordedQuery(t)
-	if q.query != "SELECT id, name FROM t WHERE id = $1" {
-		t.Fatalf("query = %q, want $1 placeholder", q.query)
-	}
-	if len(q.args) != 1 || q.args[0] != int64(1) {
-		t.Fatalf("args = %v, want [1]", q.args)
-	}
 }
 
 func TestPostgresINExpansion(t *testing.T) {
-	dbx, _, _ := setupTestWithDriver(t, &stubDB{
-		cols: []string{"id", "name"},
-		rows: [][]driver.Value{{int64(1), "a"}, {int64(2), "b"}, {int64(3), "c"}},
-	}, postgresDriver, "postgresql", "report_db")
+	h := setupDialect(t, postgresDriver, "postgresql")
+	h.mock.ExpectQuery("SELECT id, name FROM t WHERE id IN ($1, $2, $3)").
+		WithArgs(int64(1), int64(2), int64(3)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow(int64(1), "a").AddRow(int64(2), "b").AddRow(int64(3), "c"))
 
 	var items []report
-	if err := dbx.NamedSelectContext(context.Background(), &items,
+	if err := h.db.NamedSelectContext(context.Background(), &items,
 		"SELECT id, name FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64{1, 2, 3}}); err != nil {
 		t.Fatalf("NamedSelectContext: %v", err)
 	}
 	if len(items) != 3 {
 		t.Fatalf("items = %+v", items)
 	}
-
-	q := recordedQuery(t)
-	if q.query != "SELECT id, name FROM t WHERE id IN ($1, $2, $3)" {
-		t.Fatalf("query = %q, want numbered IN placeholders", q.query)
-	}
-	if len(q.args) != 3 || q.args[0] != int64(1) || q.args[2] != int64(3) {
-		t.Fatalf("args = %v, want [1 2 3]", q.args)
-	}
 }
 
 func TestPostgresLiteralQuestionMarks(t *testing.T) {
-	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+	h := setupDialect(t, postgresDriver, "postgresql")
+	h.mock.ExpectExec("UPDATE t SET note = $1, body = $$?$$ WHERE note = 'why?'").
+		WithArgs("a").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	_, err := dbx.NamedExecContext(context.Background(),
-		"UPDATE t SET note = :note, body = $$?$$ WHERE note = 'why?'", map[string]any{"note": "a"})
-	if err != nil {
+	if _, err := h.db.NamedExecContext(context.Background(),
+		"UPDATE t SET note = :note, body = $$?$$ WHERE note = 'why?'", map[string]any{"note": "a"}); err != nil {
 		t.Fatalf("NamedExecContext: %v", err)
-	}
-
-	q := recordedQuery(t)
-	want := "UPDATE t SET note = $1, body = $$?$$ WHERE note = 'why?'"
-	if q.query != want {
-		t.Fatalf("query = %q, want %q", q.query, want)
 	}
 }
 
 func TestPostgresCommentsAndEscapeStrings(t *testing.T) {
-	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+	h := setupDialect(t, postgresDriver, "postgresql")
+	bound := `UPDATE t SET note = $1 WHERE body = E'it\'s ?' -- really?` + "\n"
+	h.mock.ExpectExec(bound).WithArgs("a").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	query := `UPDATE t SET note = :note WHERE body = E'it\'s ?' -- really?` + "\n"
-	if _, err := dbx.NamedExecContext(context.Background(), query, map[string]any{"note": "a"}); err != nil {
+	if _, err := h.db.NamedExecContext(context.Background(), query, map[string]any{"note": "a"}); err != nil {
 		t.Fatalf("NamedExecContext: %v", err)
-	}
-
-	q := recordedQuery(t)
-	want := `UPDATE t SET note = $1 WHERE body = E'it\'s ?' -- really?` + "\n"
-	if q.query != want {
-		t.Fatalf("query = %q, want %q", q.query, want)
 	}
 }
 
 func TestPostgresCasts(t *testing.T) {
-	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+	h := setupDialect(t, postgresDriver, "postgresql")
+	h.mock.ExpectExec("UPDATE t SET ts = $1::timestamptz, id = ($2)::bigint WHERE id = $3").
+		WithArgs("2024-01-01", int64(7), int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	if _, err := dbx.NamedExecContext(context.Background(),
+	if _, err := h.db.NamedExecContext(context.Background(),
 		"UPDATE t SET ts = :ts::timestamptz, id = (:id)::bigint WHERE id = :id",
 		map[string]any{"ts": "2024-01-01", "id": int64(7)}); err != nil {
 		t.Fatalf("NamedExecContext: %v", err)
 	}
-
-	q := recordedQuery(t)
-	want := "UPDATE t SET ts = $1::timestamptz, id = ($2)::bigint WHERE id = $3"
-	if q.query != want {
-		t.Fatalf("query = %q, want %q", q.query, want)
-	}
-	if len(q.args) != 3 {
-		t.Fatalf("args = %v, want 3 args", q.args)
-	}
 }
 
 func TestPostgresErrorTelemetry(t *testing.T) {
-	dbx, fm, ex := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
-	stubExecErr(t, &pgconn.PgError{
-		Code:    "23505",
-		Message: "duplicate key value violates unique constraint",
-	})
+	h := setupDialect(t, postgresDriver, "postgresql")
+	h.mock.ExpectExec("INSERT INTO t (id) VALUES ($1)").
+		WithArgs(int64(1)).
+		WillReturnError(&pgconn.PgError{
+			Code:    "23505",
+			Message: "duplicate key value violates unique constraint",
+		})
 
-	_, err := dbx.NamedExecContext(context.Background(),
+	_, err := h.db.NamedExecContext(context.Background(),
 		"INSERT INTO t (id) VALUES (:id)", map[string]any{"id": int64(1)})
 	if err == nil {
 		t.Fatal("NamedExecContext() err = nil, want error")
 	}
 
-	hist, ok := fm.lastHist()
+	hist, ok := h.fm.lastHist()
 	if !ok {
 		t.Fatal("no duration recorded")
 	}
@@ -1008,7 +945,7 @@ func TestPostgresErrorTelemetry(t *testing.T) {
 		t.Fatalf("error.type = %v, want 23505", hist.attrs["error.type"])
 	}
 
-	sp, ok := ex.last()
+	sp, ok := h.ex.last()
 	if !ok {
 		t.Fatal("no span recorded")
 	}
@@ -1021,9 +958,14 @@ func TestPostgresErrorTelemetry(t *testing.T) {
 }
 
 func TestPostgresTransaction(t *testing.T) {
-	dbx, _, _ := setupTestWithDriver(t, &stubDB{}, postgresDriver, "postgresql", "report_db")
+	h := setupDialect(t, postgresDriver, "postgresql")
+	h.mock.ExpectBegin()
+	h.mock.ExpectExec("DELETE FROM t WHERE id = $1").
+		WithArgs(int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	h.mock.ExpectCommit()
 
-	tx, err := dbx.Begin(context.Background())
+	tx, err := h.db.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -1034,51 +976,40 @@ func TestPostgresTransaction(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-
-	q := recordedQuery(t)
-	if q.query != "DELETE FROM t WHERE id = $1" {
-		t.Fatalf("query = %q, want $1 placeholder", q.query)
+	if err := h.mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
 	}
 }
 
 func TestMySQLINExpansionWithLiteralQuestionMark(t *testing.T) {
-	dbx, _, _ := setupTest(t, &stubDB{
-		cols: []string{"id", "name"},
-		rows: [][]driver.Value{{int64(1), "a"}, {int64(2), "b"}},
-	})
+	h := setupDialect(t, mysqlDriver, "mysql")
+	h.mock.ExpectQuery("SELECT id, name FROM t WHERE note = 'why?' AND id IN (?, ?)").
+		WithArgs(int64(1), int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(int64(1), "a").AddRow(int64(2), "b"))
 
 	var items []report
-	if err := dbx.NamedSelectContext(context.Background(), &items,
+	if err := h.db.NamedSelectContext(context.Background(), &items,
 		"SELECT id, name FROM t WHERE note = 'why?' AND id IN (:ids)",
 		map[string]any{"ids": []int64{1, 2}}); err != nil {
 		t.Fatalf("NamedSelectContext: %v", err)
 	}
-
-	q := recordedQuery(t)
-	want := "SELECT id, name FROM t WHERE note = 'why?' AND id IN (?, ?)"
-	if q.query != want {
-		t.Fatalf("query = %q, want %q", q.query, want)
-	}
-	if len(q.args) != 2 {
-		t.Fatalf("args = %v, want 2", q.args)
+	if len(items) != 2 {
+		t.Fatalf("items = %+v", items)
 	}
 }
 
 func TestINExpansionErrors(t *testing.T) {
-	dbx, fm, ex := setupTest(t, &stubDB{})
+	h := setupTest(t)
 
-	_, err := dbx.NamedExecContext(context.Background(),
+	_, err := h.db.NamedExecContext(context.Background(),
 		"DELETE FROM t WHERE id IN (:ids)", map[string]any{"ids": []int64(nil)})
 	if err == nil || !strings.Contains(err.Error(), "empty slice") {
 		t.Fatalf("error = %v, want empty slice error", err)
 	}
-	if got := numRecordedQueries(t); got != 0 {
-		t.Fatalf("executed %d queries on bind failure, want 0", got)
-	}
-	if n := ex.count(); n != 0 {
+	if n := h.ex.count(); n != 0 {
 		t.Fatalf("spans = %d, want 0", n)
 	}
-	if nc, nh := fm.nums(); nc != 0 || nh != 0 {
+	if nc, nh := h.fm.nums(); nc != 0 || nh != 0 {
 		t.Fatalf("metrics = %d/%d, want 0/0", nc, nh)
 	}
 }

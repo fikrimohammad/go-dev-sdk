@@ -49,8 +49,8 @@ import (
 	"go.opentelemetry.io/otel/semconv/v1.43.0/dbconv"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 const (
@@ -406,6 +406,8 @@ func (c *client) Close() error {
 // metrics. Each poll records only the change since the previous poll, so the
 // up-down counter holds the current number of connections per state.
 type poolPoller struct {
+	// kept: tests inject a stats func for deterministic deltas; a live miniredis
+	// pool cannot be made to report chosen counts or timeouts.
 	stats    func() *redis.PoolStats // snapshot source; a nil snapshot is skipped
 	metrics  func() metrics.Client   // resolved per record, as meta.metricsClient does
 	pool     string                  // db.client.connection.pool.name
@@ -607,6 +609,7 @@ func (m meta) attrs(op, code, errType string) map[string]any {
 		a[string(otelsemconv.DBResponseStatusCodeKey)] = code
 	}
 	if errType != "" {
+		// gostyle:ignore error-type-message errType is redisErrorCode's uppercase Redis prefix or a fixed class, never the message
 		a[string(otelsemconv.ErrorTypeKey)] = errType
 	}
 	return a

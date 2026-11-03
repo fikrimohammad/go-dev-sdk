@@ -22,9 +22,9 @@ perform unrelated repo-wide rewrites.
 - Use modern Go idioms available in each module's `go.mod` version, and
   follow the [Google Go Style Guide](https://google.github.io/styleguide/go/).
   `.golangci.yml` (golangci-lint >= v2.6) enforces its mechanical rules plus
-  `modernize`; new and changed code must pass
-  `golangci-lint run --new-from-merge-base=main ./...` for each module (the
-  full tree, `golangci-lint run ./...`, for modules in `STRICT_LINT_MODULES`).
+  `modernize`. Every module must pass `golangci-lint run ./...` on the full tree
+  and gostyle on `./...`, both with zero findings, except the modules in
+  `LAX_MODULES` (see Verification).
 - Client packages may export an interface describing their caller-facing
   surface (so users can generate mocks, e.g. with gomock), and constructors may
   return it. This overrides the go-best-practices "return concrete types" rule
@@ -37,7 +37,10 @@ perform unrelated repo-wide rewrites.
   [metrics](https://opentelemetry.io/docs/specs/semconv/general/metrics/), and
   [naming](https://opentelemetry.io/docs/specs/semconv/general/naming/)
   conventions, plus the relevant domain convention (DB, HTTP, messaging, RPC,
-  object stores, exceptions).
+  object stores, exceptions). gostyle's `error-type-message` and
+  `metric-high-cardinality` rules enforce a low-cardinality `error.type` and keep
+  per-event attributes (query text, message IDs, URLs, user IDs) off metrics.
+  Suppress a deliberate case with `// gostyle:ignore <rule> <reason>`.
 - Config methods: every package `Config` has exported value-receiver
   `SetDefaults() Config` (fills zero values, returns the copy) and
   `Validate() error`. `Validate` reports every problem with `errors.Join` and
@@ -79,18 +82,17 @@ Run from inside the module you changed:
 gofmt -l .
 go vet ./...
 go test -count=1 ./...
-golangci-lint run --new-from-merge-base=main ./...
-GOWORK=off go run ../.agents/skills/go-best-practices/scripts/gostyle.go .
+golangci-lint run ./...
+GOWORK=off go run ../.agents/skills/go-best-practices/scripts/gostyle.go ./...
 go mod tidy -diff
 ```
 
-Existing code predates the style-guide lint rules, so lint only what changed
-since `main` (CI uses `only-new-issues` outside the strict list below). Fix
-`gostyle` findings in code you wrote or touched.
-
-Modules listed in `STRICT_LINT_MODULES` in `.github/workflows/ci.yml` must pass
-`golangci-lint run ./...` on the full tree, not only new issues. Add a module to
-that list in the same commit that makes it clean. Never remove one.
+Every module is strict: `golangci-lint run ./...` on the full tree and gostyle
+on `./...` must both report zero findings. The exception is `LAX_MODULES` in
+`.github/workflows/ci.yml`, today only `confloader`. A lax module passes
+`golangci-lint run --new-from-merge-base=main ./...` and skips gostyle until its
+redesign. The list may only shrink: remove a module in the commit that makes it
+clean. Adding a module needs the owner's approval.
 
 Integration tests are opt-in:
 
@@ -101,6 +103,22 @@ DB_MYSQL_DSN='app:secret@tcp(127.0.0.1:3306)/report_db' \
 DB_POSTGRES_DSN='postgres://app:secret@127.0.0.1:5432/report_db?sslmode=disable' \
   go test -run TestPostgresIntegration ./...
 ```
+
+CI runs the MySQL and PostgreSQL integration tests in the `db-integration` job,
+against service containers, and fails if either one is skipped.
+
+## Releasing
+
+- One version covers every module. It lives in `VERSION`, and every sibling
+  `require` in every `go.mod` must equal it. CI runs
+  `.github/scripts/release.sh "$(cat VERSION)" --check` to enforce this.
+- Release by running `gh workflow run release.yml` on `main`. The workflow tags
+  every module as `<module>/<version>` on the same commit, in one atomic push.
+  Then `verify-install` proves that each module installs from proxy.golang.org.
+- Never reuse a version. The proxy and checksum database keep a pushed version
+  forever. Fix a bad release forward with a new patch version.
+- After a release, bump `VERSION` and every sibling `require` together before
+  the next release.
 
 ## Definition of done
 
@@ -114,7 +132,7 @@ DB_POSTGRES_DSN='postgres://app:secret@127.0.0.1:5432/report_db?sslmode=disable'
 - [ ] New or changed Go code follows the `go-best-practices` skill.
 - [ ] New or changed code follows the Config, example, `errors.go`, and
       `<pkg>.go` conventions above.
-- [ ] The verification commands above pass, including `modernize` and the
-      style-guide rules through
-      `golangci-lint run --new-from-merge-base=main ./...` (the full tree,
-      `golangci-lint run ./...`, for modules in `STRICT_LINT_MODULES`).
+- [ ] The verification commands above pass, including `modernize`. For a
+      strict module, `golangci-lint run ./...` and gostyle `./...` report zero
+      findings. A `LAX_MODULES` module passes
+      `golangci-lint run --new-from-merge-base=main ./...`.

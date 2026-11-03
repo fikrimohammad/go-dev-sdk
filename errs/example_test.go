@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/fikrimohammad/go-dev-sdk/errs"
+	"github.com/fikrimohammad/go-servicekit/errs"
 )
 
 func ExampleNew() {

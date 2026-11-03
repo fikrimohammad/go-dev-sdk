@@ -24,7 +24,7 @@ A concurrency-limited, panic-safe wrapper around
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/errgroup
+go get github.com/fikrimohammad/go-servicekit/errgroup@v0.1.0
 ```
 
 ## Step-by-step
@@ -98,18 +98,18 @@ go func() {
 
 | Symbol | Description |
 | --- | --- |
-| `New(ctx, opts...)` | Builds a group; nil `ctx` becomes `context.Background()` |
+| `New(ctx, opts...)` | Builds a group (`ctx` must be non-nil) |
 | `WithMaxConcurrency(n)` | Option; `<= 0` disables the limit |
 | `(*Group).Go(f)` | Schedules a task |
 | `(*Group).TryGo(f)` | Schedules unless the limit is reached |
 | `(*Group).Wait()` | Blocks until tasks finish, returns first error |
 | `(*Group).Context()` | The group's cancellation-linked context |
 | `(*Group).SubGroup(opts...)` | Child group inheriting ctx + default limit |
-| `DefaultMaxConcurrency` | Package default limit (20) |
+| `DefaultMaxConcurrency` | Package default limit (`20`) |
 
 ## Notes
 
 - The zero `Group` value is **not** usable; always construct with `New`.
-- The default concurrency (`DefaultMaxConcurrency = 20`) is a package variable
-  and can be changed if you prefer a different baseline.
+- The default concurrency limit is `DefaultMaxConcurrency` (`20`); pass
+  `WithMaxConcurrency` to override it per group.
 - After `Wait` returns the group must not be reused.

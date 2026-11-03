@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,10 +17,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/nats/internal/wire"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/nats/internal/wire"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 // Message is one delivered message, as a handler sees it. Its values are
@@ -40,22 +42,9 @@ type Message interface {
 	Timestamp() time.Time
 }
 
-// jsConsumer is one durable JetStream consumer run by a Consumer.
-type jsConsumer interface {
-	// Consume starts delivering each message to handler.
-	Consume(handler func(msg jetstream.Msg)) error
-	// Shutdown stops intake, waits for in-flight handlers, and drains the
-	// connection. It returns ctx.Err() if ctx ends first.
-	Shutdown(ctx context.Context) error
-}
-
-// consumerFactory connects to the server and returns the durable consumer
-// durableName for cfg. The stream and the durable consumer are ensured within ctx.
-type consumerFactory func(ctx context.Context, cfg Config, durableName string) (jsConsumer, error)
-
-// defaultJSConsumer is the jsConsumer backed by a NATS connection and a
-// JetStream pull consumer.
-type defaultJSConsumer struct {
+// streamConsumer is one durable JetStream pull consumer on its own NATS
+// connection.
+type streamConsumer struct {
 	nc         *nats.Conn
 	consumer   jetstream.Consumer
 	cfg        Config
@@ -63,9 +52,9 @@ type defaultJSConsumer struct {
 	wg         sync.WaitGroup
 }
 
-// Consume starts pulling messages and runs handler on up to MaxConcurrent
+// consume starts pulling messages and runs handler on up to MaxConcurrent
 // messages at a time.
-func (c *defaultJSConsumer) Consume(handler func(msg jetstream.Msg)) error {
+func (c *streamConsumer) consume(handler func(msg jetstream.Msg)) error {
 	sem := make(chan struct{}, c.cfg.MaxConcurrent)
 	consumeCtx, err := c.consumer.Consume(func(msg jetstream.Msg) {
 		sem <- struct{}{}
@@ -86,9 +75,9 @@ func (c *defaultJSConsumer) Consume(handler func(msg jetstream.Msg)) error {
 	return nil
 }
 
-// Shutdown stops intake, waits for in-flight handlers, and drains the connection.
+// shutdown stops intake, waits for in-flight handlers, and drains the connection.
 // When ctx ends first it closes the connection and returns ctx.Err().
-func (c *defaultJSConsumer) Shutdown(ctx context.Context) error {
+func (c *streamConsumer) shutdown(ctx context.Context) error {
 	if err := c.quiesce(ctx); err != nil {
 		c.nc.Close()
 		return err
@@ -98,7 +87,7 @@ func (c *defaultJSConsumer) Shutdown(ctx context.Context) error {
 
 // quiesce stops new deliveries and waits for the handlers already running. Once
 // the consume context is closed, no callback can add to the WaitGroup.
-func (c *defaultJSConsumer) quiesce(ctx context.Context) error {
+func (c *streamConsumer) quiesce(ctx context.Context) error {
 	if c.consumeCtx != nil {
 		c.consumeCtx.Drain()
 		select {
@@ -121,9 +110,9 @@ func (c *defaultJSConsumer) quiesce(ctx context.Context) error {
 	}
 }
 
-// defaultConsumerFactory connects, ensures the stream exists, and creates or
-// updates the durable consumer. On error it closes the connection it opened.
-func defaultConsumerFactory(ctx context.Context, cfg Config, durableName string) (jsConsumer, error) {
+// dialConsumer connects, ensures the stream exists, and creates or updates the
+// durable consumer. On error it closes the connection it opened.
+func dialConsumer(ctx context.Context, cfg Config, durableName string) (*streamConsumer, error) {
 	// The dial timeout is left to wire, which caps it by ctx. cfg.Timeout is the
 	// AckWait-sized ack timeout, not a dial timeout.
 	nc, err := wire.Connect(ctx, durableName, wire.Options{
@@ -160,7 +149,7 @@ func defaultConsumerFactory(ctx context.Context, cfg Config, durableName string)
 		return nil, fmt.Errorf("consumer: create consumer %s: %w", durableName, err)
 	}
 
-	return &defaultJSConsumer{nc: nc, consumer: cons, cfg: cfg}, nil
+	return &streamConsumer{nc: nc, consumer: cons, cfg: cfg}, nil
 }
 
 // Option configures a Consumer returned by New.
@@ -192,15 +181,14 @@ type registration struct {
 // Consumer runs the registered JetStream consumers. Register stores them, Start
 // connects and begins delivery, and Shutdown stops them.
 type Consumer struct {
-	appName         string
-	consumerFactory consumerFactory
-	metrics         metrics.Client
-	tracer          tracer.Client
+	appName string
+	metrics metrics.Client
+	tracer  tracer.Client
 
 	// mu guards the fields below. Start and Shutdown hold it for their whole run.
 	mu      sync.Mutex
 	regs    map[string]registration // keyed by durable name
-	running []jsConsumer
+	running []*streamConsumer
 	started bool
 	// cancelRun cancels runCtx, the context every handler call derives from. It
 	// is set by Start and called by Shutdown before the consumers are drained.
@@ -227,11 +215,10 @@ func New(info identity.Info, opts ...Option) (*Consumer, error) {
 	}
 
 	return &Consumer{
-		appName:         info.Name,
-		consumerFactory: defaultConsumerFactory,
-		regs:            make(map[string]registration),
-		metrics:         o.metrics,
-		tracer:          o.tracer,
+		appName: info.Name,
+		regs:    make(map[string]registration),
+		metrics: o.metrics,
+		tracer:  o.tracer,
 	}, nil
 }
 
@@ -291,9 +278,10 @@ func (c *Consumer) Start(ctx context.Context) error {
 
 	// Handlers outlive Start, so runCtx keeps Start's values but not its deadline.
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
-	var running []jsConsumer
-	for name, reg := range c.regs {
-		cn, err := c.startOne(ctx, runCtx, name, reg)
+	var running []*streamConsumer
+	// Start in name order, so a failure always rolls back the same consumers.
+	for _, name := range slices.Sorted(maps.Keys(c.regs)) {
+		cn, err := c.startOne(ctx, runCtx, name, c.regs[name])
 		if err != nil {
 			cancelRun()
 			return errors.Join(err, shutdownAll(ctx, running))
@@ -310,8 +298,8 @@ func (c *Consumer) Start(ctx context.Context) error {
 // startOne creates the durable consumer for reg and starts its delivery. Handler
 // calls derive from runCtx. On a failure after creation it shuts that consumer
 // down.
-func (c *Consumer) startOne(ctx, runCtx context.Context, name string, reg registration) (jsConsumer, error) {
-	cn, err := c.consumerFactory(ctx, reg.cfg, name)
+func (c *Consumer) startOne(ctx, runCtx context.Context, name string, reg registration) (*streamConsumer, error) {
+	cn, err := dialConsumer(ctx, reg.cfg, name)
 	if err != nil {
 		return nil, fmt.Errorf("consumer: create %s: %w", name, err)
 	}
@@ -319,8 +307,8 @@ func (c *Consumer) startOne(ctx, runCtx context.Context, name string, reg regist
 	handle := func(msg jetstream.Msg) {
 		_ = reg.handler.HandleMsg(runCtx, msg)
 	}
-	if err := cn.Consume(handle); err != nil {
-		return nil, errors.Join(fmt.Errorf("consumer: subscribe %s: %w", name, err), cn.Shutdown(ctx))
+	if err := cn.consume(handle); err != nil {
+		return nil, errors.Join(fmt.Errorf("consumer: subscribe %s: %w", name, err), cn.shutdown(ctx))
 	}
 	return cn, nil
 }
@@ -348,10 +336,10 @@ func (c *Consumer) Shutdown(ctx context.Context) error {
 }
 
 // shutdownAll shuts down every consumer in cns and joins their errors.
-func shutdownAll(ctx context.Context, cns []jsConsumer) error {
+func shutdownAll(ctx context.Context, cns []*streamConsumer) error {
 	var errs []error
 	for _, cn := range cns {
-		if err := cn.Shutdown(ctx); err != nil {
+		if err := cn.shutdown(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}

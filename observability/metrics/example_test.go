@@ -3,7 +3,7 @@ package metrics_test
 import (
 	"context"
 
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
 )
 
 func ExampleClient_Add() {

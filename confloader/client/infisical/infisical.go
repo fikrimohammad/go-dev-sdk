@@ -9,7 +9,7 @@ import (
 	infisical "github.com/infisical/go-sdk"
 	sdkerrors "github.com/infisical/go-sdk/packages/errors"
 
-	"github.com/fikrimohammad/go-dev-sdk/confloader/client"
+	"github.com/fikrimohammad/go-servicekit/confloader/client"
 )
 
 // Client implements client.Client against Infisical.

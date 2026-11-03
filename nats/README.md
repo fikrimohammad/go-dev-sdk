@@ -8,16 +8,15 @@ consumer span is a child of the producer span. The module uses the official
 
 Two packages:
 
-- `github.com/fikrimohammad/go-dev-sdk/nats/producer` publishes messages synchronously,
+- `github.com/fikrimohammad/go-servicekit/nats/producer` publishes messages synchronously,
   delayed, or asynchronously. One producer owns the stream of each topic.
-- `github.com/fikrimohammad/go-dev-sdk/nats/consumer` runs durable consumers, one per
+- `github.com/fikrimohammad/go-servicekit/nats/consumer` runs durable consumers, one per
   (topic, group), that hand each message to a handler.
 
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/nats/producer
-go get github.com/fikrimohammad/go-dev-sdk/nats/consumer
+go get github.com/fikrimohammad/go-servicekit/nats@v0.1.0
 ```
 
 ## Producer
@@ -34,8 +33,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/nats/producer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/nats/producer"
 )
 
 func publishOrder(ctx context.Context, body []byte) error {
@@ -130,8 +129,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/nats/consumer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/nats/consumer"
 )
 
 func runBilling(ctx context.Context) error {
@@ -268,7 +267,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/nats/consumer"
+	"github.com/fikrimohammad/go-servicekit/nats/consumer"
 )
 
 type fakeMessage struct {
@@ -314,9 +313,9 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/test"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/nats/consumer"
-	"github.com/fikrimohammad/go-dev-sdk/nats/producer"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/nats/consumer"
+	"github.com/fikrimohammad/go-servicekit/nats/producer"
 )
 
 func TestOrdersEndToEnd(t *testing.T) {

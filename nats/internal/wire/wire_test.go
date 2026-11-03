@@ -405,7 +405,7 @@ func TestConnectInvalidNKeySeed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			nc, err := Connect(context.Background(), "wire-test", Options{
-				Endpoints: []string{"nats://127.0.0.1:1"},
+				Endpoints: []string{deadEndpoint(t)},
 				Timeout:   time.Second,
 				NKey:      tt.nkey,
 			})
@@ -476,7 +476,7 @@ func TestConnectCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	nc, err := Connect(ctx, "wire-test", Options{Endpoints: []string{"nats://127.0.0.1:1"}})
+	nc, err := Connect(ctx, "wire-test", Options{Endpoints: []string{deadEndpoint(t)}})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Connect() error = %v, want %v", err, context.Canceled)
 	}

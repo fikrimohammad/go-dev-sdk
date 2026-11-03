@@ -1,9 +1,9 @@
-module github.com/fikrimohammad/go-dev-sdk/observability
+module github.com/fikrimohammad/go-servicekit/observability
 
 go 1.26.5
 
 require (
-	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0
+	github.com/fikrimohammad/go-servicekit/identity v0.1.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0
@@ -32,4 +32,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
+replace github.com/fikrimohammad/go-servicekit/identity => ../identity

@@ -15,7 +15,10 @@ permissions:
 env:
   GO_VERSION: "1.26.5"
   GOLANGCI_VERSION: v2.15.0
-  STRICT_LINT_MODULES: '["cron","db","errgroup","errs","identity","nats","observability","redis","rest","s3"]'
+  # Every module is strict (full-tree golangci-lint and gostyle) unless it is listed
+  # here. The list may only shrink: remove a module in the commit that makes it clean.
+  # Never add one without the owner's approval.
+  LAX_MODULES: '["confloader"]'
 
 jobs:
   modules:
@@ -30,6 +33,19 @@ jobs:
           modules=$(find . -maxdepth 2 -name go.mod -not -path './vendor/*' -printf '%h\n' \
             | sed 's|^\./||' | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "modules=$modules" >> "$GITHUB_OUTPUT"
+
+  gostyle:
+    name: gostyle self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Test gostyle
+        run: cd .agents/skills/go-best-practices/scripts && GOWORK=off go test -count=1 gostyle.go gostyle_test.go
 
   test:
     name: ${{ matrix.module }}
@@ -65,14 +81,17 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_VERSION }}
           working-directory: ${{ matrix.module }}
-          # Modules in STRICT_LINT_MODULES are linted on the full tree; all others
-          # fail only on new issues. Add a module in the commit that makes it clean;
-          # never remove one.
-          only-new-issues: ${{ !contains(fromJSON(env.STRICT_LINT_MODULES), matrix.module) }}
+          # Modules in LAX_MODULES fail only on new issues; all others are linted on
+          # the full tree. See LAX_MODULES above.
+          only-new-issues: ${{ contains(fromJSON(env.LAX_MODULES), matrix.module) }}
           # The restored lint cache served stale results: on an unchanged commit it
           # reported two nolintlint findings that an uncached run doesn't. A full
           # uncached run of a module takes seconds, so results stay deterministic.
           skip-cache: true
+
+      - name: Style
+        if: ${{ !contains(fromJSON(env.LAX_MODULES), matrix.module) }}
+        run: GOWORK=off go run ../.agents/skills/go-best-practices/scripts/gostyle.go ./...
 
       - name: Vet
         run: go vet ./...
@@ -85,3 +104,95 @@ jobs:
 
       - name: Tidy check
         run: go mod tidy -diff
+
+  db-integration:
+    name: db integration
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: report_db
+          MYSQL_USER: app
+          MYSQL_PASSWORD: secret
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: report_db
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d report_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DB_MYSQL_DSN: 'app:secret@tcp(127.0.0.1:3306)/report_db'
+      DB_POSTGRES_DSN: 'postgres://app:secret@127.0.0.1:5432/report_db?sslmode=disable'
+    defaults:
+      run:
+        working-directory: db
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: db/go.sum
+
+      - name: Run MySQL and PostgreSQL integration tests
+        run: |
+          set -o pipefail
+          go test -count=1 -run '^(TestMySQLIntegration|TestPostgresIntegration)$' -v ./... \
+            | tee "$RUNNER_TEMP/db-integration.log"
+
+      - name: Assert integration tests passed, not skipped
+        run: |
+          if grep -qE '^[[:space:]]*--- SKIP:' "$RUNNER_TEMP/db-integration.log"; then
+            echo "::error::an integration test or subtest was skipped"
+            exit 1
+          fi
+          for test in TestMySQLIntegration TestPostgresIntegration; do
+            if ! grep -qE "^--- PASS: ${test} \(" "$RUNNER_TEMP/db-integration.log"; then
+              echo "::error::${test} did not pass; it may have been skipped"
+              exit 1
+            fi
+          done
+
+  release-dry-run:
+    name: release dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Test release script
+        run: bash .github/scripts/release_test.sh
+
+      - name: Check sibling requires match VERSION
+        run: .github/scripts/release.sh "$(tr -d '[:space:]' < VERSION)" --check
+
+      # The full dry run also checks that VERSION is not yet tagged or in the
+      # proxy, so it runs only until VERSION is released. After a release,
+      # bump VERSION (and every sibling require) before the next one.
+      - name: Dry-run release of VERSION
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if git ls-remote --exit-code --tags origin "refs/tags/*/$version" >/dev/null; then
+            echo "VERSION $version is already released; bump it before the next release."
+          else
+            .github/scripts/release.sh "$version" --dry-run
+          fi

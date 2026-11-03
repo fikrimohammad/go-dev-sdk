@@ -60,10 +60,10 @@ for every module.
 ## Installation
 
 ```bash
-go get github.com/fikrimohammad/go-dev-sdk/observability
+go get github.com/fikrimohammad/go-servicekit/observability@v0.1.0
 ```
 
-> Each signal imports `github.com/fikrimohammad/go-dev-sdk/observability/logs`,
+> Each signal imports `github.com/fikrimohammad/go-servicekit/observability/logs`,
 > `.../metrics`, `.../tracer`, or `.../attributes` directly.
 
 ## Step-by-step
@@ -152,8 +152,8 @@ defer tc.Stop(ctx)
 | `Format` | `"text"` | `"text"` or `"json"` |
 | `Level` | `"debug"` | Minimum severity |
 | `GlobalKV` | — | Fields attached to every record |
-| `Writer` | package stdout | Destination for debug/info records |
-| `ErrorWriter` | package stderr | Destination for warn/error records |
+| `Writer` | `os.Stdout` | Destination for debug/info records |
+| `ErrorWriter` | `os.Stderr` | Destination for warn/error records |
 
 ### metrics.Config
 

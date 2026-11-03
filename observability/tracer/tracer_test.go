@@ -17,8 +17,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/fikrimohammad/go-dev-sdk/identity"
-	"github.com/fikrimohammad/go-dev-sdk/observability/attributes"
+	"github.com/fikrimohammad/go-servicekit/identity"
+	"github.com/fikrimohammad/go-servicekit/observability/attributes"
 )
 
 func testInfo() identity.Info {

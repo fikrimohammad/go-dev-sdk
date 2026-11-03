@@ -1,18 +1,18 @@
-module github.com/fikrimohammad/go-dev-sdk/rest
+module github.com/fikrimohammad/go-servicekit/rest
 
 go 1.26.5
 
-replace github.com/fikrimohammad/go-dev-sdk/identity => ../identity
+replace github.com/fikrimohammad/go-servicekit/identity => ../identity
 
-replace github.com/fikrimohammad/go-dev-sdk/errs => ../errs
+replace github.com/fikrimohammad/go-servicekit/errs => ../errs
 
-replace github.com/fikrimohammad/go-dev-sdk/observability => ../observability
+replace github.com/fikrimohammad/go-servicekit/observability => ../observability
 
 require (
 	github.com/cloudwego/hertz v0.10.6
-	github.com/fikrimohammad/go-dev-sdk/errs v0.0.0-00010101000000-000000000000
-	github.com/fikrimohammad/go-dev-sdk/identity v1.0.0
-	github.com/fikrimohammad/go-dev-sdk/observability v0.0.0-00010101000000-000000000000
+	github.com/fikrimohammad/go-servicekit/errs v0.1.0
+	github.com/fikrimohammad/go-servicekit/identity v0.1.0
+	github.com/fikrimohammad/go-servicekit/observability v0.1.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/sdk/metric v1.45.0

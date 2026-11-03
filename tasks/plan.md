@@ -1,97 +1,100 @@
-# Implementation Plan: messaging (SDK fix backlog, PR 3)
+# Implementation Plan: guardrails, release, test-transports (SDK fix backlog, PR 4)
 
-Spec: [SPEC-messaging](../docs/specs/sdk-fix-backlog/SPEC-messaging.md) (approved 2026-11-02).
-Capability map: [capability-map](../docs/specs/sdk-fix-backlog/capability-map.md). Item index:
-[docs/ideas/sdk-fix-backlog.md](../docs/ideas/sdk-fix-backlog.md#item-index). Tasks:
-[tasks/todo.md](todo.md). PR 1 shipped as #16 and PR 2 as #17.
+Spec: [SPEC-guardrails](../docs/specs/sdk-fix-backlog/SPEC-guardrails.md) (approved
+2026-11-02). Capability map: [capability-map](../docs/specs/sdk-fix-backlog/capability-map.md).
+Tasks: [tasks/todo.md](todo.md). PRs 1–3 shipped as #16, #17, and #18.
 
 ## Overview
 
-One PR on branch `feat/messaging`, one commit per task. It fixes nats's delayed publish,
-silent dedup, lifecycle, and handler contract, and cron's lifecycle. It moves both modules'
-telemetry to semconv v1.43.0 with bounded cardinality, and makes both strict on full-tree lint.
+One PR on branch `feat/guardrails`, one commit per task. It covers three parts:
 
-## Execution Roles (same as PR 1 and PR 2)
+- **A. Guardrails:** gostyle telemetry rules, strict lint by default, and gostyle in CI.
+- **B. Release:** the move to `github.com/fikrimohammad/go-servicekit`, v0.1.0 for every
+  module, and an atomic release with an installability check.
+- **C. Real transports:** db, redis, s3, and nats tests on in-process fakes, with the
+  transport stubs and seams deleted.
 
-- **Coder and tester:** a Haiku subagent per task. It never commits, and git is read-only for it.
-- **Orchestrator:** reruns each task's checks, commits one task per commit, pushes, and ticks
-  todo.md. It also:
-  - applies small reviewer fixes itself;
-  - owns go.mod (nuid becomes a direct dependency);
-  - owns `nats/parity_test.go` and module-wide compile fixes during parallel waves.
-- **Reviewer:** an Opus subagent at each checkpoint.
+## Execution Roles (owner decision 2026-11-02, changed from PRs 1–3)
+
+- **Each phase is done by Haiku 5.5** as coder, tester, and reviewer.
+  - A Haiku subagent implements and tests each task. It never commits, and git is read-only
+    for it.
+  - At each phase checkpoint, a separate Haiku subagent reviews that phase's tasks.
+- **After all tasks are done, Opus 5.5 reviews the whole PR once**, as Checkpoint B.
+- **Orchestrator:**
+  - reruns every check, commits one task per commit, pushes, and ticks todo.md;
+  - applies small review fixes;
+  - owns go.mod changes (the three test fakes) and the module-wide checks;
+  - runs the rule's recall and precision validation in worktrees, recorded in the PR.
 
 ## Architecture Decisions
 
-- **Two lanes.** cron is its own module and shares nothing with nats, so the cron tasks run
-  alongside the nats tasks.
-- **Wire first.** `nats/internal/wire` (T2) holds the stream layout, the header names, the
-  connect options, and server-address parsing. The producer and consumer tasks build on it, so
-  their stream configs can't drift apart again (N7).
-- **Lifecycle before behaviour.** Within each nats package, I/O moves into `Start(ctx)` and
-  `Shutdown(ctx)` is bounded (T3, T4) before the message contract changes (T5, T6). The
-  embedded-JetStream tests then run against the final lifecycle.
-- **Telemetry after the contract.** One task (T9) moves producer and consumer telemetry
-  together, once the APIs it instruments are final. Both sides share the messaging attribute
-  set and the `error.type` rule.
-- **Package-scoped checks in parallel waves.** The producer and consumer agents share the
-  `nats` module and its root `parity_test.go`. Each agent runs checks on its own package
-  (`./producer/...` or `./consumer/...`). The orchestrator fixes `parity_test.go` and runs the
-  module-wide checks before committing.
-- **Embedded JetStream in the mirror files.** Tests that need a real server use an
-  in-process `nats-server/v2/test` server through a `helpers_test.go` helper. They need no env
-  var, so `go test ./...` stays hermetic.
+- **Rename first, alone.** T2, done by Haiku like every task, touches about 106 files across every module. Landing it before
+  anything else keeps every later diff free of path noise, and stops parallel agents from
+  conflicting on imports.
+- **Parallel by area.** gostyle (T3), release scripting (T4), and each module's transport
+  rewrite (T5–T8) touch disjoint files. ci.yml is touched only by T9, which runs after them.
+  The two parallel waves are capped at four agents each, to stay within the Haiku usage
+  limit seen in PR 1.
+- **The rule is validated before CI enforces it.** T3 builds the rules. The orchestrator then
+  shows recall on `411bb72` and `216b2aa`, and precision on the branch. T9 only then turns
+  gostyle on in CI. Precision is checked again after the transport rewrite, since T5–T8
+  change production files.
+- **Release logic in a script.** `release.yml`'s shell moves to `.github/scripts/release.sh`,
+  with a `--dry-run` mode that CI runs on every PR. The workflow file stays thin, and the
+  logic gets a test run before the first real tag.
+- **Kept stubs are explicit.** Each kept transport stub has a one-line comment saying why no
+  fake can reach its case. Checkpoint B reviews the list.
 
-## Coverage Baselines (main @ 216b2aa, 2026-11-02)
+## Coverage Baselines (main @ 9373090, 2026-11-02)
 
 | Package | Coverage |
 | --- | --- |
-| nats/consumer | 68.6% |
-| nats/producer | 70.1% |
-| cron | 100.0% |
-| cron/engine | 93.7% |
+| db | 88.8% |
+| redis | 84.5% (the Checkpoint A reviewer measured main; 84.9% was a local reading) |
+| s3 | 86.3% |
+| nats/consumer | 93.3% |
+| nats/producer | 96.4% |
+| nats/internal/wire | 95.8% |
 
-Full-tree lint gap: nats 37 findings plus 4 gostyle findings; cron 36 findings plus 1 gostyle
-finding.
+The four client modules have 10,995 lines of tests in total.
 
 ## Task List
 
 Details, acceptance criteria, and verification are in [todo.md](todo.md).
 
 ### Phase 0: Setup
-- [x] T1: Commit the spec and plan, and open a draft PR (#18)
+- [x] T1: Commit the spec and plan, and open a draft PR (#19)
+- [x] T2: Rename the module path to go-servicekit, and set sibling requires to v0.1.0
 
 ### Wave 1 (parallel)
-- [x] T2: `nats/internal/wire`: stream layout, headers, connect options, server address (N7, N15, N18)
-- [x] T7: cron lifecycle: lock, contexts, middleware order, errors (C2, C3, C4, C5, X1, X7)
+- [x] T3: gostyle `error-type-message` and `metric-high-cardinality` rules, with testdata and tests
+- [x] T4: Release: `VERSION`, `.github/scripts/release.sh` (atomic, dry run, installability), `release.yml`
+- [x] T5: db tests on sqlmock; delete the fake driver where sqlmock covers its cases
+- [x] T6: redis tests on miniredis; delete the transport stubs and seams
 
+### Checkpoint A: rule recall and precision shown; Haiku review of T1–T6 (done)
 ### Wave 2 (parallel)
-- [x] T3: producer lifecycle: `Register` without I/O, `Start(ctx)` owns the stream, `Shutdown(ctx)` waits (N2, N6, N7, N14, N20 ownership)
-- [x] T4: consumer lifecycle: `Register` without I/O, `Start(ctx)`, bounded `Shutdown(ctx)`, data-subject filter, `DeliverNew` (N2, N3, N4, N14, N18 filter)
-- [x] T8: cron telemetry, docs, recipe, strict (C1, C6, X2–X6, N19)
+- [x] T7: s3 tests on gofakes3; delete the API stubs and seams
+- [x] T8: nats tests on the embedded server; delete the jsProducer/jsConsumer seams and mocks, except justified stubs
 
-### Checkpoint A: Opus review of T1–T4, T7, T8 (done; fixes in 4df0457 and the nats fix commit)
-### Wave 3 (parallel)
-- [x] T5: producer `Message` API, SDK headers, delayed publish, trace parenting (N5, N9, N13, N18, N20)
-- [x] T6: consumer `Message` handler, `HandlerTimeout` heartbeat, `ErrNoRetry`, ack logging, panic innermost (N1, N8, N21, X1)
+### Checkpoint A2: Haiku review of T7–T8 (done)
+### Wave 3
+- [x] T9: CI: `LAX_MODULES`, a gostyle step plus a self-test job, MySQL and PostgreSQL services, the release dry run
+- [x] T10: Docs: AGENTS.md, both skills, READMEs, backlog ticks
 
-### Wave 4
-- [x] T9: nats telemetry, both sides: messagingconv metrics, bounded attributes, `error.type` (N10, N11, X2–X6)
-
-### Wave 5
-- [x] T10: nats cleanup, docs, testing recipe, strict (N16, N17, N19)
-
-### Checkpoint B: final Opus review (fixes applied); PR description published; marked ready for owner review
+### Checkpoint B: Haiku review of T9–T10, then the Opus review of all tasks; PR description; owner review (done; awaiting owner review)
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Timing-based JetStream tests flake in CI (delay, heartbeat) | Med | Assert ordering and counts, not exact times. Use tolerances of 100 ms or more, waits of seconds, and `-count=3` locally before commit. |
-| Parallel producer and consumer agents break the shared `parity_test.go` | Med | The agents check only their own package; the orchestrator fixes the root tests (see Architecture Decisions). |
-| Patching the stream on `Start` misses an SDK-owned field | Med | `TestStart_PreservesOperatorStreamSettings` covers create, update, and an existing stream without `schedules.<topic>.>`. |
-| The heartbeat goroutine leaks or races with ack | Med | The heartbeat stops before ack/nak/term, a test runs under `-race`, and the handler ctx bounds it. |
-| The Haiku usage limit interrupts a task | Low | The orchestrator checks and finishes the saved work, as in PR 1. |
+| The rename misses a reference, such as a string in a test or a doc link | Med | T2 ends with `grep -rn go-dev-sdk` returning only the backlog's history lines, plus a full build, test, and tidy of every module |
+| The rule's flow tracing has false positives on real code | High | Precision must be 0 on the branch before T9 enables it. If it can't be, narrow the rule (spec assumption 4) |
+| A fake can't reproduce a stub's case (hung ack, mid-stream transport error) | Med | Keep that stub with a reason (spec assumption 13); the reviewer checks the list |
+| The service containers make CI slow or flaky | Low | Use health-checked `services:`. The DB tests run only in the db module's job |
+| The installability check can't run before a real tag | Low | The dry run covers the logic. The first real run is the owner's v0.1.0, with a documented recovery: fix forward with v0.1.1, never reuse a version |
+| The Haiku usage limit interrupts a wave | Low | Waves are capped at four agents; saved work is finished by the orchestrator |
 
 ## Open Questions
 

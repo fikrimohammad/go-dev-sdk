@@ -20,9 +20,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fikrimohammad/go-dev-sdk/cron"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/cron"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
 )
 
 // fakeToggler implements cron.Toggler.

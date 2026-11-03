@@ -27,8 +27,8 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 // Server serves HTTP requests through the standard middleware stack. Create

@@ -17,10 +17,14 @@
 
 ## Installation
 
+```bash
+go get github.com/fikrimohammad/go-servicekit/cron@v0.1.0
+```
+
 ```go
 import (
-	"github.com/fikrimohammad/go-dev-sdk/cron"
-	"github.com/fikrimohammad/go-dev-sdk/cron/engine"
+	"github.com/fikrimohammad/go-servicekit/cron"
+	"github.com/fikrimohammad/go-servicekit/cron/engine"
 )
 ```
 
@@ -41,8 +45,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fikrimohammad/go-dev-sdk/cron"
-	"github.com/fikrimohammad/go-dev-sdk/cron/engine"
+	"github.com/fikrimohammad/go-servicekit/cron"
+	"github.com/fikrimohammad/go-servicekit/cron/engine"
 )
 
 func main() {

@@ -13,10 +13,10 @@ import (
 
 	robfigcron "github.com/robfig/cron/v3"
 
-	"github.com/fikrimohammad/go-dev-sdk/cron"
-	"github.com/fikrimohammad/go-dev-sdk/observability/logs"
-	"github.com/fikrimohammad/go-dev-sdk/observability/metrics"
-	"github.com/fikrimohammad/go-dev-sdk/observability/tracer"
+	"github.com/fikrimohammad/go-servicekit/cron"
+	"github.com/fikrimohammad/go-servicekit/observability/logs"
+	"github.com/fikrimohammad/go-servicekit/observability/metrics"
+	"github.com/fikrimohammad/go-servicekit/observability/tracer"
 )
 
 // Option configures an [Engine] in [New].

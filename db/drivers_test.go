@@ -74,8 +74,8 @@ func TestDriverFor(t *testing.T) {
 		}
 	}
 
-	if _, ok := driverFor("dbstub"); ok {
-		t.Fatal("driverFor(dbstub) should be unsupported without a DSN")
+	if _, ok := driverFor("sqlmock"); ok {
+		t.Fatal("driverFor(sqlmock) without a DSN: got supported, want unsupported")
 	}
 }
 

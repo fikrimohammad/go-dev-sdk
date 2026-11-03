@@ -23,12 +23,17 @@ This file holds the rules that need judgment. Apply them while you write.
 3. From the module directory, run:
 
    ```bash
-   golangci-lint run --new-from-merge-base=main ./...
-   GOWORK=off go run <repo>/.agents/skills/go-best-practices/scripts/gostyle.go <changed package dirs>
+   golangci-lint run ./...
+   GOWORK=off go run ../.agents/skills/go-best-practices/scripts/gostyle.go ./...
    ```
 
-   For a standalone module outside this repo, use `golangci-lint run -c <repo>/.golangci.yml ./...` instead. Fix every finding in code you wrote. To keep one on purpose, add `//nolint:<linter> // <reason>` or `// gostyle:ignore <rule> <reason>`.
+   For a lax module in `LAX_MODULES` (`confloader`), run `golangci-lint run --new-from-merge-base=main ./...` instead and skip gostyle. For a standalone module outside this repo, use `golangci-lint run -c <repo>/.golangci.yml ./...`. Fix every finding in code you wrote. To keep one on purpose, add `//nolint:<linter> // <reason>` or `// gostyle:ignore <rule> <reason>`.
 4. Run the rest of the `AGENTS.md` verification commands.
+
+CI runs gostyle on `./...` for every module outside `LAX_MODULES`, so a finding fails the build. Two gostyle rules check telemetry:
+
+- `error-type-message`: `error.type` is set from an error's text (`err.Error()`, a variable assigned from it, or a same-package function that returns it). Use a low-cardinality class instead.
+- `metric-high-cardinality`: a per-event key (for example `db.query.text`, `messaging.message.id`, `url.full`, `user.id`) reaches a metric's attributes. Keep it on the span.
 
 This file plus the tools is all you need to write code. Don't read `references/` or `.golangci.yml` up front: every file you read is re-sent on every later turn, so it costs tokens for the rest of the session. Open one reference only if you are stuck on a specific decision, or when a review needs a guide citation (see the end of this file).
 
