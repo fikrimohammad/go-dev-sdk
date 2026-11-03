@@ -26,9 +26,10 @@ trap cleanup EXIT
 # Serve the fake proxy from $work/proxy. Missing files get 404, as the real
 # proxy does for an unknown version.
 proxy_dir=$work/proxy
+proxy_log=$work/proxy.log
 mkdir -p "$proxy_dir"
 port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-python3 -m http.server --bind 127.0.0.1 --directory "$proxy_dir" "$port" >/dev/null 2>&1 &
+python3 -m http.server --bind 127.0.0.1 --directory "$proxy_dir" "$port" >"$proxy_log" 2>&1 &
 server_pid=$!
 proxy_url=http://127.0.0.1:$port
 for _ in $(seq 50); do
@@ -136,12 +137,18 @@ new_repo v2path v2.0.0
 run_release "$work/v2path" v2.0.0 --dry-run
 expect_fail "v2 version on a non-/v2 path" "needs the module path to end in /v2"
 
-# 5. Version already in the proxy.
+# 5. Version already in the proxy (/@v/list), vs other/empty listed versions.
 new_repo proxied v0.1.0
 mkdir -p "$proxy_dir/${prefix}a/@v"
-touch "$proxy_dir/${prefix}a/@v/v0.1.0.info"
+printf 'v0.0.9\r\nv0.1.0\r\n' >"$proxy_dir/${prefix}a/@v/list"
 run_release "$work/proxied" v0.1.0 --dry-run
 expect_fail "version already in proxy" "${prefix}a@v0.1.0 is already in"
+
+printf 'v0.0.9\nv0.1.0-rc.1\nv0.1.00\n' >"$proxy_dir/${prefix}a/@v/list"
+mkdir -p "$proxy_dir/${prefix}b/@v"
+: >"$proxy_dir/${prefix}b/@v/list"
+run_release "$work/proxied" v0.1.0 --dry-run
+expect_pass "other or empty versions in /@v/list pass"
 rm -rf "$proxy_dir/example.com"
 
 # 6. Tag already exists locally.
@@ -206,7 +213,7 @@ new_repo checkok v0.1.0
 git -C "$work/checkok" tag -a a/v0.1.0 -m existing
 git -C "$work/checkok" push -q origin a/v0.1.0
 mkdir -p "$proxy_dir/${prefix}a/@v"
-touch "$proxy_dir/${prefix}a/@v/v0.1.0.info"
+printf 'v0.1.0\n' >"$proxy_dir/${prefix}a/@v/list"
 run_release "$work/checkok" v0.1.0 --check
 expect_pass "--check passes with tags on origin and in proxy"
 rm -rf "$proxy_dir/example.com"
@@ -219,6 +226,9 @@ expect_fail "--check fails on mismatched sibling require" "b/go.mod requires ${p
 # 15. --check and --dry-run are mutually exclusive.
 run_release "$work/happy" v0.1.0 --check --dry-run
 expect_fail "--check with --dry-run is an error" "mutually exclusive"
+
+# 16. Never query /@v/<version>.info (avoids 30-minute proxy negative caching).
+check "never requests .info from proxy" bash -c "! grep -q '\\.info' '$proxy_log'"
 
 echo "$pass passed, $failed failed"
 (( failed == 0 ))
