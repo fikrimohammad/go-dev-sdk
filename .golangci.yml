@@ -171,6 +171,13 @@ formatters:
     gofmt:
       simplify: true # decisions#literal-repeated-type-names (gofmt -s)
 
+run:
+  # revive's string-format rule races across concurrent package workers on cold
+  # runs, sporadically skipping findings and tripping nolintlint unused checks
+  # in multi-package modules (e.g. rest). Each module runs in its own CI matrix
+  # job, so serializing package workers inside one module takes ~1s warm.
+  concurrency: 1
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
